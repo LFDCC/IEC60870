@@ -16,7 +16,6 @@
     <Description>IEC 60870-5-101 protocol library (balanced/unbalanced link layer, serial and TCP transport, client/server) built on IEC60870.Core.</Description>
     <PackageOutputPath>nupkg</PackageOutputPath>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
-    <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
   </PropertyGroup>
 
   <ItemGroup>

@@ -16,7 +16,6 @@
     <Description>IEC 60870-5-104 protocol library (TCP/TCP-TLS transport, client/server) built on IEC60870.Core. Fully async, TouchSocket-based, zero-GC hot path.</Description>
     <PackageOutputPath>nupkg</PackageOutputPath>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
-    <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
   </PropertyGroup>
 
   <ItemGroup>

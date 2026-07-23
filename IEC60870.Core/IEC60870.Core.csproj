@@ -16,7 +16,6 @@
     <Description>IEC 60870-5 shared application-layer primitives (ASDU, InformationObjects, time/quality types) for IEC 60870-5-101/104. Pure, transport-independent.</Description>
     <PackageOutputPath>nupkg</PackageOutputPath>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
-    <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
   </PropertyGroup>
 
   <ItemGroup>
