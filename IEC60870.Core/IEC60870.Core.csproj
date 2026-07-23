@@ -6,7 +6,7 @@
     <Copyright>Copyright 2026 LFDCC</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageId>LFDCC.IEC60870.Core</PackageId>
-    <Version>4.0.2</Version>
+    <Version>4.0.3</Version>
     <RootNamespace>IEC60870.Core</RootNamespace>
     <AssemblyName>IEC60870.Core</AssemblyName>
     <TargetFramework>net8.0</TargetFramework>

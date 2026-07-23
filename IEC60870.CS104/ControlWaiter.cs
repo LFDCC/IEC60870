@@ -183,12 +183,19 @@ namespace IEC60870.CS104
 
         /// <summary>
         /// 读取控制命令的 Select 位（预发=true / 执行=false）。各命令类型 Select 位位置不同：
-        /// C_SC/DC/RC 在 IOA 后第 1 字节（SCO/DCQ），C_SE 在 QOS 字节，直接读类型化属性最稳妥。
+        /// C_SC/DC/RC 在 IOA 后第 1 字节（SCO/DCQ/RCO），C_SE 在 QOS 字节，直接读类型化属性最稳妥。
         /// 无 Select 位的命令（如 C_BO_NA_1）按执行（false）处理。
         /// </summary>
-        private static bool GetSelectBit(InformationObject io) => io switch
+        /// <remarks>
+        /// <see cref="StepCommand"/>（C_RC_NA_1 / C_RC_TA_1）虽继承自 <see cref="DoubleCommand"/>、
+        /// 类型模式已能命中，此处仍显式列出：避免将来 <see cref="StepCommand"/> 不再继承
+        /// <see cref="DoubleCommand"/> 时静默落入 <c>_ => false</c>，导致预发（select）确认的
+        /// 关联键永远等于执行（false），预发确认匹配不上而超时。
+        /// </remarks>
+        internal static bool GetSelectBit(InformationObject io) => io switch
         {
             SingleCommand sc => sc.Select,
+            StepCommand rc => rc.Select,
             DoubleCommand dc => dc.Select,
             SetpointCommandNormalized s => s.QOS.Select,
             SetpointCommandScaled s => s.QOS.Select,

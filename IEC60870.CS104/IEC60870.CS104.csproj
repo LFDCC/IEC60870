@@ -6,7 +6,7 @@
     <Copyright>Copyright 2026 LFDCC</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageId>LFDCC.IEC60870.CS104</PackageId>
-    <Version>4.0.2</Version>
+    <Version>4.0.3</Version>
     <RootNamespace>IEC60870.CS104</RootNamespace>
     <AssemblyName>IEC60870.CS104</AssemblyName>
     <TargetFramework>net8.0</TargetFramework>
@@ -34,6 +34,9 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\IEC60870.Core\IEC60870.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="tests-cs104" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="TouchSocket" Version="3.0.3" />

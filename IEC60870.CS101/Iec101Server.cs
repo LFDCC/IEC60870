@@ -333,6 +333,16 @@ namespace IEC60870.CS101
                         {
                             InterrogationCommand irc = (InterrogationCommand)asdu.GetElement(0);
 
+                            if (irc.ObjectAddress != 0)
+                            {
+                                DebugLog("C_IC_NA_1: IOA != 0 (system command 期望 IOA=0)，拒收");
+                                asdu.Cot = CauseOfTransmission.UNKNOWN_CAUSE_OF_TRANSMISSION;
+                                asdu.IsNegative = true;
+                                SendASDU(asdu);
+                                messageHandled = true;
+                                break;
+                            }
+
                             if (interrogationHandler(InterrogationHandlerParameter, this, asdu, irc.QOI))
                                 messageHandled = true;
                         }
@@ -355,6 +365,16 @@ namespace IEC60870.CS101
                         if (counterInterrogationHandler != null)
                         {
                             CounterInterrogationCommand cic = (CounterInterrogationCommand)asdu.GetElement(0);
+
+                            if (cic.ObjectAddress != 0)
+                            {
+                                DebugLog("C_CI_NA_1: IOA != 0 (system command 期望 IOA=0)，拒收");
+                                asdu.Cot = CauseOfTransmission.UNKNOWN_CAUSE_OF_TRANSMISSION;
+                                asdu.IsNegative = true;
+                                SendASDU(asdu);
+                                messageHandled = true;
+                                break;
+                            }
 
                             if (counterInterrogationHandler(counterInterrogationHandlerParameter, this, asdu, cic.QCC))
                                 messageHandled = true;
@@ -404,6 +424,16 @@ namespace IEC60870.CS101
                         {
                             ClockSynchronizationCommand csc = (ClockSynchronizationCommand)asdu.GetElement(0);
 
+                            if (csc.ObjectAddress != 0)
+                            {
+                                DebugLog("C_CS_NA_1: IOA != 0 (system command 期望 IOA=0)，拒收");
+                                asdu.Cot = CauseOfTransmission.UNKNOWN_CAUSE_OF_TRANSMISSION;
+                                asdu.IsNegative = true;
+                                SendASDU(asdu);
+                                messageHandled = true;
+                                break;
+                            }
+
                             if (clockSynchronizationHandler(clockSynchronizationHandlerParameter,
                                 this, asdu, csc.NewTime))
                                 messageHandled = true;
@@ -446,6 +476,16 @@ namespace IEC60870.CS101
                         {
                             ResetProcessCommand rpc = (ResetProcessCommand)asdu.GetElement(0);
 
+                            if (rpc.ObjectAddress != 0)
+                            {
+                                DebugLog("C_RP_NA_1: IOA != 0 (system command 期望 IOA=0)，拒收");
+                                asdu.Cot = CauseOfTransmission.UNKNOWN_CAUSE_OF_TRANSMISSION;
+                                asdu.IsNegative = true;
+                                SendASDU(asdu);
+                                messageHandled = true;
+                                break;
+                            }
+
                             if (resetProcessHandler(resetProcessHandlerParameter,
                                 this, asdu, rpc.QRP))
                                 messageHandled = true;
@@ -469,6 +509,16 @@ namespace IEC60870.CS101
                         if (delayAcquisitionHandler != null)
                         {
                             DelayAcquisitionCommand dac = (DelayAcquisitionCommand)asdu.GetElement(0);
+
+                            if (dac.ObjectAddress != 0)
+                            {
+                                DebugLog("C_CD_NA_1: IOA != 0 (system command 期望 IOA=0)，拒收");
+                                asdu.Cot = CauseOfTransmission.UNKNOWN_CAUSE_OF_TRANSMISSION;
+                                asdu.IsNegative = true;
+                                SendASDU(asdu);
+                                messageHandled = true;
+                                break;
+                            }
 
                             if (delayAcquisitionHandler(delayAcquisitionHandlerParameter,
                                 this, asdu, dac.Delay))

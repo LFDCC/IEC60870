@@ -417,7 +417,7 @@ namespace IEC60870.Core
                 case TypeID.M_ME_TC_1: elem = 8; commandLike = false; break;
                 case TypeID.M_IT_NA_1: elem = 5; commandLike = false; break;
                 case TypeID.M_IT_TA_1: elem = 8; commandLike = false; break;
-                case TypeID.M_EP_TA_1: elem = 3; commandLike = false; break;
+                case TypeID.M_EP_TA_1: elem = 6; commandLike = false; break; /* 旧值 3 为 bug：实际 = SEP(1)+elapsed(2)+CP24(3)=6（见 EventOfProtectionEquipment.GetEncodedSize / ASDUDecoder） */
                 case TypeID.M_EP_TB_1: elem = 7; commandLike = false; break;
                 case TypeID.M_EP_TC_1: elem = 7; commandLike = false; break;
                 case TypeID.M_PS_NA_1: elem = 5; commandLike = false; break;
@@ -474,7 +474,7 @@ namespace IEC60870.Core
                 case TypeID.C_TS_TA_1:
                     elem = parameters.SizeOfIOA + 9; commandLike = true; break;
                 case TypeID.M_EI_NA_1:
-                    elem = parameters.SizeOfCA + 1; commandLike = true; break;
+                    elem = 1; commandLike = false; break; /* 旧值 SizeOfCA+1(commandLike) 错误：实际布局 = IOA + 1(COI)（见 EndOfInitialization.GetEncodedSize=1 及其解码构造函数，标准监视类型） */
 
                 default:
                     return -1; // 私有类型 / 文件类型（固定偏移解码）：跳过，交给各自解码器
@@ -503,26 +503,47 @@ namespace IEC60870.Core
         /// <exception cref="IEC60870.Core.ASDUParsingException">Thrown when there is a problem parsing the ASDU</exception>
         public InformationObject GetElement(int index, IPrivateIOFactory ioFactory)
         {
-            InformationObject retVal = null;
+            if (ioFactory == null)
+                return null;
 
-            if (ioFactory != null)
+            // index 范围校验（与 GetElement(int) 一致），避免大 IOA + 错误 VSQ 时越界读
+            if (index < 0 || index >= NumberOfElements)
+                throw new ASDUParsingException("Index out of range");
+
+            int elementSize = ioFactory.GetEncodedSize();
+            int offset;
+            int needed; // 该元素从 offset 起将读取的字节数
+
+            if (IsSequence)
             {
-
-                int elementSize = ioFactory.GetEncodedSize();
-
-                if (IsSequence)
-                {
-
-                    int ioa = InformationObject.ParseInformationObjectAddress(parameters, payload, 0);
-
-                    retVal = ioFactory.Decode(parameters, payload, parameters.SizeOfIOA + (index * elementSize), true);
-
-                    retVal.ObjectAddress = ioa + index;
-                }
-                else
-                    retVal = ioFactory.Decode(parameters, payload, index * (parameters.SizeOfIOA + elementSize), false);
-
+                // 序列首元素需 IOA 前缀
+                if (payload.Length < parameters.SizeOfIOA)
+                    throw new ASDUParsingException("Payload too small for sequence IOA prefix");
+                offset = parameters.SizeOfIOA + (index * elementSize);
+                needed = elementSize;
             }
+            else
+            {
+                offset = index * (parameters.SizeOfIOA + elementSize);
+                needed = parameters.SizeOfIOA + elementSize;
+            }
+
+            // offset+needed 越界校验：防止 VSQ 声明数与实际 payload 不符时 Decode 读越界（NRE/IndexOutOfRange）
+            if (offset < 0 || offset + needed > payload.Length)
+                throw new ASDUParsingException("Payload too small for declared element size/VSQ (offset=" + offset + ", needed=" + needed + ", payload=" + payload.Length + ")");
+
+            InformationObject retVal;
+
+            if (IsSequence)
+            {
+                int ioa = InformationObject.ParseInformationObjectAddress(parameters, payload, 0);
+
+                retVal = ioFactory.Decode(parameters, payload, offset, true);
+
+                retVal.ObjectAddress = ioa + index;
+            }
+            else
+                retVal = ioFactory.Decode(parameters, payload, offset, false);
 
             return retVal;
         }
@@ -835,7 +856,7 @@ namespace IEC60870.Core
 
                 case TypeID.M_EP_TA_1: /* 17 */
 
-                    elementSize = 3;
+                    elementSize = 6;
 
                     if (IsSequence)
                     {
@@ -1243,7 +1264,7 @@ namespace IEC60870.Core
                 /* 65 - 69 reserved */
 
                 case TypeID.M_EI_NA_1: /* 70 - End of initialization */
-                    elementSize = parameters.SizeOfCA + 1;
+                    elementSize = parameters.SizeOfIOA + 1;
 
                     retVal = new EndOfInitialization(parameters, payload, index * elementSize);
 
