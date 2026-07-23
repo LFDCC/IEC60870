@@ -354,4 +354,77 @@ namespace IEC60870.CS104.Tests
                 string.Join(",", _events));
         }
     }
+
+    /// <summary>
+    /// 验证：客户端断开连接后，服务端 ConnectionEvent 能收到 ConnectionClosed（并带断连的会话）。
+    /// 这是服务端感知“哪个会话断开”的核心能力——此前缺失（OnTcpClosed 未派发），是个缺陷。
+    /// </summary>
+    [TestFixture]
+    public class ServerSideConnectionClosedTests
+    {
+        private const int Port = 24201;
+        private Iec104Server _server;
+        private Iec104Client _client;
+        private readonly System.Collections.Generic.List<(Iec104Session, ApduConnectionEvent)> _events = new();
+
+        [SetUp]
+        public async Task SetUp()
+        {
+            _events.Clear();
+            _server = new Iec104Server();
+            _server.ConnectionEvent += (session, ev) =>
+            {
+                lock (_events) { _events.Add((session, ev)); }
+            };
+            await _server.StartAsync(Port);
+
+            _client = new Iec104Client("127.0.0.1", Port);
+            await _client.ConnectAsync();
+        }
+
+        [TearDown]
+        public async Task TearDown()
+        {
+            try { await _client.DisconnectAsync(); } catch { /* ignore */ }
+            try { _server.Dispose(); } catch { /* ignore */ }
+        }
+
+        [Test]
+        public async Task ClientDisconnect_RaisesConnectionClosedOnServer()
+        {
+            Assert.IsTrue(_client.IsActivated, "client should be activated before disconnect");
+            Assert.GreaterOrEqual(_server.SessionCount, 1, "server should have the client session");
+
+            // 客户端主动断开（模拟客户端进程退出 / 网络中断）
+            await _client.DisconnectAsync();
+
+            // 等待服务端收到 ConnectionClosed（带来源会话）
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            bool gotClosed = false;
+            Iec104Session closedSession = null;
+            while (sw.Elapsed < System.TimeSpan.FromSeconds(5))
+            {
+                lock (_events)
+                {
+                    foreach (var (s, ev) in _events)
+                    {
+                        if (ev == ApduConnectionEvent.ConnectionClosed)
+                        {
+                            gotClosed = true;
+                            closedSession = s;
+                            break;
+                        }
+                    }
+                }
+                if (gotClosed) break;
+                await Task.Delay(50);
+            }
+
+            Assert.IsTrue(gotClosed,
+                "server ConnectionEvent should contain ConnectionClosed after client disconnect. Received: " +
+                string.Join(",", _events.ConvertAll(e => e.Item2.ToString())));
+            Assert.IsNotNull(closedSession, "ConnectionClosed should carry the disconnected session");
+            Assert.AreEqual(0, _server.SessionCount, "session should be unregistered after disconnect");
+        }
+    }
 }

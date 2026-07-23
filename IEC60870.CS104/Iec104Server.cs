@@ -108,5 +108,17 @@ namespace IEC60870.CS104
 
         internal void RaiseConnectionEvent(Iec104Session session, ApduConnectionEvent ev)
             => ConnectionEvent?.Invoke(session, ev);
+
+        /// <summary>
+        /// 停止监听并关闭所有会话。服务端主动停止不会为每个会话派发 ConnectionClosed
+        /// （每个会话已在关闭前标记 <see cref="Iec104Session.MarkIntentionalClose"/>，避免刷屏）；
+        /// 客户端侧断开、超时或协议错误仍会正常派发，使订阅者感知“哪个会话”断开。
+        /// </summary>
+        public new async Task StopAsync()
+        {
+            foreach (Iec104Session s in _sessions.Values)
+                s.MarkIntentionalClose();
+            await base.StopAsync().ConfigureAwait(false);
+        }
     }
 }

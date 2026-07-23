@@ -30,6 +30,8 @@ namespace IEC60870.CS104
         private CancellationTokenSource _cts;
         private Task _timerLoop;
         private Iec104Server _server;
+        // 标记本次关闭是否由服务端主动 StopAsync 发起，避免为每个会话重复派发 ConnectionClosed
+        private bool _intentionalClose;
 
         /// <summary>该会话对应的连接层状态机。</summary>
         public ApduConnection Connection => _connection;
@@ -52,6 +54,9 @@ namespace IEC60870.CS104
             await _connection.SendAsduAsync(writer, LinkToken(cancellationToken)).ConfigureAwait(false);
         }
 
+        /// <summary>标记本次关闭由服务端主动 StopAsync 发起，避免重复派发 ConnectionClosed。</summary>
+        internal void MarkIntentionalClose() => _intentionalClose = true;
+
         // ── 生命周期 ──────────────────────────────────────────────────
 
         protected override async Task OnTcpConnected(ConnectedEventArgs e)
@@ -59,6 +64,7 @@ namespace IEC60870.CS104
             _server = (Iec104Server)this.Service;
             _cts = new CancellationTokenSource();
             _framer = new ApduFramer();
+            _intentionalClose = false;
             _connection = new ApduConnection(_server.ApciParameters, _server.Parameters, this, isServerSide: true);
             _connection.AsduReceived += _server.RaiseAsduReceived(this);
             _connection.EventHandler += ev => _server.RaiseConnectionEvent(this, ev);
@@ -92,6 +98,13 @@ namespace IEC60870.CS104
         {
             try { _cts?.Cancel(); } catch { /* ignore */ }
             _server?.UnregisterSession(this);
+
+            // 仅在非主动关闭（客户端断开 / 超时 / 协议错误）时派发 ConnectionClosed，
+            // 让服务端 ConnectionEvent 订阅者能感知“哪个会话”断开了。服务端主动 StopAsync
+            // 已通过 MarkIntentionalClose 标记，主动停止不会刷屏。
+            if (!_intentionalClose)
+                _connection?.NotifyClosed();
+
             _connection?.Dispose();
             _framer?.Dispose();
             _framer = null;
