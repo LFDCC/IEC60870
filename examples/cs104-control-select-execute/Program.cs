@@ -89,10 +89,6 @@ namespace cs104_control_select_execute
             Console.WriteLine($"   ✅ 执行完成: {exe}");
         }
 
-        // 透传打印非控制命令类 ASDU（AsduView 是 ref struct，使用 in 参数）
-        private static void LogOtherAsdu(in AsduView view) =>
-            Console.WriteLine($"  [其它 ASDU] Type={view.TypeId} COT={view.Cot} CA={view.CommonAddress}");
-
         public static async Task Main(string[] args)
         {
             Console.WriteLine("IEC 60870-5-104 控制命令 预发/执行 同步等待 示例");
@@ -109,8 +105,7 @@ namespace cs104_control_select_execute
             await Task.Delay(300); // 等监听就绪
 
             await using var client = new Iec104Client("127.0.0.1", Port, apci, al);
-            // 其它 ASDU（如有自发上送）透传打印
-            var waiter = new ControlWaiter(client, LogOtherAsdu);
+            var waiter = new ControlWaiter(client);
 
             await client.ConnectAsync();
             await client.StartDataTransferAsync();

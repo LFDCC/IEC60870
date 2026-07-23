@@ -60,17 +60,12 @@ namespace IEC60870.CS104
         private readonly ApplicationLayerParameters _al;
         private readonly object _gate = new();
         private readonly Dictionary<long, TaskCompletionSource<ControlConfirmation>> _pending = new();
-        private readonly OtherAsduHandler _onOtherAsdu;
         private bool _subscribed;
 
-        /// <summary>非控制命令类 ASDU（如自发上送）的透传回调。AsduView 是 ref struct，故用专用委托。</summary>
-        public delegate void OtherAsduHandler(in AsduView view);
-
-        public ControlWaiter(Iec104Client client, OtherAsduHandler onOtherAsdu = null)
+        public ControlWaiter(Iec104Client client)
         {
             _client = client ?? throw new ArgumentNullException(nameof(client));
             _al = client.Parameters;
-            _onOtherAsdu = onOtherAsdu;
             // 多播订阅：不接管 client.AsduReceived，外部订阅者仍会直接收到全部 ASDU
             client.AsduReceived += OnAsduReceived;
             _subscribed = true;
@@ -148,9 +143,8 @@ namespace IEC60870.CS104
                 }
             }
 
-            // 其它 ASDU（如自发上送 M_SP_NA_1 等）透传给可选回调；
-            // 外部订阅者会经各自的 += 直接收到（无需此处转发）
-            _onOtherAsdu?.Invoke(in view);
+            // 其它 ASDU（如自发上送 M_SP_NA_1 等）不在此处理；
+            // 外部订阅者会经各自的 += 直接收到全部 ASDU（含控制确认）
         }
 
         // ── 关联键与字段解析（直接读字节，零分配）─────────────────
