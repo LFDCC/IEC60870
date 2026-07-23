@@ -1,0 +1,53 @@
+name: Package Push
+
+# Workflow for building & publishing the IEC60870 NuGet packages.
+# Triggered by pushing a version tag like v4.0.0.
+# Based on: https://acraven.medium.com/a-nuget-package-workflow-using-github-actions-7da8c6557863
+#
+# NOTE: CS101/CS104 both depend on Core, so all three must be published
+# together (Core first) or the dependent packages won't resolve on install.
+# We pack the three library projects explicitly (NOT the whole solution),
+# because the example/test projects are packable by default and would
+# otherwise produce ~18 unwanted .nupkg files.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Verify commit exists in origin/main
+        run: |
+          git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD origin/main
+
+      - name: Set VERSION variable from tag
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_ENV"
+
+      - name: Pack
+        run: |
+          dotnet pack IEC60870.Core/IEC60870.Core.csproj   -c Release /p:Version=${VERSION} -o artifacts
+          dotnet pack IEC60870.CS101/IEC60870.CS101.csproj -c Release /p:Version=${VERSION} -o artifacts
+          dotnet pack IEC60870.CS104/IEC60870.CS104.csproj -c Release /p:Version=${VERSION} -o artifacts
+
+      - name: Push Core to NuGet
+        run: dotnet nuget push "artifacts/LFDCC.IEC60870.Core.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${NUGET_API_KEY} --skip-duplicate
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+
+      - name: Push CS101 & CS104 to NuGet
+        run: dotnet nuget push "artifacts/LFDCC.IEC60870.CS101.*.nupkg" "artifacts/LFDCC.IEC60870.CS104.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${NUGET_API_KEY} --skip-duplicate
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
