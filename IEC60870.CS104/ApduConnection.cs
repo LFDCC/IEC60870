@@ -518,6 +518,18 @@ namespace IEC60870.CS104
 
         private void Raise(ApduConnectionEvent ev) => EventHandler?.Invoke(ev);
 
+        /// <summary>
+        /// 通知订阅方连接已断开（非主动）。由传输层在收到远端关闭/超时/协议错误后调用；
+        /// 主动 <see cref="Iec104Client.DisconnectAsync"/> 不应调用本方法。若已 Dispose 则无操作。
+        /// </summary>
+        public void NotifyClosed()
+        {
+            if (_disposed)
+                return;
+
+            Raise(ApduConnectionEvent.ConnectionClosed);
+        }
+
         private static void Signal(ref TaskCompletionSource<bool> field)
         {
             TaskCompletionSource<bool> waiter = Interlocked.Exchange(ref field, null);

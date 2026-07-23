@@ -47,6 +47,8 @@ namespace IEC60870.CS104
         private CancellationTokenSource _cts;
         private Task _timerLoop;
         private bool _dataTransferStarted;
+        /// <summary>标记本次关闭是否由本地主动 DisconnectAsync 发起，避免重复派发 ConnectionClosed。</summary>
+        private bool _intentionalClose;
 
         // 接收侧粘包重组器（单线程访问：TouchSocket 接收回调串行）
         private ApduFramer _framer;
@@ -121,6 +123,8 @@ namespace IEC60870.CS104
         /// <summary>建立 TCP 连接（不自动 STARTDT）。</summary>
         public async Task ConnectAsync(CancellationToken cancellationToken = default)
         {
+            _intentionalClose = false;
+            _dataTransferStarted = false;
             _connection = new ApduConnection(_apci, _al, this, isServerSide: false);
             // 把连接前已订阅的事件转发到新建连接（支持"先订阅后连接"）
             if (_asduReceived != null) _connection.AsduReceived += _asduReceived;
@@ -219,6 +223,7 @@ namespace IEC60870.CS104
         /// <summary>主动断开连接。</summary>
         public async Task DisconnectAsync()
         {
+            _intentionalClose = true;
             try { _cts?.Cancel(); } catch { /* ignore */ }
             try { await CloseAsync("client disconnect").ConfigureAwait(false); } catch { /* ignore */ }
             await CleanupAsync().ConfigureAwait(false);
@@ -270,6 +275,12 @@ namespace IEC60870.CS104
 
         protected override async Task OnTcpClosed(ClosedEventArgs e)
         {
+            // 仅当连接因远端关闭/超时/协议错误等非主动原因断开时，向订阅方派发 ConnectionClosed 事件。
+            // 主动 DisconnectAsync 已置 _intentionalClose，不重复通知。
+            if (!_intentionalClose && _connection != null)
+                _connection.NotifyClosed();
+
+            _intentionalClose = false;
             await CleanupAsync().ConfigureAwait(false);
             await base.OnTcpClosed(e).ConfigureAwait(false);
         }

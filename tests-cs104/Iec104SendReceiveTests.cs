@@ -289,4 +289,69 @@ namespace IEC60870.CS104.Tests
             Assert.AreEqual(3, r.NumberOfElements);
         }
     }
+
+    /// <summary>
+    /// 验证连接断开时客户端能收到 ConnectionEvent（ConnectionClosed）。
+    /// 模拟“手动关闭服务端窗口”= 服务端停止监听并断开所有会话，客户端应被通知。
+    /// </summary>
+    [TestFixture]
+    public class Iec104ConnectionClosedTests
+    {
+        private const int Port = 24199;
+        private Iec104Server _server;
+        private Iec104Client _client;
+        private readonly System.Collections.Generic.List<ApduConnectionEvent> _events = new();
+
+        [SetUp]
+        public async Task SetUp()
+        {
+            _events.Clear();
+            _server = new Iec104Server();
+            await _server.StartAsync(Port);
+
+            _client = new Iec104Client("127.0.0.1", Port);
+            _client.ConnectionEvent += ev =>
+            {
+                lock (_events) { _events.Add(ev); }
+            };
+            // Autostart = true -> 发送 STARTDT_ACT 并等待 STARTDT_CON，激活数据传输
+            await _client.ConnectAsync();
+        }
+
+        [TearDown]
+        public async Task TearDown()
+        {
+            try { await _client.DisconnectAsync(); } catch { /* ignore */ }
+            try { _server.Dispose(); } catch { /* ignore */ }
+        }
+
+        [Test]
+        public async Task ServerStop_RaisesConnectionClosedOnClient()
+        {
+            Assert.IsTrue(_client.IsActivated, "client should be activated before server stop");
+
+            // 模拟“手动关闭服务端运行窗口”：停止服务端监听并断开所有会话
+            await _server.StopAsync();
+
+            // 等待客户端收到 ConnectionClosed（远端关闭 -> OnTcpClosed -> NotifyClosed）
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            bool gotClosed = false;
+            while (sw.Elapsed < TimeSpan.FromSeconds(5))
+            {
+                lock (_events)
+                {
+                    if (_events.Contains(ApduConnectionEvent.ConnectionClosed))
+                    {
+                        gotClosed = true;
+                        break;
+                    }
+                }
+                await Task.Delay(50);
+            }
+
+            Assert.IsTrue(gotClosed,
+                "client ConnectionEvent should contain ConnectionClosed after server stop. Received: " +
+                string.Join(",", _events));
+        }
+    }
 }

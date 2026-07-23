@@ -38,12 +38,24 @@ namespace IEC60870.CS104
     /// <summary>连接层状态/事件。</summary>
     public enum ApduConnectionEvent
     {
+        /// <summary>收到 STARTDT_CON（客户端已收到激活确认）。</summary>
         StartDtConReceived,
+        /// <summary>收到 STOPDT_CON（客户端已收到停止确认）。</summary>
         StopDtConReceived,
+        /// <summary>收到 STARTDT_ACT（服务端侧：对端请求激活）。</summary>
         StartDtActReceived,
+        /// <summary>收到 STOPDT_ACT（服务端侧：对端请求停止）。</summary>
         StopDtActReceived,
+        /// <summary>数据传输已激活。</summary>
         Activated,
+        /// <summary>数据传输已停止。</summary>
         Deactivated,
-        ConnectionError
+        /// <summary>协议/IO 层错误导致的连接异常。</summary>
+        ConnectionError,
+        /// <summary>
+        /// 连接已断开（非主动）。涵盖：远端关闭（FIN/RST）、链路超时（T1/T3）、协议帧错误等。
+        /// 主动 <see cref="Iec104Client.DisconnectAsync"/> 不会触发本事件。
+        /// </summary>
+        ConnectionClosed
     }
 }
