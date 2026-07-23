@@ -54,18 +54,33 @@ namespace IEC60870.Core.Time
 
         public override bool Equals(object obj)
         {
-            if (obj == null)
+            if (obj is CP56Time2a other)
+                return Equals(other);
+
+            return false;
+        }
+
+        /// <summary>按字节逐位比较（值相等），避免哈希碰撞被误判为相等。</summary>
+        public bool Equals(CP56Time2a other)
+        {
+            if (other is null)
                 return false;
 
-            if (!(obj is CP56Time2a))
-                return false;
-
-            return (GetHashCode() == obj.GetHashCode());
+            for (int i = 0; i < encodedValue.Length; i++)
+            {
+                if (encodedValue[i] != other.encodedValue[i])
+                    return false;
+            }
+            return true;
         }
 
         public override int GetHashCode()
         {
-            return new System.Numerics.BigInteger(encodedValue).GetHashCode();
+            // 稳定散列，且无需每次分配 BigInteger（代码评审 #13）。
+            int h = 17;
+            for (int i = 0; i < encodedValue.Length; i++)
+                h = h * 31 + encodedValue[i];
+            return h;
         }
 
         /// <summary>

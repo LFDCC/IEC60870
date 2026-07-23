@@ -39,6 +39,12 @@ namespace IEC60870.CS104
         /// <summary>数据传输是否已激活（收到 STARTDT_ACT 后）。</summary>
         public bool IsActivated => _connection?.IsActive ?? false;
 
+        /// <summary>
+        /// 最近一次底层连接断开的原因。仅当 <see cref="Iec104Server.ConnectionEvent"/> 收到
+        /// <see cref="ApduConnectionEvent.ConnectionClosed"/> 后有意义；未连接时为 <see cref="ConnectionCloseReason.Unknown"/>。
+        /// </summary>
+        public ConnectionCloseReason LastCloseReason => _connection?.CloseReason ?? ConnectionCloseReason.Unknown;
+
         // ── IApduSink ─────────────────────────────────────────────────
 
         ValueTask IApduSink.SendAsync(ReadOnlyMemory<byte> apdu, CancellationToken cancellationToken)
@@ -51,7 +57,8 @@ namespace IEC60870.CS104
         {
             using var writer = new PooledApduWriter();
             asdu.Encode(writer, _server.Parameters);
-            await _connection.SendAsduAsync(writer, LinkToken(cancellationToken)).ConfigureAwait(false);
+            using var link = LinkScoped(cancellationToken);
+            await _connection.SendAsduAsync(writer, link.Token).ConfigureAwait(false);
         }
 
         /// <summary>标记本次关闭由服务端主动 StopAsync 发起，避免重复派发 ConnectionClosed。</summary>
@@ -84,6 +91,7 @@ namespace IEC60870.CS104
 
                 if (!_framer.Process(_connection))
                 {
+                    _connection.MarkCloseReason(ConnectionCloseReason.ProtocolError);
                     await CloseAsync("protocol error").ConfigureAwait(false);
                     return;
                 }
@@ -121,6 +129,7 @@ namespace IEC60870.CS104
                     await Task.Delay(_connection.SuggestedTimerIntervalMs, ct).ConfigureAwait(false);
                     if (!await _connection.CheckTimeoutsAsync(ct).ConfigureAwait(false))
                     {
+                        _connection.MarkCloseReason(ConnectionCloseReason.Timeout);
                         await CloseAsync("timeout").ConfigureAwait(false);
                         break;
                     }
@@ -130,9 +139,22 @@ namespace IEC60870.CS104
             catch (Exception) { /* connection likely closing */ }
         }
 
-        private CancellationToken LinkToken(CancellationToken ct)
+        /// <summary>
+        /// 将外部 token 与连接生命周期 <c>_cts</c> 链接的轻量句柄（见 <see cref="Iec104Client"/> 同名的 #5 修复）。
+        /// 仅当传入可取消 token 时分配 <see cref="CancellationTokenSource"/>，并在 <c>using</c> 结束时释放。
+        /// </summary>
+        private readonly struct CtsLink : IDisposable
+        {
+            private readonly CancellationTokenSource _src;
+            private readonly bool _owns;
+            public CtsLink(CancellationTokenSource src, bool owns) { _src = src; _owns = owns; }
+            public CancellationToken Token => _src?.Token ?? default;
+            public void Dispose() { if (_owns) _src?.Dispose(); }
+        }
+
+        private CtsLink LinkScoped(CancellationToken ct)
             => ct.CanBeCanceled
-                ? CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token).Token
-                : _cts.Token;
+                ? new CtsLink(CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token), owns: true)
+                : new CtsLink(_cts, owns: false);
     }
 }

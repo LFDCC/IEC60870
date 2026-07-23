@@ -50,7 +50,7 @@ namespace IEC60870.CS101
         /// <param name="cot">Cause of transmission</param>
         /// <param name="ca">Common address</param>
         /// <param name="qoi">Qualifier of interrogation (20 = station interrogation)</param>
-        /// <exception cref="ConnectionException">description</exception>
+
         public abstract void SendInterrogationCommand(CauseOfTransmission cot, int ca, byte qoi);
 
         /// <summary>
@@ -59,7 +59,7 @@ namespace IEC60870.CS101
         /// <param name="cot">Cause of transmission</param>
         /// <param name="ca">Common address</param>
         /// <param name="qcc">Qualifier of counter interrogation command</param>
-        /// <exception cref="ConnectionException">description</exception>
+
         public abstract void SendCounterInterrogationCommand(CauseOfTransmission cot, int ca, byte qcc);
 
         /// <summary>
@@ -71,7 +71,7 @@ namespace IEC60870.CS101
         /// 
         /// <param name="ca">Common address</param>
         /// <param name="ioa">Information object address</param>
-        /// <exception cref="ConnectionException">description</exception>
+
         public abstract void SendReadCommand(int ca, int ioa);
 
         /// <summary>
@@ -79,7 +79,7 @@ namespace IEC60870.CS101
         /// </summary>
         /// <param name="ca">Common address</param>
         /// <param name="time">the new time to set</param>
-        /// <exception cref="ConnectionException">description</exception>
+
         public abstract void SendClockSyncCommand(int ca, CP56Time2a time);
 
         /// <summary>
@@ -89,7 +89,7 @@ namespace IEC60870.CS101
         /// Not required and supported by IEC 60870-5-104. 
         /// 
         /// <param name="ca">Common address</param>
-        /// <exception cref="ConnectionException">description</exception>
+
         public abstract void SendTestCommand(int ca);
 
         /// <summary>
@@ -98,7 +98,7 @@ namespace IEC60870.CS101
         /// <param name="ca">Common address</param>
         /// <param name="tsc">test sequence number</param>
         /// <param name="time">test timestamp</param>
-        /// <exception cref="ConnectionException">description</exception>
+
         public abstract void SendTestCommandWithCP56Time2a(int ca, ushort tsc, CP56Time2a time);
 
         /// <summary>
@@ -107,7 +107,7 @@ namespace IEC60870.CS101
         /// <param name="cot">Cause of transmission</param>
         /// <param name="ca">Common address</param>
         /// <param name="qrp">Qualifier of reset process command</param>
-        /// <exception cref="ConnectionException">description</exception>
+
         public abstract void SendResetProcessCommand(CauseOfTransmission cot, int ca, byte qrp);
 
         /// <summary>
@@ -116,7 +116,7 @@ namespace IEC60870.CS101
         /// <param name="cot">Cause of transmission</param>
         /// <param name="ca">Common address</param>
         /// <param name="delay">delay for acquisition</param>
-        /// <exception cref="ConnectionException">description</exception>
+
         public abstract void SendDelayAcquisitionCommand(CauseOfTransmission cot, int ca, CP16Time2a delay);
 
         /// <summary>
@@ -137,7 +137,7 @@ namespace IEC60870.CS101
         /// <param name="cot">Cause of transmission (use ACTIVATION to start a control sequence)</param>
         /// <param name="ca">Common address</param>
         /// <param name="sc">Information object of the command</param>
-        /// <exception cref="ConnectionException">description</exception>
+
         public abstract void SendControlCommand(CauseOfTransmission cot, int ca, InformationObject sc);
 
         /// <summary>

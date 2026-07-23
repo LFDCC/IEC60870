@@ -80,7 +80,7 @@ namespace cs104_client3
 
         public static async Task Main(string[] args)
         {
-            Console.WriteLine("Using IEC60870.Core.NET version " + LibraryCommon.GetLibraryVersionString());
+            Console.WriteLine("Using IEC60870.Core.NET version " + typeof(ASDU).Assembly.GetName().Version.ToString());
 
             Iec104Client con = new Iec104Client("127.0.0.1", 2404);
             _client = con;
@@ -96,6 +96,7 @@ namespace cs104_client3
 
             await Task.Delay(2000);
 
+            Console.ReadKey();
             Console.WriteLine("Closing connection");
             await con.DisconnectAsync();
         }

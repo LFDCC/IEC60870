@@ -115,18 +115,34 @@ namespace IEC60870.CS101.LinkLayer
 
         public void Write(ReadOnlySpan<byte> data)
         {
+            if (data.IsEmpty)
+                return;
+
+            int accepted;
             lock (_lock)
             {
                 if (_closed)
                     return;
+                accepted = 0;
                 foreach (byte b in data)
                 {
+                    if (_count == _buf.Length)
+                    {
+                        // 缓冲已满：丢弃最旧字节以接纳新字节（有界环形，避免静默覆盖未读数据导致帧损坏，代码评审 #11）。
+                        _head = (_head + 1) % _buf.Length;
+                        _count--;
+                    }
                     _buf[_tail] = b;
                     _tail = (_tail + 1) % _buf.Length;
                     _count++;
+                    accepted++;
                 }
             }
-            try { _signal.Release(data.Length); } catch { /* disposed */ }
+            // 仅对实际写入的字节放行信号量，避免溢出丢弃时信号量计数虚高。
+            if (accepted > 0)
+            {
+                try { _signal.Release(accepted); } catch { /* disposed */ }
+            }
         }
 
         public void Close()
@@ -134,6 +150,24 @@ namespace IEC60870.CS101.LinkLayer
             _closed = true;
             _closeCts.Cancel();
             try { _signal.Release(); } catch { /* disposed */ }
+        }
+
+        /// <summary>清空已缓冲但未消费的字节（连接切换/重连时丢弃上一会话的残留帧，避免帧损坏）。</summary>
+        /// <remarks>
+        /// 注意：本方法不会回收已通过 <see cref="Write"/> 释放到信号量的许可。已派发的许可会让
+        /// <see cref="ReadAsync"/> 在 <c>_count == 0</c> 时仍通过等待，并返回 0 字节——调用方会把它
+        /// 当作「读超时/对端关闭」并重试。这与 <see cref="StreamByteSource"/> 在超时时返回 0 的语义
+        /// 一致，是可接受的（清空通常发生在连接切换时，下一次 <see cref="ReadAsync"/> 会重新等待
+        /// 起始字节）。但若调用方对 0 采取「连接已关闭」的终止动作，则需在 Clear 后让读循环重试。
+        /// </remarks>
+        public void Clear()
+        {
+            lock (_lock)
+            {
+                _head = 0;
+                _tail = 0;
+                _count = 0;
+            }
         }
 
         public async ValueTask<int> ReadAsync(Memory<byte> buffer, int timeoutMs, CancellationToken ct)

@@ -88,8 +88,13 @@ namespace IEC60870.Core.InformationObjects
             if ((msg.Length - startIndex) < GetEncodedSize())
                 throw new ASDUParsingException("Message too small");
 
-            /* parse float value */
-            value = System.BitConverter.ToSingle(msg, startIndex);
+            /* parse float value —— 与 Encode 对称：字节以大端平台存储为小端，故解码时
+               在非小端平台上需反转后再交给 BitConverter（代码评审 #18）。 */
+            byte[] floatBytes = new byte[4];
+            Buffer.BlockCopy(msg, startIndex, floatBytes, 0, 4);
+            if (System.BitConverter.IsLittleEndian == false)
+                System.Array.Reverse(floatBytes);
+            value = System.BitConverter.ToSingle(floatBytes, 0);
             startIndex += 4;
 
             /* parse QDS (quality) */

@@ -164,11 +164,21 @@ namespace IEC60870.CS104
         }
 
         /// <summary>从收到的 ACT-CON 读 Select 位：IOA 之后第一个限定词字节的 bit7。</summary>
+        /// <remarks>
+        /// 直接读字节（零分配），与 <see cref="GetSelectBit(InformationObject)"/> 的位定义一致：
+        /// C_SC/DC/RC 的 SCO/DCQ、C_SE 的 QOS 均为信息元素首字节 bit7 = Select；
+        /// 无 Select 位的命令（如 C_BO_NA_1）按 false 处理。
+        /// </remarks>
         private bool ReadSelectBit(in AsduView view)
         {
-            byte[] raw = view.Raw.ToArray();
-            ASDU asdu = new ASDU(_al, raw, 0, raw.Length);
-            return asdu.NumberOfElements > 0 && GetSelectBit(asdu.GetElement(0));
+            if (view.TypeId == TypeID.C_BO_NA_1)
+                return false; // 无 Select 位
+
+            ReadOnlySpan<byte> raw = view.Raw;
+            int off = view.HeaderLength + _al.SizeOfIOA; // 第一个信息元素的限定词字节
+            if (off < raw.Length)
+                return (raw[off] & 0x80) != 0;
+            return false;
         }
 
         /// <summary>

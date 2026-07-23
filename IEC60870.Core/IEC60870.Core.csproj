@@ -21,17 +21,16 @@
   <ItemGroup>
     <Compile Include="BufferFrame.cs" />
     <Compile Include="CommandBuilder.cs" />
-    <Compile Include="ConnectionException.cs" />
+
     <Compile Include="Frame.cs" />
     <Compile Include="HexUtils.cs" />
-    <Compile Include="LibraryCommon.cs" />
-    <Compile Include="Core/ASDU.cs" />
-    <Compile Include="Core/ASDUDecoder.cs" />
-    <Compile Include="Core/ASDUParsingException.cs" />
-    <Compile Include="Core/ApplicationLayerParameters.cs" />
-    <Compile Include="Core/AsduView.cs" />
-    <Compile Include="Core/CauseOfTransmission.cs" />
-    <Compile Include="Core/TypeID.cs" />
+    <Compile Include="ASDU.cs" />
+    <Compile Include="ASDUDecoder.cs" />
+    <Compile Include="ASDUParsingException.cs" />
+    <Compile Include="ApplicationLayerParameters.cs" />
+    <Compile Include="AsduView.cs" />
+    <Compile Include="CauseOfTransmission.cs" />
+    <Compile Include="TypeID.cs" />
     <Compile Include="File/FileObjects.cs" />
     <Compile Include="InformationObjects/BinaryCounterReading.cs" />
     <Compile Include="InformationObjects/Bitstring32.cs" />

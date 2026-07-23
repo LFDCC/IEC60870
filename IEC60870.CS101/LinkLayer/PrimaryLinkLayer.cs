@@ -15,7 +15,7 @@ using System;
 
 namespace IEC60870.CS101.LinkLayer
 {
-    public class LinkLayerBusyException : IEC60870.Core.ConnectionException
+    public class LinkLayerBusyException : Exception
     {
         public LinkLayerBusyException(string message)
             : base(message)

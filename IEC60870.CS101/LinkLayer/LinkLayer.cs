@@ -333,8 +333,11 @@ namespace IEC60870.CS101.LinkLayer
         {
             if (_sendLen + msgSize > _sendBuffer.Length)
             {
-                // 缓冲不足：先冲刷再继续（极端情况，正常每轮都会清空）
-                FlushSendsAsync(default).GetAwaiter().GetResult();
+                // 缓冲不足：扩展缓冲继续累积，避免同步阻塞冲刷线程池线程做异步 I/O
+                // （原 FlushSendsAsync(...).GetAwaiter().GetResult() 在高负载下可能线程池饥饿，代码评审 #10）。
+                // 每轮 RunAsync 末尾都会清空，实际增长有限。
+                int need = _sendLen + msgSize;
+                Array.Resize(ref _sendBuffer, Math.Max(_sendBuffer.Length * 2, need));
             }
 
             Array.Copy(msg, 0, _sendBuffer, _sendLen, msgSize);

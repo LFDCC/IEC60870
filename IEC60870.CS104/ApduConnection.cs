@@ -9,6 +9,8 @@
  */
 
 using System;
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 using IEC60870.Core;
@@ -76,10 +78,15 @@ namespace IEC60870.CS104
         private TaskCompletionSource<bool> _stopDtConWaiter;
 
         // ── k 窗口背压等待 ────────────────────────────────────────────
-        private TaskCompletionSource<bool> _windowWaiter;
+        // 用队列保存所有等待者：k 窗口满时多个并发发送者各自入队，窗口腾出（确认到达）时
+        // 一次性唤醒全部，由它们在 SendAsduAsync 的 while 循环中重新检查 IsSentBufferFull()。
+        // 原单字段 _windowWaiter 在并发下会被"后写覆盖前写"，导致除最后一个外的等待者永久孤挂。
+        private readonly ConcurrentQueue<TaskCompletionSource<bool>> _windowWaiters = new();
 
         private bool _active;
         private bool _disposed;
+        private bool _closeNotified;                       // 保证 ConnectionClosed 仅派发一次
+        private ConnectionCloseReason _closeReason = ConnectionCloseReason.Unknown;
 
         /// <summary>是否检查序列号（默认 true）。</summary>
         public bool CheckSequenceNumbers { get; set; } = true;
@@ -121,27 +128,36 @@ namespace IEC60870.CS104
         {
             long now = Now;
 
-            if (!_t2Triggered)
+            // 接收序号/确认计数等字段会被接收线程（本方法）与定时器线程
+            // （CheckTimeoutsAsync / SendSAckAsync）跨线程读写，统一在 _kLock 下操作，
+            // 既保证原子性也建立内存可见性（happens-before），避免 w 阈值/T2 时序偏差。
+            lock (_kLock)
             {
-                _t2Triggered = true;
-                _lastConfirmationTime = now; // 启动 T2
+                if (!_t2Triggered)
+                {
+                    _t2Triggered = true;
+                    _lastConfirmationTime = now; // 启动 T2
+                }
+
+                // 校验 N(S)：必须等于我方期望的接收序列号
+                if (frameSendSeq != _receiveSeq)
+                    return false;
+
+                // 校验对端 N(R)，并从 k 缓冲移除已确认帧
+                if (!CheckAndRemoveConfirmed(frameRecvSeq))
+                    return false;
+
+                _receiveSeq = (_receiveSeq + 1) % 32768;
+                _unconfirmedReceived++;
             }
 
-            // 校验 N(S)：必须等于我方期望的接收序列号
-            if (frameSendSeq != _receiveSeq)
-                return false;
-
-            // 校验对端 N(R)，并从 k 缓冲移除已确认帧
-            if (!CheckAndRemoveConfirmed(frameRecvSeq))
-                return false;
-
-            _receiveSeq = (_receiveSeq + 1) % 32768;
-            _unconfirmedReceived++;
-
-            // 同步分发给用户（零拷贝视图，多订阅者）
+            // 同步分发给用户（零拷贝视图，多订阅者）。用户回调在锁外执行，避免重入死锁。
             if (asdu.Length > 0)
             {
                 var view = new AsduView(asdu, _al);
+                // 过短的 ASDU（头部不全）属协议错误，直接关闭连接，避免用户回调 IndexOutOfRange
+                if (!view.IsValid)
+                    return false;
                 AsduReceived?.Invoke(in view);
             }
 
@@ -260,7 +276,7 @@ namespace IEC60870.CS104
                     if (!IsSentBufferFull())
                         break;
                     waiter = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                    _windowWaiter = waiter;
+                    _windowWaiters.Enqueue(waiter);
                 }
                 await waiter.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -342,7 +358,8 @@ namespace IEC60870.CS104
 
         private async ValueTask SendSAckAsync(CancellationToken cancellationToken)
         {
-            byte[] buf = new byte[ApduCodec.ApciLength];
+            // 从池租借 6 字节缓冲（避免每条 S 确认的热路径堆分配），发送完成后归还。
+            byte[] buf = ArrayPool<byte>.Shared.Rent(ApduCodec.ApciLength);
             int nr;
             lock (_kLock)
             {
@@ -356,11 +373,12 @@ namespace IEC60870.CS104
             await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await _sink.SendAsync(buf, cancellationToken).ConfigureAwait(false);
+                await _sink.SendAsync(buf.AsMemory(0, ApduCodec.ApciLength), cancellationToken).ConfigureAwait(false);
             }
             finally
             {
                 _sendLock.Release();
+                ArrayPool<byte>.Shared.Return(buf);
             }
         }
 
@@ -389,12 +407,17 @@ namespace IEC60870.CS104
             }
 
             // T2：有未确认的已收 I 帧且超过 T2 则发 S 确认
-            if (_unconfirmedReceived > 0)
+            // 这些字段由接收线程在 _kLock 下写入，此处也需在 _kLock 下读取以保证可见性。
+            bool t2Due;
+            lock (_kLock)
             {
-                if (_t2Triggered && (now - _lastConfirmationTime) >= _apci.T2 * 1000L)
-                {
-                    await SendSAckAsync(cancellationToken).ConfigureAwait(false);
-                }
+                t2Due = _unconfirmedReceived > 0
+                    && _t2Triggered
+                    && (now - _lastConfirmationTime) >= _apci.T2 * 1000L;
+            }
+            if (t2Due)
+            {
+                await SendSAckAsync(cancellationToken).ConfigureAwait(false);
             }
 
             // T1（U 帧）：等待 TESTFR_CON/STARTDT_CON 超时
@@ -503,31 +526,57 @@ namespace IEC60870.CS104
             }
 
             if (freed)
-                ReleaseWindowWaiter();
+                ReleaseWindowWaiters();
 
             return true;
         }
 
-        private void ReleaseWindowWaiter()
+        private void ReleaseWindowWaiters()
         {
-            TaskCompletionSource<bool> waiter = Interlocked.Exchange(ref _windowWaiter, null);
-            waiter?.TrySetResult(true);
+            // 唤醒全部等待者；它们会在 SendAsduAsync 的 while 循环里重新检查 k 窗口是否还有空位，
+            // 仅真正获得空位者继续发送，其余再次入队等待。这样即使一次确认释放多个槽位也正确。
+            while (_windowWaiters.TryDequeue(out TaskCompletionSource<bool> waiter))
+                waiter.TrySetResult(true);
         }
 
         private void ResetT3Timeout(long now) => _nextT3Timeout = now + _apci.T3 * 1000L;
+
+        /// <summary>最近一次 <see cref="ConnectionClosed"/> 事件的断开原因（只读；连接存活期间为 Unknown）。</summary>
+        public ConnectionCloseReason CloseReason => _closeReason;
 
         private void Raise(ApduConnectionEvent ev) => EventHandler?.Invoke(ev);
 
         /// <summary>
         /// 通知订阅方连接已断开（非主动）。由传输层在收到远端关闭/超时/协议错误后调用；
-        /// 主动 <see cref="Iec104Client.DisconnectAsync"/> 不应调用本方法。若已 Dispose 则无操作。
+        /// 主动 <see cref="Iec104Client.DisconnectAsync"/> / <see cref="Iec104Server.StopAsync"/> 不应调用本方法。
         /// </summary>
-        public void NotifyClosed()
+        /// <param name="reason">断开原因；若此前已通过 <see cref="MarkCloseReason"/> 标记了更具体的原因则忽略本参数。</param>
+        /// <remarks>
+        /// 幂等：仅首次调用会派发 <see cref="ApduConnectionEvent.ConnectionClosed"/>（之后即使重复关闭或 Dispose 也不会重复通知）。
+        /// 若已 Dispose 则无操作。
+        /// </remarks>
+        public void NotifyClosed(ConnectionCloseReason reason = ConnectionCloseReason.RemoteClosed)
         {
-            if (_disposed)
+            if (_disposed || _closeNotified)
                 return;
 
+            if (_closeReason == ConnectionCloseReason.Unknown)
+                _closeReason = reason;
+
+            _closeNotified = true;
             Raise(ApduConnectionEvent.ConnectionClosed);
+        }
+
+        /// <summary>
+        /// 预先标记断开原因。由超时 / 协议错误检测路径在底层 socket 关闭回调（<c>OnTcpClosed</c>）之前调用，
+        /// 使最终派发的 <see cref="ConnectionClosed"/> 携带准确原因。仅在尚未派发、且尚未标记过时生效。
+        /// </summary>
+        internal void MarkCloseReason(ConnectionCloseReason reason)
+        {
+            if (_closeNotified || _closeReason != ConnectionCloseReason.Unknown)
+                return;
+
+            _closeReason = reason;
         }
 
         private static void Signal(ref TaskCompletionSource<bool> field)
@@ -544,7 +593,7 @@ namespace IEC60870.CS104
             // 唤醒所有等待者避免悬挂
             Signal(ref _startDtConWaiter);
             Signal(ref _stopDtConWaiter);
-            ReleaseWindowWaiter();
+            ReleaseWindowWaiters();
             _sendLock.Dispose();
         }
     }

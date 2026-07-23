@@ -21,13 +21,13 @@ using System;
 using System.Text;
 using IEC60870.Core;
 
-namespace IEC60870.CS104;
-
-/// <summary>
-/// 把 CS104 APDU / ASDU 渲染为便于开发调试的报文文本（IEC60870.CS104 内置，全局可用）。
-/// </summary>
-public static class ApduTelegramExtensions
+namespace IEC60870.CS104
 {
+    /// <summary>
+    /// 把 CS104 APDU / ASDU 渲染为便于开发调试的报文文本（IEC60870.CS104 内置，全局可用）。
+    /// </summary>
+    public static class ApduTelegramExtensions
+    {
     #region 报文(APDU)格式化
 
     /// <summary>
@@ -119,5 +119,6 @@ public static class ApduTelegramExtensions
         return apdu.ToTelegram(direction);
     }
 
-    #endregion
+        #endregion
+    }
 }

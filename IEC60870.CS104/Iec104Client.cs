@@ -92,6 +92,13 @@ namespace IEC60870.CS104
         public bool IsActivated => _connection?.IsActive ?? false;
 
         /// <summary>
+        /// 最近一次底层连接断开的原因。仅当 <see cref="ConnectionEvent"/> 收到
+        /// <see cref="ApduConnectionEvent.ConnectionClosed"/> 后有意义；未连接或对象已释放时为 null。
+        /// 可用于重连策略的日志与差异化处理。
+        /// </summary>
+        public ConnectionCloseReason? LastCloseReason => _connection?.CloseReason;
+
+        /// <summary>
         /// 连接成功后是否自动发送 STARTDT_ACT 激活数据传输。默认 <c>true</c>，与原库
         /// <c>autostart</c> 行为一致；设为 <c>false</c> 则需手动调用 <see cref="StartDataTransferAsync"/>。
         /// </summary>
@@ -123,6 +130,11 @@ namespace IEC60870.CS104
         /// <summary>建立 TCP 连接（不自动 STARTDT）。</summary>
         public async Task ConnectAsync(CancellationToken cancellationToken = default)
         {
+            // 重连/重复调用：先释放上一次连接遗留的 CTS / 连接 / 帧重组器，避免资源泄漏（代码评审 #7）
+            _cts?.Dispose();
+            _connection?.Dispose();
+            _framer?.Dispose();
+
             _intentionalClose = false;
             _dataTransferStarted = false;
             _connection = new ApduConnection(_apci, _al, this, isServerSide: false);
@@ -153,20 +165,35 @@ namespace IEC60870.CS104
             if (_dataTransferStarted)
                 return;
 
-            _dataTransferStarted = true;
-            await _connection.StartDataTransferAsync(Link(cancellationToken)).AsTask().ConfigureAwait(false);
+            // 必须在 STARTDT_CON 确认成功后再置位，否则超时抛异常会使标志卡在 true，
+            // 重连/重试时 StartDataTransferAsync 变为 no-op，连接永不激活（代码评审 #6）。
+            try
+            {
+                using var link = LinkScoped(cancellationToken);
+                await _connection.StartDataTransferAsync(link.Token).AsTask().ConfigureAwait(false);
+                _dataTransferStarted = true;
+            }
+            catch
+            {
+                _dataTransferStarted = false; // 允许重试
+                throw;
+            }
         }
 
         /// <summary>发送 STOPDT_ACT 并等待 STOPDT_CON。</summary>
         public Task StopDataTransferAsync(CancellationToken cancellationToken = default)
-            => _connection.StopDataTransferAsync(Link(cancellationToken)).AsTask();
+        {
+            using var link = LinkScoped(cancellationToken);
+            return _connection.StopDataTransferAsync(link.Token).AsTask();
+        }
 
         /// <summary>发送一个 ASDU（I 帧）。k 窗口满时异步背压等待，不阻塞线程。</summary>
         public async Task SendAsync(ASDU asdu, CancellationToken cancellationToken = default)
         {
             using var writer = new PooledApduWriter();
             asdu.Encode(writer, _al);
-            await _connection.SendAsduAsync(writer, Link(cancellationToken)).ConfigureAwait(false);
+            using var link = LinkScoped(cancellationToken);
+            await _connection.SendAsduAsync(writer, link.Token).ConfigureAwait(false);
         }
 
         // ── 标准命令便捷方法（异步）─────────────────────────────────
@@ -229,8 +256,29 @@ namespace IEC60870.CS104
             await CleanupAsync().ConfigureAwait(false);
         }
 
-        private CancellationToken Link(CancellationToken ct)
-            => ct.CanBeCanceled ? CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token).Token : _cts.Token;
+        /// <summary>
+        /// 将外部 <see cref="CancellationToken"/> 与连接生命周期 <c>_cts</c> 链接的轻量句柄。
+        /// 仅在传入可取消的 token 时才真正分配 <see cref="CancellationTokenSource"/>，
+        /// 并在 <c>using</c> 结束时释放，避免热路径（每次 SendAsync）泄漏 CTS（见代码评审 #5）。
+        /// 无可取消外部 token 时复用 <c>_cts.Token</c>，零分配。
+        /// </summary>
+        private readonly struct CtsLink : IDisposable
+        {
+            private readonly CancellationTokenSource _src;
+            private readonly bool _owns;
+            public CtsLink(CancellationTokenSource src, bool owns)
+            {
+                _src = src;
+                _owns = owns;
+            }
+            public CancellationToken Token => _src?.Token ?? default;
+            public void Dispose() { if (_owns) _src?.Dispose(); }
+        }
+
+        private CtsLink LinkScoped(CancellationToken ct)
+            => ct.CanBeCanceled
+                ? new CtsLink(CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token), owns: true)
+                : new CtsLink(_cts, owns: false);
 
         // ── 接收（TouchSocket 回调，串行）─────────────────────────────
 
@@ -243,6 +291,7 @@ namespace IEC60870.CS104
 
                 if (!_framer.Process(_connection))
                 {
+                    _connection.MarkCloseReason(ConnectionCloseReason.ProtocolError);
                     await CloseAsync("protocol error").ConfigureAwait(false);
                     return;
                 }
@@ -264,6 +313,7 @@ namespace IEC60870.CS104
                     await Task.Delay(_connection.SuggestedTimerIntervalMs, ct).ConfigureAwait(false);
                     if (!await _connection.CheckTimeoutsAsync(ct).ConfigureAwait(false))
                     {
+                        _connection.MarkCloseReason(ConnectionCloseReason.Timeout);
                         await CloseAsync("timeout").ConfigureAwait(false);
                         break;
                     }
@@ -290,6 +340,8 @@ namespace IEC60870.CS104
             _connection?.Dispose();
             _framer?.Dispose();
             _framer = null;
+            // 关闭即释放生命周期 CTS；重连时 ConnectAsync 会重新创建，故此处释放安全。
+            _cts?.Dispose();
             return default;
         }
 

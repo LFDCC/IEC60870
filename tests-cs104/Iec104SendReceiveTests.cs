@@ -352,6 +352,10 @@ namespace IEC60870.CS104.Tests
             Assert.IsTrue(gotClosed,
                 "client ConnectionEvent should contain ConnectionClosed after server stop. Received: " +
                 string.Join(",", _events));
+
+            // 断连原因应可查询，且服务端主动停止对客户端而言属于“远端关闭”
+            Assert.AreEqual(ConnectionCloseReason.RemoteClosed, _client.LastCloseReason,
+                "client LastCloseReason should be RemoteClosed after server stop");
         }
     }
 

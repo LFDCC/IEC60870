@@ -246,20 +246,23 @@ namespace cs104_server3
 
             while (running)
             {
-                await Task.Delay(100);
+                await Task.Delay(30000);
 
-                if (waitTime > 0)
-                    waitTime -= 100;
-                else
-                {
-                    ASDU newAsdu = new ASDU(server.Parameters, CauseOfTransmission.PERIODIC, false, false, 2, 1, false);
-                    newAsdu.AddInformationObject(new MeasuredValueScaled(110, -1, new QualityDescriptor()));
-                    await server.BroadcastAsync(newAsdu);
+                //if (waitTime > 0)
+                //    waitTime -= 100;
+                //else
+                //{
+                //    ASDU newAsdu = new ASDU(server.Parameters, CauseOfTransmission.PERIODIC, false, false, 2, 1, false);
+                //    newAsdu.AddInformationObject(new MeasuredValueScaled(110, -1, new QualityDescriptor()));
+                //    await server.BroadcastAsync(newAsdu);
 
-                    waitTime = 5000;
-                }
+                //    waitTime = 5000;
+                //}
+                ASDU newAsdu = new ASDU(server.Parameters, CauseOfTransmission.PERIODIC, false, false, 2, 1, false);
+                newAsdu.AddInformationObject(new MeasuredValueScaled(110, -1, new QualityDescriptor()));
+                await server.BroadcastAsync(newAsdu);
             }
-
+            Console.ReadKey();
             Console.WriteLine("Stop server");
         }
     }

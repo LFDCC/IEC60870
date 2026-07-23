@@ -86,15 +86,38 @@ namespace IEC60870.CS104
         /// <summary>向所有已激活会话广播一个 ASDU。</summary>
         public async Task BroadcastAsync(ASDU asdu, CancellationToken cancellationToken = default)
         {
+            // 并发向各会话发送，避免某个会话 k 窗口满时串行阻塞其余会话（代码评审 #9）。
+            // 每个会话独立编码（参数可能不同），并行安全：SendAsync 内部各自分配独立的 PooledApduWriter。
+            var tasks = new List<Task>(_sessions.Count);
             foreach (KeyValuePair<string, Iec104Session> kv in _sessions)
             {
                 Iec104Session s = kv.Value;
                 if (s.IsActivated)
+                    tasks.Add(SendOneAsync(s, asdu, cancellationToken));
+            }
+
+            // 并发等待：单会话失败不影响其余会话的发送结果，但汇总所有失败以便调用方排查。
+            // SendOneAsync 只透传 OperationCanceledException，其余异常原样抛到此处被 catch。
+            List<Exception> failures = null;
+            foreach (Task t in tasks)
+            {
+                try { await t.ConfigureAwait(false); }
+                catch (OperationCanceledException) { throw; } // 取消必须上抛
+                catch (Exception ex)
                 {
-                    try { await s.SendAsync(asdu, cancellationToken).ConfigureAwait(false); }
-                    catch { /* 单会话失败不影响其余 */ }
+                    (failures ??= new List<Exception>()).Add(ex);
                 }
             }
+
+            if (failures != null)
+                throw new AggregateException("部分会话广播失败", failures);
+        }
+
+        private static async Task SendOneAsync(Iec104Session s, ASDU asdu, CancellationToken ct)
+        {
+            // 不吞 Exception：让异常传到 BroadcastAsync 的 await 处被 catch 汇总到 failures。
+            // 仅 OperationCanceledException 透传（取消语义必须上抛）。
+            await s.SendAsync(asdu, ct).ConfigureAwait(false);
         }
 
         // ── 内部：会话与回调桥接 ──────────────────────────────────────

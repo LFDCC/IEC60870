@@ -63,7 +63,7 @@ namespace cs104_client2
 
         public static async Task Main(string[] args)
         {
-            Console.WriteLine("Using IEC60870.Core.NET version " + LibraryCommon.GetLibraryVersionString());
+            Console.WriteLine("Using IEC60870.Core.NET version " + typeof(ASDU).Assembly.GetName().Version.ToString());
 
             Iec104Client con = new Iec104Client("127.0.0.1", 2404);
             _al = con.Parameters;

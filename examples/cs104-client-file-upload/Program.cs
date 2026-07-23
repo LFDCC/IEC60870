@@ -53,7 +53,7 @@ namespace cs104_client_file_upload
             if (args.Length >= 4)
                 Int32.TryParse(args[3], out fileIoa);
 
-            Console.WriteLine("Using IEC60870.Core.NET version " + LibraryCommon.GetLibraryVersionString());
+            Console.WriteLine("Using IEC60870.Core.NET version " + typeof(ASDU).Assembly.GetName().Version.ToString());
 
             // CS101 master file client connecting to the slave over TCP (balanced link layer).
             var master = new Iec101Client(hostname, 2404, LinkLayerMode.BALANCED);
@@ -87,7 +87,7 @@ namespace cs104_client_file_upload
             // Block until the slave acknowledged the file transfer.
             await Task.Run(() => file.WaitUntilTransferIsComplete()).ConfigureAwait(false);
 
-            master.StopAsync();
+            master.Stop();
 
             Console.WriteLine("Press any key to terminate...");
             Console.ReadKey();

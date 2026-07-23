@@ -154,7 +154,7 @@ namespace cs104_tls_client
                 Console.WriteLine("Using hostname: " + hostname);
             }
 
-            Console.WriteLine("Using IEC60870.Core.NET version " + LibraryCommon.GetLibraryVersionString());
+            Console.WriteLine("Using IEC60870.Core.NET version " + typeof(ASDU).Assembly.GetName().Version.ToString());
 
             // Own certificate has to be a pfx file that contains the private key.
             X509Certificate2 ownCertificate = new X509Certificate2("client1.pfx");

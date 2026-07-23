@@ -86,7 +86,7 @@ namespace cs101_master_balanced
                 Thread.Sleep (100);
             }
 
-            master.StopAsync ();
+            master.Stop ();
             await loop;
         }
     }

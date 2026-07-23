@@ -45,11 +45,6 @@ namespace IEC60870.CS101
         private ISerialLinkTransport _transport;
         private bool _fatalError = false;
 
-        private void ReceiveMessageLoop()
-        {
-            // 已被 StartAsync 的 Task 循环取代；保留空实现以兼容旧调用语义。
-        }
-
         public bool DIR
         {
             get { return linkLayer.DIR; }
@@ -85,7 +80,11 @@ namespace IEC60870.CS101
         /// </summary>
         public Task StartAsync(CancellationToken ct = default)
         {
-            _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            // 重复调用时先释放上一次创建的 CTS，避免泄漏（代码评审 #16）。无可取消外部 token 时不分配链接源。
+            _cts?.Dispose();
+            _cts = ct.CanBeCanceled
+                ? CancellationTokenSource.CreateLinkedTokenSource(ct)
+                : new CancellationTokenSource();
 
             if (_port != null)
             {
@@ -108,9 +107,9 @@ namespace IEC60870.CS101
         }
 
         /// <summary>
-        /// 停止后台异步收发循环。
+        /// 停止后台异步收发循环（同步取消，不阻塞）。
         /// </summary>
-        public void StopAsync()
+        public void Stop()
         {
             _cts?.Cancel();
         }

@@ -185,7 +185,11 @@ namespace IEC60870.Core
 
             int payloadSize = msgLength - bufPos;
 
-            //TODO add plausibility check for payload length (using TypeID, SizeOfIOA, and VSQ)
+            // 校验 payload 长度是否足以容纳 VSQ 声明的信息对象数（代码评审 #15 / 原 TODO）。
+            // 短 payload + 过大 VSQ 会让 GetElement(index) 算出越界偏移，导致部分类型 IndexOutOfRange。
+            int expected = ComputeExpectedPayloadSize();
+            if (expected >= 0 && payloadSize < expected)
+                throw new ASDUParsingException("Payload too small for declared VSQ/TypeID (need " + expected + ", got " + payloadSize + ")");
 
             payload = new byte[payloadSize];
 
@@ -240,6 +244,14 @@ namespace IEC60870.Core
             }
         }
 
+        /// <summary>
+        /// 将 ASDU 编码为字节数组。
+        /// </summary>
+        /// <returns>
+        /// 编码后的字节；若实际编码长度与预期缓冲尺寸不符（理论上仅在 <see cref="AddInformationObject"/>
+        /// 与 <see cref="Encode"/> 之间参数被改动时才可能发生），返回 <c>null</c>。
+        /// 调用方必须判空（代码评审 #19）。如希望永不返回 null，可改用 <see cref="Encode"/> 配合可调长缓冲。
+        /// </returns>
         public byte[] AsByteArray()
         {
             int expectedSize = parameters.MaxAsduLength - spaceLeft;
@@ -373,6 +385,108 @@ namespace IEC60870.Core
         /// <param name="index">index of the element (starting with 0)</param>
         /// <param name="privateObjectTypes">known private information object types</param>
         /// <exception cref="IEC60870.Core.ASDUParsingException">Thrown when there is a problem parsing the ASDU</exception>
+        /// <summary>
+        /// 计算声明元素数所需的 payload 字节数（用于构造期长度校验，防止 GetElement 越界，代码评审 #15）。
+        /// 返回值：-1 表示跳过校验（私有类型/文件类型由各解码器自行处理）；否则为期望的最小 payload 长度。
+        /// </summary>
+        private int ComputeExpectedPayloadSize()
+        {
+            int n = NumberOfElements;
+            if (n == 0)
+                return 0;
+
+            int elem;        // 纯元素尺寸（监视类型不含 IOA；命令类型已含地址宽度）
+            bool commandLike; // true: 偏移 = index * elem（命令/结束初始化）；false: 监视类型，非序列时每元素额外加 IOA
+
+            switch (typeId)
+            {
+                // ── 监视类型（elem 不含 IOA）──
+                case TypeID.M_SP_NA_1: elem = 1; commandLike = false; break;
+                case TypeID.M_SP_TA_1: elem = 4; commandLike = false; break;
+                case TypeID.M_DP_NA_1: elem = 1; commandLike = false; break;
+                case TypeID.M_DP_TA_1: elem = 4; commandLike = false; break;
+                case TypeID.M_ST_NA_1: elem = 2; commandLike = false; break;
+                case TypeID.M_ST_TA_1: elem = 5; commandLike = false; break;
+                case TypeID.M_BO_NA_1: elem = 5; commandLike = false; break;
+                case TypeID.M_BO_TA_1: elem = 8; commandLike = false; break;
+                case TypeID.M_ME_NA_1: elem = 3; commandLike = false; break;
+                case TypeID.M_ME_TA_1: elem = 6; commandLike = false; break;
+                case TypeID.M_ME_NB_1: elem = 3; commandLike = false; break;
+                case TypeID.M_ME_TB_1: elem = 6; commandLike = false; break;
+                case TypeID.M_ME_NC_1: elem = 5; commandLike = false; break;
+                case TypeID.M_ME_TC_1: elem = 8; commandLike = false; break;
+                case TypeID.M_IT_NA_1: elem = 5; commandLike = false; break;
+                case TypeID.M_IT_TA_1: elem = 8; commandLike = false; break;
+                case TypeID.M_EP_TA_1: elem = 3; commandLike = false; break;
+                case TypeID.M_EP_TB_1: elem = 7; commandLike = false; break;
+                case TypeID.M_EP_TC_1: elem = 7; commandLike = false; break;
+                case TypeID.M_PS_NA_1: elem = 5; commandLike = false; break;
+                case TypeID.M_ME_ND_1: elem = 2; commandLike = false; break;
+                case TypeID.M_SP_TB_1: elem = 8; commandLike = false; break;
+                case TypeID.M_DP_TB_1: elem = 8; commandLike = false; break;
+                case TypeID.M_ST_TB_1: elem = 9; commandLike = false; break;
+                case TypeID.M_BO_TB_1: elem = 12; commandLike = false; break;
+                case TypeID.M_ME_TD_1: elem = 10; commandLike = false; break;
+                case TypeID.M_ME_TE_1: elem = 10; commandLike = false; break;
+                case TypeID.M_ME_TF_1: elem = 12; commandLike = false; break;
+                case TypeID.M_IT_TB_1: elem = 12; commandLike = false; break;
+                case TypeID.M_EP_TD_1: elem = 10; commandLike = false; break;
+                case TypeID.M_EP_TE_1: elem = 11; commandLike = false; break;
+                case TypeID.M_EP_TF_1: elem = 11; commandLike = false; break;
+                case TypeID.F_DR_TA_1: elem = 13; commandLike = false; break;
+
+                // ── 命令 / 控制类型（elem 已含地址宽度，无序列）──
+                case TypeID.C_SC_NA_1:
+                case TypeID.C_DC_NA_1:
+                case TypeID.C_RC_NA_1:
+                case TypeID.C_IC_NA_1:
+                case TypeID.C_RP_NA_1:
+                case TypeID.P_AC_NA_1:
+                    elem = parameters.SizeOfIOA + 1; commandLike = true; break;
+                case TypeID.C_SE_NA_1:
+                case TypeID.C_SE_NB_1:
+                case TypeID.P_ME_NA_1:
+                case TypeID.P_ME_NB_1:
+                    elem = parameters.SizeOfIOA + 3; commandLike = true; break;
+                case TypeID.C_SE_NC_1:
+                case TypeID.P_ME_NC_1:
+                    elem = parameters.SizeOfIOA + 5; commandLike = true; break;
+                case TypeID.C_BO_NA_1:
+                    elem = parameters.SizeOfIOA + 4; commandLike = true; break;
+                case TypeID.C_SC_TA_1:
+                case TypeID.C_DC_TA_1:
+                case TypeID.C_RC_TA_1:
+                    elem = parameters.SizeOfIOA + 8; commandLike = true; break;
+                case TypeID.C_SE_TA_1:
+                case TypeID.C_SE_TB_1:
+                    elem = parameters.SizeOfIOA + 10; commandLike = true; break;
+                case TypeID.C_SE_TC_1:
+                    elem = parameters.SizeOfIOA + 12; commandLike = true; break;
+                case TypeID.C_BO_TA_1:
+                    elem = parameters.SizeOfIOA + 11; commandLike = true; break;
+                case TypeID.C_RD_NA_1:
+                    elem = parameters.SizeOfIOA; commandLike = true; break;
+                case TypeID.C_CS_NA_1:
+                    elem = parameters.SizeOfIOA + 7; commandLike = true; break;
+                case TypeID.C_TS_NA_1:
+                case TypeID.C_CD_NA_1:
+                    elem = parameters.SizeOfIOA + 2; commandLike = true; break;
+                case TypeID.C_TS_TA_1:
+                    elem = parameters.SizeOfIOA + 9; commandLike = true; break;
+                case TypeID.M_EI_NA_1:
+                    elem = parameters.SizeOfCA + 1; commandLike = true; break;
+
+                default:
+                    return -1; // 私有类型 / 文件类型（固定偏移解码）：跳过，交给各自解码器
+            }
+
+            if (commandLike)
+                return n * elem;
+            if (IsSequence)
+                return parameters.SizeOfIOA + n * elem;
+            return n * (parameters.SizeOfIOA + elem);
+        }
+
         public InformationObject GetElement(int index, PrivateInformationObjectTypes privateObjectTypes)
         {
             this.privateObjectTypes = privateObjectTypes;

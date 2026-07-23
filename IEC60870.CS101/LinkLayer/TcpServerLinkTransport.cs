@@ -34,8 +34,28 @@ namespace IEC60870.CS101.LinkLayer
             protected override async Task OnTcpConnected(ConnectedEventArgs e)
             {
                 if (Owner != null)
+                {
+                    // 虚拟串口语义：仅允许单活动链路（与原 TcpServerVirtualSerialPort 一致）。
+                    // 新连接占用时关闭上一会话，避免两路字节写入同一队列、相互交错导致 FT1.2 帧损坏（代码评审 #17）。
+                    Session prev = Owner._activeSession;
                     Owner._activeSession = this;
+                    if (prev != null && prev != this)
+                    {
+                        try { await prev.CloseAsync("replaced by new connection").ConfigureAwait(false); }
+                        catch { /* ignore */ }
+                    }
+                }
                 await base.OnTcpConnected(e).ConfigureAwait(false);
+            }
+
+            protected override async Task OnTcpClosed(ClosedEventArgs e)
+            {
+                if (Owner != null && Owner._activeSession == this)
+                {
+                    Owner._activeSession = null;
+                    Owner._queue.Clear(); // 丢弃残留字节，避免下一个客户端收到上一客户端的帧
+                }
+                await base.OnTcpClosed(e).ConfigureAwait(false);
             }
 
             protected override async Task OnTcpReceived(ReceivedDataEventArgs e)

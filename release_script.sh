@@ -38,14 +38,15 @@ create_release_folder()
 
 	echo "Folder '$FOLDER_NAME' created successfully!"
 
-	cp -rf .net8 $FOLDER_NAME
+	cp -rf IEC60870.Core $FOLDER_NAME
+	cp -rf IEC60870.CS101 $FOLDER_NAME
+	cp -rf IEC60870.CS104 $FOLDER_NAME
 	cp -rf examples $FOLDER_NAME
-	cp -rf lib60870 $FOLDER_NAME
-	cp -rf tests $FOLDER_NAME
+	cp -rf tests-cs104 $FOLDER_NAME
 	cp -rf CHANGELOG $FOLDER_NAME
 	cp -rf LICENSE $FOLDER_NAME
 	cp -rf IEC60870.sln $FOLDER_NAME
-	cp -rf README.md $FOLDER_NAME
+	cp -rf readme.md $FOLDER_NAME
 	cp -rf user_guide_dotnet.adoc $FOLDER_NAME
 	cp -rf doxygen $FOLDER_NAME
 }
@@ -70,7 +71,7 @@ while [ -z "$2" ]; do
 done
 
 # Store arguments
-PREFIX="../lib60870.NET-"
+PREFIX="../IEC60870.NET-"
 FOLDER_NAME="${PREFIX}${1}"
 OPTION="$2"
 
