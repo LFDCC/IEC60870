@@ -402,7 +402,10 @@ namespace IEC60870.CS101
         {
             if (linkLayerUnbalanced != null)
             {
-                BufferFrame frame = new BufferFrame(buffer, 0);
+                /* 用户线程编码，使用独立缓冲区，避免与后台接收循环共享 buffer 产生数据竞争
+                   （平衡分支本就使用 new byte[256]）。SendConfirmed 仅保存帧引用，稍后由
+                   链路层线程发送，故此处缓冲区不会被并发访问。 */
+                BufferFrame frame = new BufferFrame(new byte[256], 0);
 
                 asdu.Encode(frame, appLayerParameters);
 

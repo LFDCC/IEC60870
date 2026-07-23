@@ -317,6 +317,8 @@ namespace IEC60870.CS101.LinkLayer
                         {
                             linkLayer.SendVariableLengthFramePrimary(FunctionCodePrimary.USER_DATA_CONFIRMED, linkLayerAddressOtherStation, nextFcb, true, asdu);
 
+                            lastSendASDU = asdu; /* keep for message repetition after timeout */
+
                             nextFcb = !nextFcb;
                             lastSendTime = currentTime;
                             originalSendTime = lastSendTime;
