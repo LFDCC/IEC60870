@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <Authors>LFDCC</Authors>
+    <Company>LFDCC</Company>
+    <Copyright>Copyright 2026 LFDCC</Copyright>
+    <PackageId>LFDCC.IEC60870.CS101</PackageId>
+    <Version>4.0.0</Version>
+    <RootNamespace>IEC60870.CS101</RootNamespace>
+    <AssemblyName>IEC60870.CS101</AssemblyName>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <Description>IEC 60870-5-101 protocol library (balanced/unbalanced link layer, serial and TCP transport, client/server) built on IEC60870.Core.</Description>
+    <PackageOutputPath>nupkg</PackageOutputPath>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="ClientBase.cs" />
+    <Compile Include="DebugLogger.cs" />
+    <Compile Include="Iec101Client.cs" />
+    <Compile Include="Iec101Server.cs" />
+    <Compile Include="ServerBase.cs" />
+    <Compile Include="File/FileServices.cs" />
+    <Compile Include="LinkLayer/FT12Framer.cs" />
+    <Compile Include="LinkLayer/ISerialLinkTransport.cs" />
+    <Compile Include="LinkLayer/LinkLayer.cs" />
+    <Compile Include="LinkLayer/PrimaryLinkLayer.cs" />
+    <Compile Include="LinkLayer/PrimaryLinkLayerBalanced.cs" />
+    <Compile Include="LinkLayer/PrimaryLinkLayerUnbalanced.cs" />
+    <Compile Include="LinkLayer/SecondaryLinkLayer.cs" />
+    <Compile Include="LinkLayer/SecondaryLinkLayerBalanced.cs" />
+    <Compile Include="LinkLayer/SecondaryLinkLayerUnbalanced.cs" />
+    <Compile Include="LinkLayer/SerialTransceiverFT12.cs" />
+    <Compile Include="LinkLayer/TcpClientLinkTransport.cs" />
+    <Compile Include="LinkLayer/TcpServerLinkTransport.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\IEC60870.Core\IEC60870.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="TouchSocket" Version="3.0.3" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="System.IO.Ports" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

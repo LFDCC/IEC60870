@@ -1,0 +1,23 @@
+# Build output
+bin/
+obj/
+[Bb]in/
+[Oo]bj/
+
+# IDE
+.vs/
+*.user
+*.suo
+
+# NuGet packaging output
+*.nupkg
+*.snupkg
+nupkg/
+
+# Legacy refactor leftovers (pre-rename single-assembly project)
+.net8/
+lib60870/
+lib60870.NET.sln
+
+# Tool / agent internal data (not source, must not be published)
+.workbuddy/

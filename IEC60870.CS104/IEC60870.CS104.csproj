@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <Authors>LFDCC</Authors>
+    <Company>LFDCC</Company>
+    <Copyright>Copyright 2026 LFDCC</Copyright>
+    <PackageId>LFDCC.IEC60870.CS104</PackageId>
+    <Version>4.0.0</Version>
+    <RootNamespace>IEC60870.CS104</RootNamespace>
+    <AssemblyName>IEC60870.CS104</AssemblyName>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <Description>IEC 60870-5-104 protocol library (TCP/TCP-TLS transport, client/server) built on IEC60870.Core. Fully async, TouchSocket-based, zero-GC hot path.</Description>
+    <PackageOutputPath>nupkg</PackageOutputPath>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="APCIParameters.cs" />
+    <Compile Include="ApduCodec.cs" />
+    <Compile Include="ApduTelegramExtensions.cs" />
+    <Compile Include="ApduConnection.cs" />
+    <Compile Include="ApduFramer.cs" />
+    <Compile Include="ApduReader.cs" />
+    <Compile Include="IApduSink.cs" />
+    <Compile Include="Iec104Client.cs" />
+    <Compile Include="Iec104Server.cs" />
+    <Compile Include="Iec104Session.cs" />
+    <Compile Include="PooledApduWriter.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\IEC60870.Core\IEC60870.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="TouchSocket" Version="3.0.3" />
+  </ItemGroup>
+
+</Project>

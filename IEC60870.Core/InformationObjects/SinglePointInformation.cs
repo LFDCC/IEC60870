@@ -1,0 +1,351 @@
+
+
+/*
+ *  Copyright 2016-2025 LFDCC
+ *
+ *  This file is part of IEC60870.Core.NET
+ *
+ *  IEC60870.Core.NET is free software: you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation, either version 3 of the License, or
+ *  (at your option) any later version.
+ *
+ *  IEC60870.Core.NET is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with IEC60870.Core.NET.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *  See COPYING file for the complete license text.
+ */
+
+using IEC60870.Core.Quality;
+using IEC60870.Core.Time;
+namespace IEC60870.Core.InformationObjects
+{
+    public class SinglePointInformation : InformationObject
+    {
+        override public int GetEncodedSize()
+        {
+            return 1;
+        }
+
+        override public TypeID Type
+        {
+            get
+            {
+                return TypeID.M_SP_NA_1;
+            }
+        }
+
+        override public bool SupportsSequence
+        {
+            get
+            {
+                return true;
+            }
+        }
+
+        private bool value;
+
+        public bool Value
+        {
+            get
+            {
+                return value;
+            }
+            set
+            {
+                this.value = value;
+            }
+        }
+
+        private QualityDescriptor quality;
+
+        public QualityDescriptor Quality
+        {
+            get
+            {
+                return quality;
+            }
+        }
+
+        internal SinglePointInformation(ApplicationLayerParameters parameters, byte[] msg, int startIndex, bool isSequence)
+            : base(parameters, msg, startIndex, isSequence)
+        {
+            if (!isSequence)
+                startIndex += parameters.SizeOfIOA; /* skip IOA */
+
+            if ((msg.Length - startIndex) < GetEncodedSize())
+                throw new ASDUParsingException("Message too small");
+
+            /* parse SIQ (single point information with qualitiy) */
+            byte siq = msg[startIndex++];
+
+            value = ((siq & 0x01) == 0x01);
+
+            quality = new QualityDescriptor((byte)(siq & 0xf0));
+        }
+
+
+        public SinglePointInformation(int objectAddress, bool value, QualityDescriptor quality)
+            : base(objectAddress)
+        {
+            this.value = value;
+            this.quality = quality;
+        }
+
+        public SinglePointInformation(SinglePointInformation original)
+            : base(original.ObjectAddress)
+        {
+            value = original.Value;
+            quality = original.Quality;
+        }
+
+        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
+        {
+            base.Encode(frame, parameters, isSequence);
+
+            byte val = quality.EncodedValue;
+
+            if (value)
+                val++;
+
+            frame.SetNextByte(val);
+        }
+
+    }
+
+    public class SinglePointWithCP24Time2a : SinglePointInformation
+    {
+        override public int GetEncodedSize()
+        {
+            return 4;
+        }
+
+        override public TypeID Type
+        {
+            get
+            {
+                return TypeID.M_SP_TA_1;
+            }
+        }
+
+        override public bool SupportsSequence
+        {
+            get
+            {
+                return false;
+            }
+        }
+
+        private CP24Time2a timestamp;
+
+        public CP24Time2a Timestamp
+        {
+            get
+            {
+                return timestamp;
+            }
+        }
+
+        internal SinglePointWithCP24Time2a(ApplicationLayerParameters parameters, byte[] msg, int startIndex, bool isSequence)
+            : base(parameters, msg, startIndex, isSequence)
+        {
+            if (!isSequence)
+                startIndex += parameters.SizeOfIOA; /* skip IOA */
+
+            if ((msg.Length - startIndex) < GetEncodedSize())
+                throw new ASDUParsingException("Message too small");
+
+            startIndex += 1; /* skip SIQ */
+
+            /* parse CP24Time2a (time stamp) */
+            timestamp = new CP24Time2a(msg, startIndex);
+        }
+
+        public SinglePointWithCP24Time2a(int objectAddress, bool value, QualityDescriptor quality, CP24Time2a timestamp)
+            : base(objectAddress, value, quality)
+        {
+            this.timestamp = timestamp;
+        }
+
+        public SinglePointWithCP24Time2a(SinglePointWithCP24Time2a original)
+            : base(original)
+        {
+            timestamp = new CP24Time2a(original.Timestamp);
+        }
+
+        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
+        {
+            base.Encode(frame, parameters, isSequence);
+
+            frame.AppendBytes(timestamp.GetEncodedValue());
+        }
+    }
+
+    /// <summary>
+    /// Single point with CP56Time2a timestamp (M_SP_TB_1)
+    /// </summary>
+    public class SinglePointWithCP56Time2a : SinglePointInformation
+    {
+        override public int GetEncodedSize()
+        {
+            return 8;
+        }
+
+        override public TypeID Type
+        {
+            get
+            {
+                return TypeID.M_SP_TB_1;
+            }
+        }
+
+        override public bool SupportsSequence
+        {
+            get
+            {
+                return false;
+            }
+        }
+
+        private CP56Time2a timestamp;
+
+        public CP56Time2a Timestamp
+        {
+            get
+            {
+                return timestamp;
+            }
+        }
+
+        internal SinglePointWithCP56Time2a(ApplicationLayerParameters parameters, byte[] msg, int startIndex, bool isSequence)
+            : base(parameters, msg, startIndex, isSequence)
+        {
+            if (!isSequence)
+                startIndex += parameters.SizeOfIOA; /* skip IOA */
+
+            if ((msg.Length - startIndex) < GetEncodedSize())
+                throw new ASDUParsingException("Message too small");
+
+            startIndex += 1; /* skip SIQ */
+
+            /* parse CP56Time2a (time stamp) */
+            timestamp = new CP56Time2a(msg, startIndex);
+        }
+
+        public SinglePointWithCP56Time2a(int objectAddress, bool value, QualityDescriptor quality, CP56Time2a timestamp)
+            : base(objectAddress, value, quality)
+        {
+            this.timestamp = timestamp;
+        }
+
+        public SinglePointWithCP56Time2a(SinglePointWithCP56Time2a original)
+            : base(original)
+        {
+            timestamp = new CP56Time2a(original.timestamp);
+        }
+
+        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
+        {
+            base.Encode(frame, parameters, isSequence);
+
+            frame.AppendBytes(timestamp.GetEncodedValue());
+        }
+    }
+
+    public class PackedSinglePointWithSCD : InformationObject
+    {
+        override public int GetEncodedSize()
+        {
+            return 5;
+        }
+
+        override public TypeID Type
+        {
+            get
+            {
+                return TypeID.M_PS_NA_1;
+            }
+        }
+
+        override public bool SupportsSequence
+        {
+            get
+            {
+                return true;
+            }
+        }
+
+        private StatusAndStatusChangeDetection scd;
+
+        private QualityDescriptor qds;
+
+        public StatusAndStatusChangeDetection SCD
+        {
+            get
+            {
+                return scd;
+            }
+            set
+            {
+                scd = value;
+            }
+        }
+
+        public QualityDescriptor QDS
+        {
+            get
+            {
+                return qds;
+            }
+            set
+            {
+                qds = value;
+            }
+        }
+
+        internal PackedSinglePointWithSCD(ApplicationLayerParameters parameters, byte[] msg, int startIndex, bool isSquence)
+            : base(parameters, msg, startIndex, isSquence)
+        {
+            if (!isSquence)
+                startIndex += parameters.SizeOfIOA; /* skip IOA */
+
+            if ((msg.Length - startIndex) < GetEncodedSize())
+                throw new ASDUParsingException("Message too small");
+
+            scd = new StatusAndStatusChangeDetection(msg, startIndex);
+            startIndex += 4;
+
+            qds = new QualityDescriptor(msg[startIndex++]);
+        }
+
+        public PackedSinglePointWithSCD(int objectAddress, StatusAndStatusChangeDetection scd, QualityDescriptor quality)
+            : base(objectAddress)
+        {
+            this.scd = scd;
+            qds = quality;
+        }
+
+        public PackedSinglePointWithSCD(PackedSinglePointWithSCD original)
+            : base(original.ObjectAddress)
+        {
+            scd = new StatusAndStatusChangeDetection(original.SCD);
+            qds = new QualityDescriptor(original.QDS);
+        }
+
+        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
+        {
+            base.Encode(frame, parameters, isSequence);
+
+            frame.AppendBytes(scd.GetEncodedValue());
+
+            frame.SetNextByte(qds.EncodedValue);
+        }
+    }
+
+}
+

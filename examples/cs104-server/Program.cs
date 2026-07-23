@@ -1,0 +1,191 @@
+// This example shows how to send periodic messages and handle commands from clients
+// using the fully async Iec104Server API (TouchSocket-based, zero-GC hot path).
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using IEC60870.Core;
+using IEC60870.CS104;
+using IEC60870.Core.InformationObjects;
+using IEC60870.Core.Quality;
+using IEC60870.Core.Time;
+
+
+
+namespace cs104_server
+{
+    class MainClass
+    {
+        private static Iec104Server _server;
+
+        // Build an ACTIVATION_CON (positive) ASDU that echoes the request's first IO.
+        private static ASDU BuildActCon(ASDU req, ApplicationLayerParameters al)
+        {
+            ASDU con = new ASDU(al, CauseOfTransmission.ACTIVATION_CON, false, false, req.Oa, req.Ca, false);
+            con.AddInformationObject(req.GetElement(0));
+            return con;
+        }
+
+        // Build an ACTIVATION_TERMINATION ASDU that echoes the request's first IO.
+        private static ASDU BuildActTerm(ASDU req, ApplicationLayerParameters al)
+        {
+            ASDU term = new ASDU(al, CauseOfTransmission.ACTIVATION_TERMINATION, false, false, req.Oa, req.Ca, false);
+            term.AddInformationObject(req.GetElement(0));
+            return term;
+        }
+
+        private static void HandleAsdu(Iec104Server server, Iec104Session session, AsduView view)
+        {
+            ApplicationLayerParameters al = server.Parameters;
+            byte[] raw = view.Raw.ToArray();
+            ASDU asdu = new ASDU(server.Parameters, raw, 0, raw.Length);
+
+            if (asdu.TypeId == TypeID.C_IC_NA_1)
+            {
+                // Interrogation command -> ACT_CON, data, ACT_TERM
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await session.SendAsync(BuildActCon(asdu, al));
+
+                        ASDU newAsdu = new ASDU(al, CauseOfTransmission.INTERROGATED_BY_STATION, false, false, asdu.Oa, asdu.Ca, false);
+                        newAsdu.AddInformationObject(new MeasuredValueScaled(100, -1, new QualityDescriptor()));
+                        newAsdu.AddInformationObject(new MeasuredValueScaled(101, 23, new QualityDescriptor()));
+                        newAsdu.AddInformationObject(new MeasuredValueScaled(102, 2300, new QualityDescriptor()));
+                        await session.SendAsync(newAsdu);
+
+                        newAsdu = new ASDU(al, CauseOfTransmission.INTERROGATED_BY_STATION, false, false, asdu.Oa, asdu.Ca, false);
+                        newAsdu.AddInformationObject(new MeasuredValueScaledWithCP56Time2a(103, 3456, new QualityDescriptor(), new CP56Time2a(DateTime.Now)));
+                        await session.SendAsync(newAsdu);
+
+                        newAsdu = new ASDU(al, CauseOfTransmission.INTERROGATED_BY_STATION, false, false, asdu.Oa, asdu.Ca, false);
+                        newAsdu.AddInformationObject(new SinglePointWithCP56Time2a(104, true, new QualityDescriptor(), new CP56Time2a(DateTime.Now)));
+                        await session.SendAsync(newAsdu);
+
+                        // sequence of information objects
+                        newAsdu = new ASDU(al, CauseOfTransmission.INTERROGATED_BY_STATION, false, false, asdu.Oa, asdu.Ca, true);
+                        newAsdu.AddInformationObject(new SinglePointInformation(200, true, new QualityDescriptor()));
+                        newAsdu.AddInformationObject(new SinglePointInformation(201, false, new QualityDescriptor()));
+                        newAsdu.AddInformationObject(new SinglePointInformation(202, true, new QualityDescriptor()));
+                        newAsdu.AddInformationObject(new SinglePointInformation(203, false, new QualityDescriptor()));
+                        newAsdu.AddInformationObject(new SinglePointInformation(204, true, new QualityDescriptor()));
+                        newAsdu.AddInformationObject(new SinglePointInformation(205, false, new QualityDescriptor()));
+                        newAsdu.AddInformationObject(new SinglePointInformation(206, true, new QualityDescriptor()));
+                        newAsdu.AddInformationObject(new SinglePointInformation(207, false, new QualityDescriptor()));
+                        await session.SendAsync(newAsdu);
+
+                        newAsdu = new ASDU(al, CauseOfTransmission.INTERROGATED_BY_STATION, false, false, asdu.Oa, asdu.Ca, true);
+                        newAsdu.AddInformationObject(new MeasuredValueNormalizedWithoutQuality(300, -1.0f));
+                        newAsdu.AddInformationObject(new MeasuredValueNormalizedWithoutQuality(301, -0.5f));
+                        newAsdu.AddInformationObject(new MeasuredValueNormalizedWithoutQuality(302, -0.1f));
+                        newAsdu.AddInformationObject(new MeasuredValueNormalizedWithoutQuality(303, 0.0f));
+                        newAsdu.AddInformationObject(new MeasuredValueNormalizedWithoutQuality(304, 0.1f));
+                        newAsdu.AddInformationObject(new MeasuredValueNormalizedWithoutQuality(305, 0.2f));
+                        newAsdu.AddInformationObject(new MeasuredValueNormalizedWithoutQuality(306, 0.5f));
+                        newAsdu.AddInformationObject(new MeasuredValueNormalizedWithoutQuality(307, 0.7f));
+                        newAsdu.AddInformationObject(new MeasuredValueNormalizedWithoutQuality(308, 0.99f));
+                        newAsdu.AddInformationObject(new MeasuredValueNormalizedWithoutQuality(309, 1f));
+                        await session.SendAsync(newAsdu);
+
+                        await session.SendAsync(BuildActTerm(asdu, al));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("Interrogation response error: " + ex.Message);
+                    }
+                });
+            }
+            else if (asdu.TypeId == TypeID.C_SC_NA_1)
+            {
+                SingleCommand sc = (SingleCommand)asdu.GetElement(0);
+                Console.WriteLine("Single command IOA=" + sc.ObjectAddress + " execute=" + (!sc.Select) + " -> " + sc.ToString());
+                _ = Task.Run(async () =>
+                {
+                    try { await session.SendAsync(BuildActCon(asdu, al)); }
+                    catch (Exception ex) { Console.WriteLine("Command response error: " + ex.Message); }
+                });
+            }
+            else if (asdu.TypeId == TypeID.C_CS_NA_1)
+            {
+                ClockSynchronizationCommand qsc = (ClockSynchronizationCommand)asdu.GetElement(0);
+                Console.WriteLine("Received clock sync command with time " + qsc.NewTime.ToString());
+                _ = Task.Run(async () =>
+                {
+                    try { await session.SendAsync(BuildActCon(asdu, al)); }
+                    catch (Exception ex) { Console.WriteLine("Command response error: " + ex.Message); }
+                });
+            }
+            else
+            {
+                Console.WriteLine("ASDU received: " + asdu.ToString());
+            }
+        }
+
+        private static void OnAsduReceived(Iec104Session session, in AsduView view)
+            => HandleAsdu(_server, session, view);
+
+        public static async Task Main(string[] args)
+        {
+            bool running = true;
+
+            Console.CancelKeyPress += (sender, e) =>
+            {
+                e.Cancel = true;
+                running = false;
+            };
+
+            // specify application layer parameters (CS 101 and CS 104)
+            var alParams = new ApplicationLayerParameters();
+            alParams.SizeOfCA = 2;
+            alParams.SizeOfIOA = 3;
+            alParams.MaxAsduLength = 249;
+
+            // specify APCI parameters (only CS 104)
+            var apciParameters = new APCIParameters();
+            apciParameters.K = 12;
+            apciParameters.W = 8;
+            apciParameters.T0 = 10;
+            apciParameters.T1 = 15;
+            apciParameters.T2 = 10;
+            apciParameters.T3 = 20;
+
+            Iec104Server server = new Iec104Server(apciParameters, alParams);
+
+            server.ConnectionEvent = (session, ev) =>
+            {
+                Console.WriteLine("Connection event: " + ev);
+            };
+
+            server.AsduReceived = OnAsduReceived;
+
+            _server = server;
+            await server.StartAsync(2404);
+
+            // send an initial message (end of initialization)
+            ASDU initial = new ASDU(server.Parameters, CauseOfTransmission.INITIALIZED, false, false, 0, 1, false);
+            initial.AddInformationObject(new EndOfInitialization(0));
+            await server.BroadcastAsync(initial);
+
+            Console.WriteLine("Server started on port 2404. Press Ctrl+C to stop.");
+
+            int waitTime = 1000;
+
+            while (running)
+            {
+                await Task.Delay(100);
+                if (waitTime > 0)
+                    waitTime -= 100;
+                else
+                {
+                    ASDU newAsdu = new ASDU(server.Parameters, CauseOfTransmission.PERIODIC, false, false, 0, 1, false);
+                    newAsdu.AddInformationObject(new MeasuredValueScaled(110, -1, new QualityDescriptor()));
+                    await server.BroadcastAsync(newAsdu);
+                    waitTime = 30000;
+                }
+            }
+
+            Console.WriteLine("Stop server");
+        }
+    }
+}

@@ -1,0 +1,85 @@
+
+
+/*
+ *  Copyright 2016-2025 LFDCC
+ *
+ *  This file is part of IEC60870.Core.NET
+ *
+ *  IEC60870.Core.NET is free software: you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation, either version 3 of the License, or
+ *  (at your option) any later version.
+ *
+ *  IEC60870.Core.NET is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with IEC60870.Core.NET.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *  See COPYING file for the complete license text.
+ */
+
+namespace IEC60870.Core
+{
+    /// <summary>
+    /// Implementation of Frame to encode into a given byte array
+    /// </summary>
+    public class BufferFrame : Frame
+    {
+        private byte[] buffer;
+        private int startPos;
+        private int bufPos;
+
+        public BufferFrame(byte[] buffer, int startPos)
+        {
+            this.buffer = buffer;
+            this.startPos = startPos;
+            bufPos = startPos;
+        }
+
+        public BufferFrame Clone()
+        {
+            byte[] newBuffer = new byte[GetMsgSize()];
+
+            int newBufPos = 0;
+
+            for (int i = startPos; i < bufPos; i++)
+            {
+                newBuffer[newBufPos++] = buffer[i];
+            }
+
+            BufferFrame clone = new BufferFrame(newBuffer, 0);
+            clone.bufPos = newBufPos;
+
+            return clone;
+        }
+
+        public override void ResetFrame()
+        {
+            bufPos = startPos;
+        }
+
+        public override void SetNextByte(byte value)
+        {
+            buffer[bufPos++] = value;
+        }
+
+        public override void AppendBytes(byte[] bytes)
+        {
+            for (int i = 0; i < bytes.Length; i++)
+                buffer[bufPos++] = bytes[i];
+        }
+
+        public override int GetMsgSize()
+        {
+            return bufPos;
+        }
+
+        public override byte[] GetBuffer()
+        {
+            return buffer;
+        }
+    }
+}
