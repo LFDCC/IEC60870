@@ -30,6 +30,7 @@
     <Compile Include="Iec104Server.cs" />
     <Compile Include="Iec104Session.cs" />
     <Compile Include="PooledApduWriter.cs" />
+    <Compile Include="ControlWaiter.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\IEC60870.Core\IEC60870.Core.csproj" />

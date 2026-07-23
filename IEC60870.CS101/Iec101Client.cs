@@ -173,6 +173,9 @@ namespace IEC60870.CS101
         private ASDUReceivedHandler asduReceivedHandler = null;
         private object asduReceivedHandlerParameter = null;
 
+        /// <summary>收到 ASDU 的事件（多播，与 <see cref="SetASDUReceivedHandler"/> 并存；消费语义仍由 SetASDUReceivedHandler 的返回值驱动）。</summary>
+        public event ASDUReceivedHandler AsduReceived;
+
         private Queue<BufferFrame> userDataQueue;
 
         private void DebugLog(string msg)
@@ -360,6 +363,7 @@ namespace IEC60870.CS101
             {
                 if (asduReceivedHandler != null)
                     asduReceivedHandler(asduReceivedHandlerParameter, slaveAddress, asdu);
+                AsduReceived?.Invoke(asduReceivedHandlerParameter, slaveAddress, asdu);
             }
         }
 
@@ -470,6 +474,7 @@ namespace IEC60870.CS101
             {
                 if (asduReceivedHandler != null)
                     messageHandled = asduReceivedHandler(asduReceivedHandlerParameter, address, asdu);
+                AsduReceived?.Invoke(asduReceivedHandlerParameter, address, asdu);
             }
 
             return messageHandled;

@@ -37,7 +37,7 @@ namespace cs104_control_select_execute
         private static Iec104Server StartDemoServer(ApplicationLayerParameters al, APCIParameters apci)
         {
             var server = new Iec104Server(apci, al);
-            server.AsduReceived = (Iec104Session session, in AsduView view) =>
+            server.AsduReceived += (Iec104Session session, in AsduView view) =>
             {
                 byte[] raw = view.Raw.ToArray();
                 ASDU asdu = new ASDU(al, raw, 0, raw.Length);

@@ -44,10 +44,10 @@ namespace IEC60870.Core.SmokeTest
             // ── 服务端 ────────────────────────────────────────────────
             var server = new Iec104Server(alParameters: alParams);
 
-            server.ConnectionEvent = (Iec104Session s, ApduConnectionEvent ev) =>
+            server.ConnectionEvent += (Iec104Session s, ApduConnectionEvent ev) =>
                 Console.WriteLine($"[服务端] 连接事件: {ev}");
 
-            server.AsduReceived = (Iec104Session session, in AsduView asdu) =>
+            server.AsduReceived += (Iec104Session session, in AsduView asdu) =>
             {
                 Interlocked.Increment(ref _serverRxCount);
                 Console.WriteLine(
@@ -68,14 +68,14 @@ namespace IEC60870.Core.SmokeTest
             // ── 客户端 ────────────────────────────────────────────────
             await using var client = new Iec104Client("127.0.0.1", Port, alParameters: alParams);
 
-            client.ConnectionEvent = ev =>
+            client.ConnectionEvent += ev =>
             {
                 Console.WriteLine($"[客户端] 连接事件: {ev}");
                 if (ev == ApduConnectionEvent.StartDtConReceived || ev == ApduConnectionEvent.Activated)
                     ClientActivated.TrySetResult(true);
             };
 
-            client.AsduReceived = (in AsduView asdu) =>
+            client.AsduReceived += (in AsduView asdu) =>
             {
                 Interlocked.Increment(ref _clientRxCount);
                 Console.WriteLine(

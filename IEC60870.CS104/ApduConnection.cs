@@ -87,11 +87,11 @@ namespace IEC60870.CS104
         /// <summary>数据传输是否已激活（收到/发送 STARTDT_CON 后）。</summary>
         public bool IsActive => _active;
 
-        /// <summary>收到 ASDU 时的同步回调（零拷贝视图，仅在回调期间有效）。</summary>
-        public AsduViewHandler AsduReceived { get; set; }
+        /// <summary>收到 ASDU 时的同步事件（零拷贝视图，仅在回调期间有效，支持多订阅者）。</summary>
+        public event AsduViewHandler AsduReceived;
 
-        /// <summary>连接层事件回调。</summary>
-        public Action<ApduConnectionEvent> EventHandler { get; set; }
+        /// <summary>连接层事件（支持多订阅者）。</summary>
+        public event Action<ApduConnectionEvent> EventHandler;
 
         public ApduConnection(APCIParameters apciParameters, ApplicationLayerParameters alParameters,
             IApduSink sink, bool isServerSide)
@@ -138,11 +138,11 @@ namespace IEC60870.CS104
             _receiveSeq = (_receiveSeq + 1) % 32768;
             _unconfirmedReceived++;
 
-            // 同步分发给用户（零拷贝视图）
-            if (asdu.Length > 0 && AsduReceived != null)
+            // 同步分发给用户（零拷贝视图，多订阅者）
+            if (asdu.Length > 0)
             {
                 var view = new AsduView(asdu, _al);
-                AsduReceived(in view);
+                AsduReceived?.Invoke(in view);
             }
 
             ResetT3Timeout(now);

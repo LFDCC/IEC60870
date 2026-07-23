@@ -75,14 +75,14 @@ namespace IEC60870.CS104.Tests
         public async Task OneTimeSetUp()
         {
             _server = new Iec104Server();
-            _server.AsduReceived = (Iec104Session session, in AsduView a) =>
+            _server.AsduReceived += (Iec104Session session, in AsduView a) =>
             {
                 _serverTcs?.TrySetResult(Capture(a));
             };
             await _server.StartAsync(Port);
 
             _client = new Iec104Client("127.0.0.1", Port);
-            _client.AsduReceived = (in AsduView a) =>
+            _client.AsduReceived += (in AsduView a) =>
             {
                 _clientTcs?.TrySetResult(Capture(a));
             };

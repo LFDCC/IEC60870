@@ -152,12 +152,12 @@ namespace cs104_server
 
             Iec104Server server = new Iec104Server(apciParameters, alParams);
 
-            server.ConnectionEvent = (session, ev) =>
+            server.ConnectionEvent += (session, ev) =>
             {
                 Console.WriteLine("Connection event: " + ev);
             };
 
-            server.AsduReceived = OnAsduReceived;
+            server.AsduReceived += OnAsduReceived;
 
             _server = server;
             await server.StartAsync(2404);

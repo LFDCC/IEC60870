@@ -149,12 +149,12 @@ namespace cs104_redundancy_server
             Iec104Server server = new Iec104Server();
             _server = server;
 
-            server.ConnectionEvent = (session, ev) =>
+            server.ConnectionEvent += (session, ev) =>
             {
                 Console.WriteLine("Connection " + session.Id + " - " + ev);
             };
 
-            server.AsduReceived = OnAsduReceived;
+            server.AsduReceived += OnAsduReceived;
 
             await server.StartAsync(2404);
 

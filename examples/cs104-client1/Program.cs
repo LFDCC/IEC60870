@@ -149,8 +149,8 @@ namespace cs104_client1
             Iec104Client con = new Iec104Client("127.0.0.1", 2404);
             _client = con;
 
-            con.AsduReceived = AsduReceivedHandler;
-            con.ConnectionEvent = ConnectionHandler;
+            con.AsduReceived += AsduReceivedHandler;
+            con.ConnectionEvent += ConnectionHandler;
 
             await con.ConnectAsync();
             await con.StartDataTransferAsync();

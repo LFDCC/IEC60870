@@ -491,6 +491,7 @@ namespace IEC60870.CS101
             if ((messageHandled == false) && (asduHandler != null))
                 if (asduHandler(asduHandlerParameter, this, asdu))
                     messageHandled = true;
+            RaiseAsduReceived(asduHandlerParameter, this, asdu);
 
             if (messageHandled == false)
             {

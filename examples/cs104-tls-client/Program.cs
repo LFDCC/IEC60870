@@ -172,8 +172,8 @@ namespace cs104_tls_client
             Iec104Client con = new Iec104Client(hostname, 19998, null, null, ssl);
             _client = con;
 
-            con.AsduReceived = AsduReceivedHandler;
-            con.ConnectionEvent = ConnectionHandler;
+            con.AsduReceived += AsduReceivedHandler;
+            con.ConnectionEvent += ConnectionHandler;
 
             await con.ConnectAsync();
             await con.StartDataTransferAsync();

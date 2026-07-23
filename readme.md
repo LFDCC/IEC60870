@@ -63,7 +63,7 @@ using IEC60870.Core;
 
 var client = new Iec104Client("127.0.0.1");
 
-client.AsduReceived = (in AsduView asdu) =>
+client.AsduReceived += (in AsduView asdu) =>
 {
     Console.WriteLine($"RX TypeID={(int)asdu.TypeId} COT={asdu.Cot} CA={asdu.CommonAddress}");
     Console.WriteLine(asdu.Raw.ToArray().ToHex());   // built-in debug helper
@@ -87,13 +87,13 @@ using IEC60870.Core.Quality;
 
 var server = new Iec104Server(new APCIParameters(), new ApplicationLayerParameters());
 
-server.ConnectionEvent = (session, ev) =>
+server.ConnectionEvent += (session, ev) =>
 {
     if (ev == ApduConnectionEvent.Activated)
         _ = Task.Run(() => PushAsync(server));
 };
 
-server.AsduReceived = (session, asdu) =>
+server.AsduReceived += (session, asdu) =>
 {
     // handle commands coming from the master
 };

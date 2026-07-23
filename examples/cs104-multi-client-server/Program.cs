@@ -152,12 +152,12 @@ namespace cs104_multi_client_server
             // NOTE: the old connection-request (IP whitelist) handler is not available in
             // the new API; access control would have to be implemented at the network layer.
 
-            server.ConnectionEvent = (session, ev) =>
+            server.ConnectionEvent += (session, ev) =>
             {
                 Console.WriteLine("Connection " + session.Id + " - " + ev);
             };
 
-            server.AsduReceived = OnAsduReceived;
+            server.AsduReceived += OnAsduReceived;
 
             await server.StartAsync(2404);
 

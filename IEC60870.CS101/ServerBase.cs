@@ -122,6 +122,13 @@ namespace IEC60870.CS101
         public ASDUHandler asduHandler = null;
         public object asduHandlerParameter = null;
 
+        /// <summary>收到 ASDU 的事件（多播，与 <see cref="SetASDUReceivedHandler"/> 并存；消费语义仍由 asduHandler 的返回值驱动）。</summary>
+        public event ASDUHandler AsduReceived;
+
+        /// <summary>触发 <see cref="AsduReceived"/> 事件（声明类型内调用，供派生类使用）。</summary>
+        protected void RaiseAsduReceived(object parameter, IClientConnection connection, ASDU asdu)
+            => AsduReceived?.Invoke(parameter, connection, asdu);
+
         internal FileReadyHandler fileReadyHandler = null;
         internal object fileReadyHandlerParameter = null;
 

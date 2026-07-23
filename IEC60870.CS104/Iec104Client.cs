@@ -29,7 +29,7 @@ namespace IEC60870.CS104
     /// 用法：
     /// <code>
     /// await using var client = new Iec104Client("127.0.0.1", 2404);
-    /// client.AsduReceived = (in AsduView a) => { /* 处理 */ };
+    /// client.AsduReceived += (in AsduView a) => { /* 处理 */ };
     /// await client.ConnectAsync();
     /// await client.StartDataTransferAsync();
     /// await client.SendAsync(asdu);
@@ -51,28 +51,34 @@ namespace IEC60870.CS104
         // 接收侧粘包重组器（单线程访问：TouchSocket 接收回调串行）
         private ApduFramer _framer;
 
-        /// <summary>收到 ASDU 的同步零拷贝回调。</summary>
-        public AsduViewHandler AsduReceived
+        /// <summary>收到 ASDU 的同步零拷贝事件（支持多订阅者）。示例：<c>client.AsduReceived += (in AsduView a) => { ... };</c></summary>
+        public event AsduViewHandler AsduReceived
         {
-            get => _asduReceived;
-            set
+            add
             {
-                _asduReceived = value;
-                if (_connection != null)
-                    _connection.AsduReceived = value;
+                _asduReceived += value;
+                if (_connection != null) _connection.AsduReceived += value;
+            }
+            remove
+            {
+                _asduReceived -= value;
+                if (_connection != null) _connection.AsduReceived -= value;
             }
         }
         private AsduViewHandler _asduReceived;
 
-        /// <summary>连接层事件回调（STARTDT_CON 等）。</summary>
-        public Action<ApduConnectionEvent> ConnectionEvent
+        /// <summary>连接层事件回调（STARTDT_CON 等，支持多订阅者）。</summary>
+        public event Action<ApduConnectionEvent> ConnectionEvent
         {
-            get => _connEvent;
-            set
+            add
             {
-                _connEvent = value;
-                if (_connection != null)
-                    _connection.EventHandler = value;
+                _connEvent += value;
+                if (_connection != null) _connection.EventHandler += value;
+            }
+            remove
+            {
+                _connEvent -= value;
+                if (_connection != null) _connection.EventHandler -= value;
             }
         }
         private Action<ApduConnectionEvent> _connEvent;
@@ -115,11 +121,10 @@ namespace IEC60870.CS104
         /// <summary>建立 TCP 连接（不自动 STARTDT）。</summary>
         public async Task ConnectAsync(CancellationToken cancellationToken = default)
         {
-            _connection = new ApduConnection(_apci, _al, this, isServerSide: false)
-            {
-                AsduReceived = _asduReceived,
-                EventHandler = _connEvent
-            };
+            _connection = new ApduConnection(_apci, _al, this, isServerSide: false);
+            // 把连接前已订阅的事件转发到新建连接（支持"先订阅后连接"）
+            if (_asduReceived != null) _connection.AsduReceived += _asduReceived;
+            if (_connEvent != null) _connection.EventHandler += _connEvent;
             _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             _framer = new ApduFramer();
 

@@ -227,8 +227,8 @@ namespace cs104_server3
             Iec104Server server = new Iec104Server();
             _server = server;
 
-            server.AsduReceived = OnAsduReceived;
-            server.ConnectionEvent = (session, ev) =>
+            server.AsduReceived += OnAsduReceived;
+            server.ConnectionEvent += (session, ev) =>
             {
                 Console.WriteLine("Connection event: " + ev);
             };

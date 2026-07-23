@@ -159,7 +159,7 @@ namespace cs104_xuji_private_ioa
             var server = new Iec104Server(apci, al);
 
             // 链路激活(收到 STARTDT_ACT 并回 CON, 进入 Activated)后, 从站开始主动上送故障报文
-            server.ConnectionEvent = (session, ev) =>
+            server.ConnectionEvent += (session, ev) =>
             {
                 if (ev == ApduConnectionEvent.Activated)
                 {
@@ -177,7 +177,7 @@ namespace cs104_xuji_private_ioa
 
             // ── 启动主站(Client) ── autostart=true 时连接后自动发 STARTDT_ACT
             var client = new Iec104Client("127.0.0.1", Port, apci, al);
-            client.AsduReceived = OnClientAsdu;
+            client.AsduReceived += OnClientAsdu;            
             await client.ConnectAsync();
             _clientParams = client.Parameters;
             Console.WriteLine("[主站] 已连接并激活数据传输");

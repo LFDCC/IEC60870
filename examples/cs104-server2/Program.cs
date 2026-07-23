@@ -52,8 +52,8 @@ namespace cs104_server2
 
             server = new Iec104Server();
 
-            server.AsduReceived = AsduReceivedHandler;
-            server.ConnectionEvent = (session, ev) =>
+            server.AsduReceived += AsduReceivedHandler;
+            server.ConnectionEvent += (session, ev) =>
             {
                 Console.WriteLine("Connection event: " + ev);
             };

@@ -59,11 +59,9 @@ namespace IEC60870.CS104
             _server = (Iec104Server)this.Service;
             _cts = new CancellationTokenSource();
             _framer = new ApduFramer();
-            _connection = new ApduConnection(_server.ApciParameters, _server.Parameters, this, isServerSide: true)
-            {
-                AsduReceived = _server.RaiseAsduReceived(this),
-                EventHandler = ev => _server.RaiseConnectionEvent(this, ev)
-            };
+            _connection = new ApduConnection(_server.ApciParameters, _server.Parameters, this, isServerSide: true);
+            _connection.AsduReceived += _server.RaiseAsduReceived(this);
+            _connection.EventHandler += ev => _server.RaiseConnectionEvent(this, ev);
 
             _server.RegisterSession(this);
             _timerLoop = Task.Run(() => TimerLoopAsync(_cts.Token));

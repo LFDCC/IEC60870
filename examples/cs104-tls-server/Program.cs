@@ -164,12 +164,12 @@ namespace cs104_tls_server
             Iec104Server server = new Iec104Server(null, null, ssl);
             _server = server;
 
-            server.ConnectionEvent = (session, ev) =>
+            server.ConnectionEvent += (session, ev) =>
             {
                 Console.WriteLine("Connection event: " + ev);
             };
 
-            server.AsduReceived = OnAsduReceived;
+            server.AsduReceived += OnAsduReceived;
 
             await server.StartAsync(19998);
 

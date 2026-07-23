@@ -32,7 +32,7 @@ namespace IEC60870.CS104
     /// 用法：
     /// <code>
     /// var server = new Iec104Server();
-    /// server.AsduReceived = (Iec104Session s, in AsduView a) => { /* 处理 */ };
+    /// server.AsduReceived += (Iec104Session s, in AsduView a) => { /* 处理 */ };
     /// await server.StartAsync(2404);
     /// </code>
     /// </remarks>
@@ -50,11 +50,11 @@ namespace IEC60870.CS104
         /// <summary>应用层参数（COT/CA/IOA 宽度）。</summary>
         public ApplicationLayerParameters Parameters => _al;
 
-        /// <summary>收到 ASDU 的零拷贝回调。</summary>
-        public ServerAsduHandler AsduReceived { get; set; }
+        /// <summary>收到 ASDU 的零拷贝事件（带来源会话，支持多订阅者）。</summary>
+        public event ServerAsduHandler AsduReceived;
 
-        /// <summary>连接层事件回调。</summary>
-        public Action<Iec104Session, ApduConnectionEvent> ConnectionEvent { get; set; }
+        /// <summary>连接层事件（带来源会话，支持多订阅者）。</summary>
+        public event Action<Iec104Session, ApduConnectionEvent> ConnectionEvent;
 
         /// <summary>当前活动会话数。</summary>
         public int SessionCount => _sessions.Count;

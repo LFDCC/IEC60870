@@ -68,8 +68,8 @@ namespace cs104_client2
             Iec104Client con = new Iec104Client("127.0.0.1", 2404);
             _al = con.Parameters;
 
-            con.AsduReceived = AsduReceivedHandler;
-            con.ConnectionEvent = ConnectionHandler;
+            con.AsduReceived += AsduReceivedHandler;
+            con.ConnectionEvent += ConnectionHandler;
 
             await con.ConnectAsync();
             await con.StartDataTransferAsync();
