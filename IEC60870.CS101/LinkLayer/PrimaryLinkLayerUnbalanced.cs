@@ -468,8 +468,8 @@ namespace IEC60870.CS101.LinkLayer
 
                                     linkLayer.SendVariableLengthFramePrimary(FunctionCodePrimary.USER_DATA_CONFIRMED, address, nextFcb, true, asdu);
 
-                                    //lastSentASDU = nextMessage;
-                                    //nextMessage = null;
+                                    lastSentASDU = nextMessage;
+                                    nextMessage = null;
 
                                     nextFcb = !nextFcb;
                                     lastSendTime = currentTime;
