@@ -1,4 +1,10 @@
 /*
+ *  Copyright 2026 LFDCC
+ *
+ *  Licensed under the MIT License. See the LICENSE file for details.
+ */
+
+/*
  *  DebugLogger.cs
  *
  *  Debug-logging delegate shared by the CS101 client/server and the file-transfer

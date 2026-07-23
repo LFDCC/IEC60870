@@ -1,3 +1,9 @@
+/*
+ *  Copyright 2026 LFDCC
+ *
+ *  Licensed under the MIT License. See the LICENSE file for details.
+ */
+
 // 调试辅助：高性能字节数组 → 16 进制字符串
 //
 // 作为 IEC60870.Core 的内置扩展方法，所有引用本库的项目（CS101 / CS104 / 示例 / 业务代码）

@@ -1,3 +1,9 @@
+/*
+ *  Copyright 2026 LFDCC
+ *
+ *  Licensed under the MIT License. See the LICENSE file for details.
+ */
+
 // 调试辅助：CS104 APDU / ASDU → 报文(telegram)文本
 //
 // 作为 IEC60870.CS104 的内置扩展方法，所有引用本库的项目均可直接使用，便于开发调试：

@@ -43,7 +43,7 @@ create_release_folder()
 	cp -rf lib60870 $FOLDER_NAME
 	cp -rf tests $FOLDER_NAME
 	cp -rf CHANGELOG $FOLDER_NAME
-	cp -rf COPYING $FOLDER_NAME
+	cp -rf LICENSE $FOLDER_NAME
 	cp -rf IEC60870.sln $FOLDER_NAME
 	cp -rf README.md $FOLDER_NAME
 	cp -rf user_guide_dotnet.adoc $FOLDER_NAME

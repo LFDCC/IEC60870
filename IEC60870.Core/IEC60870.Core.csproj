@@ -4,6 +4,7 @@
     <Authors>LFDCC</Authors>
     <Company>LFDCC</Company>
     <Copyright>Copyright 2026 LFDCC</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageId>LFDCC.IEC60870.Core</PackageId>
     <Version>4.0.0</Version>
     <RootNamespace>IEC60870.Core</RootNamespace>
