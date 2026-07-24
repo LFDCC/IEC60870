@@ -549,6 +549,36 @@ namespace IEC60870.Core
         }
 
         /// <summary>
+        /// 类型安全版 <see cref="GetElement(int)"/>：按报文 typeId 解析后，断言实际类型为 <typeparamref name="T"/>。
+        /// </summary>
+        /// <remarks>
+        /// 解码仍完全由报文 <c>typeId</c> 决定，<typeparamref name="T"/> 仅做运行期类型断言，<b>不</b>会改变解析结果，
+        /// 也不能保证 <typeparamref name="T"/> 与 <c>typeId</c> 匹配。若实际类型不是 <typeparamref name="T"/>
+        /// （含解析结果为 <c>null</c>），抛出带索引与类型名的 <see cref="ASDUParsingException"/>，而非裸的
+        /// <see cref="System.InvalidCastException"/>，与 <see cref="GetElement(int)"/> 的异常契约保持一致。
+        /// </remarks>
+        /// <typeparam name="T">期望的信息对象具体类型，须为 <see cref="InformationObject"/> 的子类</typeparam>
+        /// <param name="index">元素索引（从 0 开始）</param>
+        /// <returns>类型为 <typeparamref name="T"/> 的信息对象</returns>
+        /// <exception cref="IEC60870.Core.ASDUParsingException">
+        /// 当 index 越界、解析结果为 <c>null</c>，或解析出的实际类型不是 <typeparamref name="T"/> 时抛出
+        /// </exception>
+        public T GetElement<T>(int index) where T : InformationObject
+        {
+            InformationObject io = GetElement(index);
+
+            // GetElement(int) 在未知 typeId 时抛异常、不会返回 null；此处 null 检查仅为防御未来重构。
+            if (io == null)
+                throw new ASDUParsingException("Element " + index + " is null");
+
+            if (io is not T typed)
+                throw new ASDUParsingException(
+                    "Element " + index + " decoded as " + io.GetType().Name + ", not " + typeof(T).Name);
+
+            return typed;
+        }
+
+        /// <summary>
         /// Gets the element (information object) with the specified index
         /// </summary>
         /// <returns>the information object at index</returns>

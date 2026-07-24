@@ -427,5 +427,50 @@ namespace IEC60870.CS104.Tests
             var io = asdu.GetElement(0, factory);
             Assert.IsNotNull(io, "合法 payload 应正常解码返回对象（回归：越界校验不应误拒合法输入）");
         }
+
+        // ── 泛型 GetElement<T>：类型安全版，解析后断言实际类型为 T ──
+        // 解码仍由 typeId 决定，T 仅做运行期断言；类型不符/越界时抛 ASDUParsingException 而非裸 InvalidCastException。
+
+        /// <summary>构造一个最小 M_SP_NA_1（typeId=1, VSQ=1, 单元素非序列）ASDU 供类型断言测试。</summary>
+        private static ASDU BuildSinglePointAsdu()
+        {
+            var al = new ApplicationLayerParameters(); // 默认 SizeOfCOT=2 / CA=2 / IOA=3
+            // 头部 6 字节：typeId=1, vsq=1, cot=1, oa=0, ca=0,ca=0
+            // payload 4 字节：IOA=1(3B) + SPI=1(1B)
+            byte[] msg = { 1, 1, 1, 0, 0, 0, 1, 0, 0, 1 };
+            return new ASDU(al, msg, 0, msg.Length);
+        }
+
+        [Test]
+        public void GetElement_T_HappyPath_ReturnsTyped()
+        {
+            var asdu = BuildSinglePointAsdu();
+            var spi = asdu.GetElement<SinglePointInformation>(0);
+
+            Assert.IsNotNull(spi, "类型匹配时应返回具体类型对象");
+            Assert.AreEqual(1, spi.ObjectAddress, "IOA 应保持");
+            Assert.IsTrue(spi.Value, "SPI 值应保持");
+        }
+
+        [Test]
+        public void GetElement_T_TypeMismatch_ThrowsASDUParsingException()
+        {
+            var asdu = BuildSinglePointAsdu();
+            // 报文实际是 SinglePointInformation，却断言为 MeasuredValueScaled → 应抛受控异常而非 InvalidCastException
+            var ex = Assert.Throws<ASDUParsingException>(() => _ = asdu.GetElement<MeasuredValueScaled>(0),
+                "类型不符时应抛 ASDUParsingException（带类型名上下文）");
+            Assert.That(ex.Message, Does.Contain("MeasuredValueScaled"),
+                "异常消息应指明期望类型，便于排查");
+            Assert.That(ex.Message, Does.Contain("SinglePointInformation"),
+                "异常消息应指明实际类型");
+        }
+
+        [Test]
+        public void GetElement_T_IndexOutOfRange_PropagatesASDUParsingException()
+        {
+            var asdu = BuildSinglePointAsdu(); // NumberOfElements = 1
+            Assert.Throws<ASDUParsingException>(() => _ = asdu.GetElement<SinglePointInformation>(1),
+                "index 越界应透传 GetElement(int) 的 ASDUParsingException");
+        }
     }
 }
