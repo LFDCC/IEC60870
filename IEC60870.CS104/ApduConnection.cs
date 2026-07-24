@@ -10,7 +10,6 @@
 
 using System;
 using System.Buffers;
-using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 using IEC60870.Core;
@@ -77,11 +76,17 @@ namespace IEC60870.CS104
         private TaskCompletionSource<bool> _startDtConWaiter;
         private TaskCompletionSource<bool> _stopDtConWaiter;
 
-        // ── k 窗口背压等待 ────────────────────────────────────────────
-        // 用队列保存所有等待者：k 窗口满时多个并发发送者各自入队，窗口腾出（确认到达）时
-        // 一次性唤醒全部，由它们在 SendAsduAsync 的 while 循环中重新检查 IsSentBufferFull()。
-        // 原单字段 _windowWaiter 在并发下会被"后写覆盖前写"，导致除最后一个外的等待者永久孤挂。
-        private readonly ConcurrentQueue<TaskCompletionSource<bool>> _windowWaiters = new();
+        // ── k 窗口背压（信号量）──────────────────────────────────────
+        // 信号量计 K 个许可，每个许可 = 一个在途未确认 I 帧槽位。发送前 WaitAsync 占槽，
+        // 对端确认（N(R)）时 CheckAndRemoveConfirmed 释放对应数量许可（Release(freedCount)）。
+        // 相比 while+TCS 方案：精确计数（无 thundering herd）。
+        // 关键：本信号量与下方 _sendLock 在 Dispose 时【绝不 Dispose】——SemaphoreSlim.Dispose()
+        // 本身不唤醒 WaitAsync，且其 ct 取消回调异步调度，Dispose 会撕裂内部状态使等待者永久悬挂。
+        // 唤醒统一由连接级 _disposeCts.Cancel() 负责（见 Dispose）。
+        private readonly SemaphoreSlim _kWindowSem;
+
+        // 连接级取消源：Dispose 时 Cancel，唤醒所有 k 窗口等待者（SemaphoreSlim.Dispose 本身不唤醒 WaitAsync）。
+        private readonly CancellationTokenSource _disposeCts = new CancellationTokenSource();
 
         private bool _active;
         private bool _disposed;
@@ -100,6 +105,13 @@ namespace IEC60870.CS104
         /// <summary>连接层事件（支持多订阅者）。</summary>
         public event Action<ApduConnectionEvent> EventHandler;
 
+        /// <summary>
+        /// 构造 APCI 状态机。
+        /// </summary>
+        /// <param name="apciParameters">APCI 参数（<see cref="K"/> 在构造时被捕获为窗口容量；构造后修改本对象无效/不一致，详见 <see cref="APCIParameters"/> 备注）。</param>
+        /// <param name="alParameters">应用层参数。</param>
+        /// <param name="sink">传输层发送出口。</param>
+        /// <param name="isServerSide">是否服务端侧（影响 STARTDT/STOPDT 处理）。</param>
         public ApduConnection(APCIParameters apciParameters, ApplicationLayerParameters alParameters,
             IApduSink sink, bool isServerSide)
         {
@@ -110,6 +122,7 @@ namespace IEC60870.CS104
 
             _maxSent = _apci.K;
             _kBuffer = new SentApdu[_maxSent];
+            _kWindowSem = new SemaphoreSlim(_maxSent, _maxSent);
             ResetT3Timeout(Now);
             _lastConfirmationTime = Now;
         }
@@ -267,54 +280,84 @@ namespace IEC60870.CS104
         {
             if (writer == null) throw new ArgumentNullException(nameof(writer));
 
-            // 背压：k 窗口满则等待
-            while (true)
-            {
-                TaskCompletionSource<bool> waiter = null;
-                lock (_kLock)
-                {
-                    if (!IsSentBufferFull())
-                        break;
-                    waiter = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                    _windowWaiters.Enqueue(waiter);
-                }
-                await waiter.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-
-            await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            // k 窗口背压：信号量计 K 个许可 = K 个在途未确认槽位。对端确认时 Release。
+            // 注意：SemaphoreSlim.Dispose() 本身【不会】唤醒等待中的 WaitAsync（.NET 行为），
+            // 故用连接级 _disposeCts 与调用方 token 链接：Dispose 时 Cancel → WaitAsync 抛 OCE，不悬挂。
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCts.Token);
             try
             {
-                int seqUsed;
-                ReadOnlyMemory<byte> apdu;
+                await _kWindowSem.WaitAsync(linked.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_disposed)
+            {
+                throw new OperationCanceledException("connection has been disposed");
+            }
+            catch (ObjectDisposedException)
+            {
+                throw new OperationCanceledException("connection has been disposed");
+            }
 
-                lock (_kLock)
+            // 拿到许可后若连接已关，归还许可并失败（避免泄漏槽位）
+            if (_disposed)
+            {
+                _kWindowSem.Release();
+                throw new OperationCanceledException("connection has been disposed");
+            }
+
+            // 持有 k 槽后，若后续步骤（获取发送锁 / 写入 sink / 登记 k 缓冲）抛异常，必须归还槽位——
+            // 该 I 帧并未成功发送/确认，否则许可会永久泄漏（直到 GC），窗口逐步收窄直至死锁。
+            // 调用方取消（cancellationToken）与非取消型发送失败（如 sink 抛异常）均需归还。
+            try
+            {
+                await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
                 {
-                    seqUsed = _sendSeq;
-                    apdu = writer.FinishIFormat(_sendSeq, _receiveSeq);
+                    int seqUsed;
+                    int nextSeq;
+                    ReadOnlyMemory<byte> apdu;
 
-                    _sendSeq = (_sendSeq + 1) % 32768;
+                    // 分配 N(S) 并编码 APDU（短临界区，不 await）
+                    lock (_kLock)
+                    {
+                        seqUsed = _sendSeq;
+                        apdu = writer.FinishIFormat(_sendSeq, _receiveSeq);
 
-                    // 记录到 k 缓冲。注意：存入的是自增后的序号（N(S)+1），
+                        nextSeq = (_sendSeq + 1) % 32768;
+                        _sendSeq = nextSeq;
+
+                        _unconfirmedReceived = 0;
+                        _t2Triggered = false;
+                    }
+
+                    // 实际发送（可能抛 OCE/IO 异常）。只有发送成功才登记 k 缓冲，
+                    // 保证异常路径下 _kBuffer 与 k 槽一致（无幻影条目、不会多释放槽位）。
+                    await _sink.SendAsync(apdu, cancellationToken).ConfigureAwait(false);
+
+                    // 发送成功：登记到 k 缓冲。SeqNo 存自增后的序号（N(S)+1），
                     // 与对端回送的 N(R)（下一个期望序号）语义一致，
                     // CheckAndRemoveConfirmed 才能正确匹配确认区间（对齐原版语义）。
-                    int newIndex = _oldest == -1 ? 0 : (_newest + 1) % _maxSent;
-                    _kBuffer[newIndex].SeqNo = _sendSeq;
-                    _kBuffer[newIndex].SentTime = Now;
-                    _newest = newIndex;
-                    if (_oldest == -1)
-                        _oldest = newIndex;
+                    lock (_kLock)
+                    {
+                        int newIndex = _oldest == -1 ? 0 : (_newest + 1) % _maxSent;
+                        _kBuffer[newIndex].SeqNo = nextSeq;
+                        _kBuffer[newIndex].SentTime = Now;
+                        _newest = newIndex;
+                        if (_oldest == -1)
+                            _oldest = newIndex;
+                    }
 
-                    _unconfirmedReceived = 0;
-                    _t2Triggered = false;
+                    ResetT3Timeout(Now);
+                    return seqUsed;
                 }
-
-                await _sink.SendAsync(apdu, cancellationToken).ConfigureAwait(false);
-                ResetT3Timeout(Now);
-                return seqUsed;
+                finally
+                {
+                    _sendLock.Release();
+                }
             }
-            finally
+            catch (Exception)
             {
-                _sendLock.Release();
+                _kWindowSem.Release();
+                throw;
             }
         }
 
@@ -444,21 +487,13 @@ namespace IEC60870.CS104
         //  内部：序列号窗口
         // ═══════════════════════════════════════════════════════════════
 
-        private bool IsSentBufferFull()
-        {
-            if (_oldest == -1)
-                return false;
-            int newIndex = (_newest + 1) % _maxSent;
-            return newIndex == _oldest;
-        }
-
         /// <summary>校验对端 N(R) 合法性并从 k 缓冲移除已确认帧。返回 false 表示序列号越界。</summary>
         private bool CheckAndRemoveConfirmed(int seqNo)
         {
             if (!CheckSequenceNumbers)
                 return true;
 
-            bool freed = false;
+            int freedCount = 0;
 
             lock (_kLock)
             {
@@ -508,12 +543,12 @@ namespace IEC60870.CS104
                                 _oldest = -1;
                             else
                                 _oldest = (_oldest + 1) % _maxSent;
-                            freed = true;
+                            freedCount++;
                             break;
                         }
 
                         _oldest = (_oldest + 1) % _maxSent;
-                        freed = true;
+                        freedCount++;
 
                         int checkIndex = (_newest + 1) % _maxSent;
                         if (_oldest == checkIndex)
@@ -525,18 +560,10 @@ namespace IEC60870.CS104
                 }
             }
 
-            if (freed)
-                ReleaseWindowWaiters();
+            if (freedCount > 0)
+                _kWindowSem.Release(freedCount);
 
             return true;
-        }
-
-        private void ReleaseWindowWaiters()
-        {
-            // 唤醒全部等待者；它们会在 SendAsduAsync 的 while 循环里重新检查 k 窗口是否还有空位，
-            // 仅真正获得空位者继续发送，其余再次入队等待。这样即使一次确认释放多个槽位也正确。
-            while (_windowWaiters.TryDequeue(out TaskCompletionSource<bool> waiter))
-                waiter.TrySetResult(true);
         }
 
         private void ResetT3Timeout(long now) => _nextT3Timeout = now + _apci.T3 * 1000L;
@@ -590,11 +617,16 @@ namespace IEC60870.CS104
             if (_disposed) return;
             _disposed = true;
 
-            // 唤醒所有等待者避免悬挂
+            // 唤醒 U 帧握手等待者
             Signal(ref _startDtConWaiter);
             Signal(ref _stopDtConWaiter);
-            ReleaseWindowWaiters();
-            _sendLock.Dispose();
+            // 取消连接级 CTS：唤醒所有卡在 _kWindowSem.WaitAsync 的 k 窗口等待者（抛 OCE），不悬挂。
+            // 注意：本方法【不 Dispose 任何 SemaphoreSlim】（_kWindowSem / _sendLock）。
+            // SemaphoreSlim.Dispose() 本身不唤醒 WaitAsync，且其 ct 取消回调异步调度——
+            // 若先 Cancel 再 Dispose，回调可能在 Dispose 之后才执行，从而撕裂内部状态使等待者永久悬挂
+            // （实测验证过的坑）。两个信号量均无实质非托管泄漏，交由 GC 终结即可。
+            _disposeCts.Cancel();
+            _disposeCts.Dispose();
         }
     }
 }

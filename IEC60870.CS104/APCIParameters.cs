@@ -17,6 +17,14 @@ namespace IEC60870.CS104
     /// <summary>
     /// Parameters for the CS 104 APCI (Application Protocol Control Information)
     /// </summary>
+    /// <remarks>
+    /// <b>配置时机：</b>请在传给 <see cref="ApduConnection"/> 构造前完成全部赋值，构造后<b>不要</b>再修改本对象。
+    /// <para>
+    /// 语义不一致提示：<see cref="K"/> 在 <see cref="ApduConnection"/> 构造时即被捕获（决定 k 窗口信号量容量），
+    /// 构造后修改 <see cref="K"/> 对窗口流控静默无效；而 <see cref="W"/>/<see cref="T1"/>/<see cref="T2"/>/<see cref="T3"/>
+    /// 在运行期被实时读取，构造后修改会动态影响超时与确认行为。为避免隐蔽的行为漂移，统一在构造前配置好。
+    /// </para>
+    /// </remarks>
     public class APCIParameters
     {
         private int k = 12;

@@ -32,13 +32,32 @@ namespace IEC60870.CS104.Tests
                 => default;
         }
 
-        private static async Task SendDummyAsync(ApduConnection conn, ApplicationLayerParameters al)
+        /// <summary>可手动开启闸门的桩 sink：SendAsync 阻塞直到 <see cref="Open"/>，且响应取消（token 取消即抛 OCE）。</summary>
+        private sealed class GateSink : IApduSink
         {
-            using var w = new PooledApduWriter();
-            var asdu = new ASDU(al, CauseOfTransmission.SPONTANEOUS, false, false, 0, 1, false);
-            asdu.AddInformationObject(new SinglePointInformation(1, true, new QualityDescriptor()));
-            asdu.Encode(w, al);
-            await conn.SendAsduAsync(w, CancellationToken.None).ConfigureAwait(false);
+            private readonly TaskCompletionSource _gate =
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            public bool IsConnected => true;
+            public void Open() => _gate.TrySetResult();
+            public ValueTask SendAsync(ReadOnlyMemory<byte> apdu, CancellationToken cancellationToken)
+                => new ValueTask(_gate.Task.WaitAsync(cancellationToken));
+        }
+
+        private static async Task SendDummyAsync(ApduConnection conn, ApplicationLayerParameters al,
+            CancellationToken ct = default)
+        {
+            var w = new PooledApduWriter();
+            try
+            {
+                var asdu = new ASDU(al, CauseOfTransmission.SPONTANEOUS, false, false, 0, 1, false);
+                asdu.AddInformationObject(new SinglePointInformation(1, true, new QualityDescriptor()));
+                asdu.Encode(w, al);
+                await conn.SendAsduAsync(w, ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                w.Dispose();
+            }
         }
 
         [Test]
@@ -67,6 +86,86 @@ namespace IEC60870.CS104.Tests
                 Assert.Fail("存在发送者被 k 窗口背压永久孤立（代码评审 #4 回归）");
 
             await all.ConfigureAwait(false);
+        }
+
+        [Test]
+        public async Task KWindow_PermitReleasedOnCallerCancellation_DoesNotLeak()
+        {
+            // K=2：两个发送各占一个 k 槽并阻塞在 sink；第三个因窗口满被背压。
+            // 取消第二个（已持有 k 槽）的调用方 token → 其 sink 等待抛 OCE。
+            // 修复前该 k 槽会永久泄漏（调用方取消路径未被归还）→ 第三个发送永远背压死锁；
+            // 修复后槽被归还（catch(Exception){_kWindowSem.Release();throw}）→ 第三个发送继续。
+            var apci = new APCIParameters { K = 2 };
+            var al = new ApplicationLayerParameters();
+            var gate = new GateSink();
+            using var conn = new ApduConnection(apci, al, gate, isServerSide: false);
+
+            // 占用两个 k 槽（均在途、未确认），阻塞在 sink
+            var s1 = SendDummyAsync(conn, al);                 // 槽 0
+            var cts2 = new CancellationTokenSource();
+            var s2 = SendDummyAsync(conn, al, cts2.Token);     // 槽 1
+            await Task.Delay(50).ConfigureAwait(false);
+            Assert.IsFalse(s1.IsCompleted, "send1 应在 sink 处阻塞");
+            Assert.IsFalse(s2.IsCompleted, "send2 应在 sink 处阻塞");
+
+            // 第三个发送：窗口已满 → 背压等待 k 槽
+            var s3 = SendDummyAsync(conn, al);
+            await Task.Delay(50).ConfigureAwait(false);
+            Assert.IsFalse(s3.IsCompleted, "send3 应被 k 窗口背压阻塞（窗口满）");
+
+            // 取消 send2（已持有 k 槽）的调用方 token → 其 sink 等待抛 OCE（先取消，再开闸，避免竞争）
+            cts2.Cancel();
+            await Task.Delay(50).ConfigureAwait(false); // 让取消传播、send2 槽位归还
+
+            // 释放 sink 闸门，让 send1/send3 推进；send2 应已因取消抛 OCE
+            gate.Open();
+
+            var s1s3 = Task.WhenAll(s1, s3);
+            var completed = await Task.WhenAny(s1s3, Task.Delay(5000)).ConfigureAwait(false);
+            Assert.AreSame(s1s3, completed,
+                "k 槽泄漏：send2 取消后 send3 仍未能获得槽位（k 窗口修复回归）");
+
+            try
+            {
+                await s2.ConfigureAwait(false);
+                Assert.Fail("send2 应因调用方取消抛出 OperationCanceledException");
+            }
+            catch (OperationCanceledException)
+            {
+                // 预期：被取消的 send2 抛 OCE（TaskCanceledException 为其子类，CatchAsync 语义）
+            }
+
+            await s1.ConfigureAwait(false); // 应成功
+            await s3.ConfigureAwait(false); // 应成功（拿到了 send2 归还的槽）
+        }
+
+        [Test]
+        public async Task SendAsduAsync_WindowFull_WhenDisposed_DoesNotHang()
+        {
+            // K=1：发 1 个即占满窗口；第 2 个发送会背压等待。此时 Dispose 连接，
+            // 等待者应被 TrySetCanceled 立即取消（抛 OCE），不能永久悬挂。
+            // 修复前：Dispose 用 TrySetResult 唤醒 → 等待者重新循环 → 窗口仍满再次入队 → 永久悬挂。
+            var apci = new APCIParameters { K = 1 };
+            var al = new ApplicationLayerParameters();
+            var sink = new ImmediateSink();
+            using var conn = new ApduConnection(apci, al, sink, isServerSide: false);
+
+            // 第 1 个发送占满窗口（K=1）
+            await SendDummyAsync(conn, al).ConfigureAwait(false);
+
+            // 第 2 个发送因窗口满而背压等待（不会完成）
+            var pending = SendDummyAsync(conn, al);
+            await Task.Delay(50).ConfigureAwait(false); // 让其入队等待
+            Assert.IsFalse(pending.IsCompleted, "第 2 个发送应被 k 窗口背压阻塞");
+
+            // Dispose 连接 → 等待者应被取消
+            conn.Dispose();
+
+            var completed = await Task.WhenAny(pending, Task.Delay(2000)).ConfigureAwait(false);
+            Assert.AreSame(pending, completed, "Dispose 后被背压的发送应立即取消，不能悬挂 2s+");
+
+            Assert.CatchAsync<OperationCanceledException>(async () => await pending.ConfigureAwait(false),
+                "等待者应抛 OperationCanceledException 或其子类（TrySetCanceled 产生 TaskCanceledException）");
         }
 
         [Test]
