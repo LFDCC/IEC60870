@@ -6,10 +6,10 @@
     <Copyright>Copyright 2026 LFDCC</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageId>LFDCC.IEC60870.CS104</PackageId>
-    <Version>4.0.5</Version>
+    <Version>4.0.6</Version>
     <RootNamespace>IEC60870.CS104</RootNamespace>
     <AssemblyName>IEC60870.CS104</AssemblyName>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net6.0</TargetFramework>
     <Nullable>disable</Nullable>
     <LangVersion>latest</LangVersion>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
