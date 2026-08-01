@@ -1,5 +1,5 @@
 /*
- *  LinkLayer.cs
+ *  LinkLayer.cs (LinkLayerEngine)
  *
  *  Copyright 2016-2025 LFDCC
  *
@@ -181,7 +181,7 @@ namespace IEC60870.CS101.LinkLayer
         TIMEOUT
     }
 
-    internal class LinkLayer
+    internal class LinkLayerEngine
     {
         protected Action<string> DebugLog;
 
@@ -210,7 +210,7 @@ namespace IEC60870.CS101.LinkLayer
         private RawMessageHandler sentRawMessageHandler = null;
         private object sentRawMessageHandlerParameter = null;
 
-        public LinkLayer(byte[] buffer, LinkLayerParameters parameters, ISerialLinkTransport transceiver, Action<string> debugLog)
+        public LinkLayerEngine(byte[] buffer, LinkLayerParameters parameters, ISerialLinkTransport transceiver, Action<string> debugLog)
         {
             this.buffer = buffer;
             linkLayerParameters = parameters;
@@ -265,7 +265,7 @@ namespace IEC60870.CS101.LinkLayer
         }
 
         /// <summary>
-        /// Gets or sets a value indicating whether this balanced <see cref="IEC60870.Core.CS103.LinkLayer"/> has DIR bit set
+        /// Gets or sets a value indicating whether this balanced <see cref="LinkLayerEngine"/> has DIR bit set
         /// </summary>
         /// <value><c>true</c> if DI; otherwise, <c>false</c>.</value>
         public bool DIR
@@ -836,9 +836,9 @@ namespace IEC60870.CS101.LinkLayer
             {
                 // 外部取消：本轮直接结束
             }
-            catch (InvalidOperationException)
+            catch (Exception ex)
             {
-                //TODO exception handling code
+                DebugLog?.Invoke("LinkLayerEngine RunAsync error: " + ex.GetType().Name + ": " + ex.Message);
             }
 
             if (linkLayerMode == LinkLayerMode.BALANCED)

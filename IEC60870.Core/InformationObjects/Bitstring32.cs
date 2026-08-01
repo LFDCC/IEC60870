@@ -21,10 +21,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class Bitstring32 : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 5;
-        }
 
         override public TypeID Type
         {
@@ -109,10 +105,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class Bitstring32WithCP24Time2a : Bitstring32
     {
-        override public int GetEncodedSize()
-        {
-            return 8;
-        }
 
         override public TypeID Type
         {
@@ -171,16 +163,12 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 
     public class Bitstring32WithCP56Time2a : Bitstring32
     {
-        override public int GetEncodedSize()
-        {
-            return 12;
-        }
 
         override public TypeID Type
         {
@@ -239,7 +227,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
 
     }

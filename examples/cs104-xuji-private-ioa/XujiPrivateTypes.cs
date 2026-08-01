@@ -212,8 +212,8 @@ namespace cs104_xuji_private_ioa
         {
             base.Encode(frame, parameters, isSequence);
             frame.SetNextByte(Event.EncodedValue);
-            frame.AppendBytes(ElapsedTime.GetEncodedValue());
-            frame.AppendBytes(Timestamp.GetEncodedValue());
+            frame.AppendBytes(ElapsedTime.AsSpan());
+            frame.AppendBytes(Timestamp.AsSpan());
             frame.SetNextByte(FaultCount);
             for (int i = 0; i < FaultData.Length; i++) frame.SetNextByte(FaultData[i]);
         }
@@ -330,8 +330,8 @@ namespace cs104_xuji_private_ioa
             base.Encode(frame, parameters, isSequence);
             frame.SetNextByte(SPE.EncodedValue);
             frame.SetNextByte(QDP.EncodedValue);
-            frame.AppendBytes(ElapsedTime.GetEncodedValue());
-            frame.AppendBytes(Timestamp.GetEncodedValue());
+            frame.AppendBytes(ElapsedTime.AsSpan());
+            frame.AppendBytes(Timestamp.AsSpan());
             frame.SetNextByte(FaultCount);
             for (int i = 0; i < FaultData.Length; i++) frame.SetNextByte(FaultData[i]);
         }

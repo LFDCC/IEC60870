@@ -17,10 +17,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class ParameterNormalizedValue : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 3;
-        }
 
         override public TypeID Type
         {
@@ -110,7 +106,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(scaledValue.GetEncodedValue());
+            frame.AppendBytes(scaledValue.AsSpan());
 
             frame.SetNextByte(qpm);
         }
@@ -118,10 +114,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class ParameterScaledValue : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 3;
-        }
 
         override public TypeID Type
         {
@@ -190,7 +182,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(scaledValue.GetEncodedValue());
+            frame.AppendBytes(scaledValue.AsSpan());
 
             frame.SetNextByte(qpm);
         }
@@ -198,10 +190,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class ParameterFloatValue : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 5;
-        }
 
         override public TypeID Type
         {
@@ -281,10 +269,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class ParameterActivation : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 1;
-        }
 
         override public TypeID Type
         {

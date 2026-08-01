@@ -1,3 +1,13 @@
+Changes to version 4.0.7
+------------------------
+- ASDU god class split: ASDU.cs is now a thin facade; encoding moved to AsduEncoder, decoding + TypeID registry to AsduDecoder (new AsduDecoding.cs)
+- TypeID registry is now the single source of truth for payload sizes and decode dispatch; fixed 3 size/dedispatch drifts (M_BO_TB_1 10->12, C_CS_NA_1 5->7, M_PS_NA_1 wrong class)
+- GetEncodedSize() is now derived from the TypeID registry (base class default) instead of ~60 per-class hardcoded overrides; only variable-size types (FileSegment) keep an override
+- Encoding path 0GC: value objects (CP16/24/32/56Time2a, ScaledValue, BinaryCounterReading, StatusAndStatusChangeDetection) gained AsSpan(); all frame.AppendBytes(GetEncodedValue()) calls switched to span-based AppendBytes(AsSpan())
+- LinkLayer class renamed to LinkLayerEngine (removes namespace/type name clash, drops the LinkLayerType alias hack)
+- CS104/CS101 timer loops: silent exception swallowing replaced with diagnostic output
+- Target net6.0; same public API surface as 4.0.6
+
 Changes to version 2.3.0
 ------------------------
 

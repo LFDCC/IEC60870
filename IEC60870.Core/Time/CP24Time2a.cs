@@ -12,6 +12,8 @@
  *  See COPYING file for the complete license text.
  */
 
+using System;
+
 namespace IEC60870.Core.Time
 {
     public class CP24Time2a
@@ -178,6 +180,20 @@ namespace IEC60870.Core.Time
         public byte[] GetEncodedValue()
         {
             return encodedValue;
+        }
+
+        /// <summary>
+        /// Returns the encoded value as a ReadOnlySpan for zero-allocation encoding.
+        /// </summary>
+        public ReadOnlySpan<byte> AsSpan() => encodedValue.AsSpan();
+
+        /// <summary>
+        /// Writes the 3-byte CP24Time2a encoding into <paramref name="destination"/>
+        /// without intermediate allocation. Throws if the destination is too small.
+        /// </summary>
+        public void WriteTo(Span<byte> destination)
+        {
+            encodedValue.AsSpan().CopyTo(destination);
         }
 
 

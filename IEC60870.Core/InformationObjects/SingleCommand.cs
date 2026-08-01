@@ -28,10 +28,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class SingleCommand : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 1;
-        }
 
         override public TypeID Type
         {
@@ -150,10 +146,6 @@ namespace IEC60870.Core.InformationObjects
         /// <summary>元素尺寸 = SCO(1) + CP56Time2a(7) = 8。基类 SingleCommand 返回 1（仅 SCO），
         /// 此处必须重写，否则：①解码构造函数长度守卫误判为 1，短消息绕过后读 CP56Time2a 抛 IndexOutOfRange；
         /// ②AddInformationObject 的 spaceLeft 误算，AsByteArray() 判不等返回 null。</summary>
-        override public int GetEncodedSize()
-        {
-            return base.GetEncodedSize() + 7;
-        }
 
         override public TypeID Type
         {
@@ -210,16 +202,12 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 
     public class DoubleCommand : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 1;
-        }
 
         override public TypeID Type
         {
@@ -305,10 +293,6 @@ namespace IEC60870.Core.InformationObjects
     {
         /// <summary>元素尺寸 = DCQ(1) + CP56Time2a(7) = 8。基类 DoubleCommand 返回 1（仅 DCQ），
         /// 必须重写（理由同 SingleCommandWithCP56Time2a）。</summary>
-        override public int GetEncodedSize()
-        {
-            return base.GetEncodedSize() + 7;
-        }
 
         override public TypeID Type
         {
@@ -365,7 +349,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
 
     }
@@ -416,10 +400,6 @@ namespace IEC60870.Core.InformationObjects
     {
         /// <summary>元素尺寸 = RCO(1) + CP56Time2a(7) = 8。基类 StepCommand→DoubleCommand 返回 1（仅 RCO），
         /// 必须重写（理由同 SingleCommandWithCP56Time2a）。</summary>
-        override public int GetEncodedSize()
-        {
-            return base.GetEncodedSize() + 7;
-        }
 
         override public TypeID Type
         {
@@ -476,7 +456,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
 
     }

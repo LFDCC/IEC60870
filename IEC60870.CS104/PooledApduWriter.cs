@@ -52,7 +52,12 @@ namespace IEC60870.CS104
 
         public override void AppendBytes(byte[] bytes)
         {
-            Buffer.BlockCopy(bytes, 0, _buffer, _pos, bytes.Length);
+            AppendBytes(bytes.AsSpan());
+        }
+
+        public override void AppendBytes(ReadOnlySpan<byte> bytes)
+        {
+            bytes.CopyTo(_buffer.AsSpan(_pos));
             _pos += bytes.Length;
         }
 

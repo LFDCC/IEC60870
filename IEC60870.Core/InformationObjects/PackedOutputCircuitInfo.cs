@@ -17,10 +17,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class PackedOutputCircuitInfo : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 7;
-        }
 
         override public TypeID Type
         {
@@ -124,18 +120,14 @@ namespace IEC60870.Core.InformationObjects
 
             frame.SetNextByte(qdp.EncodedValue);
 
-            frame.AppendBytes(operatingTime.GetEncodedValue());
+            frame.AppendBytes(operatingTime.AsSpan());
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 
     public class PackedOutputCircuitInfoWithCP56Time2a : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 11;
-        }
 
         override public TypeID Type
         {
@@ -240,9 +232,9 @@ namespace IEC60870.Core.InformationObjects
 
             frame.SetNextByte(qdp.EncodedValue);
 
-            frame.AppendBytes(operatingTime.GetEncodedValue());
+            frame.AppendBytes(operatingTime.AsSpan());
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 }

@@ -17,7 +17,6 @@ using System.IO.Ports;
 using System.Threading;
 using System.Threading.Tasks;
 using IEC60870.CS101.LinkLayer;
-using LinkLayerType = IEC60870.CS101.LinkLayer.LinkLayer;
 using IEC60870.Core;
 using IEC60870.Core.Time;
 using IEC60870.Core.InformationObjects;
@@ -37,7 +36,7 @@ namespace IEC60870.CS101
     {
         private CancellationTokenSource _cts = null;
 
-        internal LinkLayerType linkLayer = null;
+        internal LinkLayerEngine linkLayer = null;
 
         internal FileClient fileClient = null;
 
@@ -249,7 +248,7 @@ namespace IEC60870.CS101
 
         private void InitializeLinkLayer(LinkLayerMode mode)
         {
-            linkLayer = new LinkLayerType(buffer, linkLayerParameters, _transport, DebugLog);
+            linkLayer = new LinkLayerEngine(buffer, linkLayerParameters, _transport, DebugLog);
             linkLayer.LinkLayerMode = mode;
 
             if (mode == LinkLayerMode.BALANCED)

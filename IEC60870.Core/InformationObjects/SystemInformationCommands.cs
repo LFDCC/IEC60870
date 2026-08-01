@@ -37,10 +37,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class InterrogationCommand : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 1;
-        }
 
         override public TypeID Type
         {
@@ -100,10 +96,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class CounterInterrogationCommand : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 1;
-        }
 
         override public TypeID Type
         {
@@ -168,10 +160,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class ReadCommand : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 0;
-        }
 
         override public TypeID Type
         {
@@ -238,11 +226,6 @@ namespace IEC60870.Core.InformationObjects
             }
         }
 
-        override public int GetEncodedSize()
-        {
-            return 9;
-        }
-
         override public TypeID Type
         {
             get
@@ -293,16 +276,12 @@ namespace IEC60870.Core.InformationObjects
             frame.SetNextByte((byte)(tsc % 256));
             frame.SetNextByte((byte)(tsc / 256));
 
-            frame.AppendBytes(time.GetEncodedValue());
+            frame.AppendBytes(time.AsSpan());
         }
     }
 
     public class TestCommand : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 2;
-        }
 
         override public TypeID Type
         {
@@ -362,10 +341,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class ClockSynchronizationCommand : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 7;
-        }
 
         override public TypeID Type
         {
@@ -419,16 +394,12 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(newTime.GetEncodedValue());
+            frame.AppendBytes(newTime.AsSpan());
         }
     }
 
     public class ResetProcessCommand : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 1;
-        }
 
         override public TypeID Type
         {
@@ -492,10 +463,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class DelayAcquisitionCommand : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 2;
-        }
 
         override public TypeID Type
         {
@@ -549,7 +516,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(delay.GetEncodedValue());
+            frame.AppendBytes(delay.AsSpan());
         }
     }
 

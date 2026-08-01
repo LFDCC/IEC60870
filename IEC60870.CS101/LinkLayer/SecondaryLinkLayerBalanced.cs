@@ -19,12 +19,12 @@ namespace IEC60870.CS101.LinkLayer
         private bool expectedFcb = true;
 
         private Action<string> DebugLog;
-        private LinkLayer linkLayer;
+        private LinkLayerEngine linkLayer;
         private Func<int, byte[], int, int, bool> HandleApplicationLayer;
 
         private int linkLayerAddress = 0;
 
-        public SecondaryLinkLayerBalanced(LinkLayer linkLayer, int address,
+        public SecondaryLinkLayerBalanced(LinkLayerEngine linkLayer, int address,
                                     Func<int, byte[], int, int, bool> handleApplicationLayer, Action<string> debugLog)
         {
             this.linkLayer = linkLayer;

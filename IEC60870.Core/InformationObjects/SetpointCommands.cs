@@ -18,10 +18,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class SetpointCommandNormalized : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 3;
-        }
 
         override public TypeID Type
         {
@@ -107,7 +103,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(scaledValue.GetEncodedValue());
+            frame.AppendBytes(scaledValue.AsSpan());
 
             frame.SetNextByte(qos.GetEncodedValue());
         }
@@ -115,10 +111,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class SetpointCommandNormalizedWithCP56Time2a : SetpointCommandNormalized
     {
-        override public int GetEncodedSize()
-        {
-            return 10;
-        }
 
         override public TypeID Type
         {
@@ -175,16 +167,12 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 
     public class SetpointCommandScaled : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 3;
-        }
 
         override public TypeID Type
         {
@@ -247,7 +235,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(scaledValue.GetEncodedValue());
+            frame.AppendBytes(scaledValue.AsSpan());
 
             frame.SetNextByte(qos.GetEncodedValue());
         }
@@ -255,10 +243,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class SetpointCommandScaledWithCP56Time2a : SetpointCommandScaled
     {
-        override public int GetEncodedSize()
-        {
-            return 10;
-        }
 
         override public TypeID Type
         {
@@ -309,16 +293,12 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 
     public class SetpointCommandShort : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 5;
-        }
 
         override public TypeID Type
         {
@@ -390,10 +370,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class SetpointCommandShortWithCP56Time2a : SetpointCommandShort
     {
-        override public int GetEncodedSize()
-        {
-            return 12;
-        }
 
         override public TypeID Type
         {
@@ -444,17 +420,13 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 
 
     public class Bitstring32Command : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 4;
-        }
 
         override public TypeID Type
         {
@@ -515,10 +487,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class Bitstring32CommandWithCP56Time2a : Bitstring32Command
     {
-        override public int GetEncodedSize()
-        {
-            return 11;
-        }
 
         override public TypeID Type
         {
@@ -569,7 +537,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 }

@@ -22,10 +22,6 @@ namespace IEC60870.Core.InformationObjects
     /// </summary>
     public class IntegratedTotals : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 5;
-        }
 
         override public TypeID Type
         {
@@ -81,7 +77,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(bcr.GetEncodedValue());
+            frame.AppendBytes(bcr.AsSpan());
         }
     }
 
@@ -90,10 +86,6 @@ namespace IEC60870.Core.InformationObjects
     /// </summary>
     public class IntegratedTotalsWithCP24Time2a : IntegratedTotals
     {
-        override public int GetEncodedSize()
-        {
-            return 8;
-        }
 
         override public TypeID Type
         {
@@ -157,7 +149,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 
@@ -166,10 +158,6 @@ namespace IEC60870.Core.InformationObjects
     /// </summary>
     public class IntegratedTotalsWithCP56Time2a : IntegratedTotals
     {
-        override public int GetEncodedSize()
-        {
-            return 12;
-        }
 
         override public TypeID Type
         {
@@ -233,7 +221,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 }

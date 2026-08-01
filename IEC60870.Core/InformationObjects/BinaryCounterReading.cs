@@ -31,6 +31,11 @@ namespace IEC60870.Core.InformationObjects
         }
 
         /// <summary>
+        /// Returns the encoded value as a ReadOnlySpan for zero-allocation encoding.
+        /// </summary>
+        public ReadOnlySpan<byte> AsSpan() => encodedValue.AsSpan();
+
+        /// <summary>
         /// Gets or sets the counter value.
         /// </summary>
         /// <value>The value.</value>

@@ -32,10 +32,6 @@ namespace IEC60870.Core.InformationObjects
     /// </summary>
     public class DoublePointInformation : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 1;
-        }
 
         override public TypeID Type
         {
@@ -121,10 +117,6 @@ namespace IEC60870.Core.InformationObjects
     /// </summary>
     public class DoublePointWithCP24Time2a : DoublePointInformation
     {
-        override public int GetEncodedSize()
-        {
-            return 4;
-        }
 
         override public TypeID Type
         {
@@ -183,7 +175,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 
@@ -192,10 +184,6 @@ namespace IEC60870.Core.InformationObjects
     /// </summary>
     public class DoublePointWithCP56Time2a : DoublePointInformation
     {
-        override public int GetEncodedSize()
-        {
-            return 8;
-        }
 
         override public TypeID Type
         {
@@ -254,7 +242,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 

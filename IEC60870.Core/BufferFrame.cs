@@ -10,6 +10,8 @@
  *  See COPYING file for the complete license text.
  */
 
+using System;
+
 namespace IEC60870.Core
 {
     /// <summary>
@@ -57,8 +59,13 @@ namespace IEC60870.Core
 
         public override void AppendBytes(byte[] bytes)
         {
-            for (int i = 0; i < bytes.Length; i++)
-                buffer[bufPos++] = bytes[i];
+            AppendBytes(bytes.AsSpan());
+        }
+
+        public override void AppendBytes(ReadOnlySpan<byte> bytes)
+        {
+            bytes.CopyTo(buffer.AsSpan(bufPos));
+            bufPos += bytes.Length;
         }
 
         public override int GetMsgSize()

@@ -18,10 +18,6 @@ namespace IEC60870.Core.InformationObjects
 {
     public class MeasuredValueScaled : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 3;
-        }
 
         override public TypeID Type
         {
@@ -99,7 +95,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(scaledValue.GetEncodedValue());
+            frame.AppendBytes(scaledValue.AsSpan());
 
             frame.SetNextByte(quality.EncodedValue);
         }
@@ -108,10 +104,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class MeasuredValueScaledWithCP24Time2a : MeasuredValueScaled
     {
-        override public int GetEncodedSize()
-        {
-            return 6;
-        }
 
         override public TypeID Type
         {
@@ -170,17 +162,13 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
 
     }
 
     public class MeasuredValueScaledWithCP56Time2a : MeasuredValueScaled
     {
-        override public int GetEncodedSize()
-        {
-            return 10;
-        }
 
         override public TypeID Type
         {
@@ -239,7 +227,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
 
     }

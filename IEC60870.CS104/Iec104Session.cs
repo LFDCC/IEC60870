@@ -135,8 +135,11 @@ namespace IEC60870.CS104
                     }
                 }
             }
-            catch (OperationCanceledException) { /* normal */ }
-            catch (Exception) { /* connection likely closing */ }
+            catch (OperationCanceledException) { /* normal shutdown */ }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Iec104Session timer loop error: " + ex.GetType().Name + ": " + ex.Message);
+            }
         }
 
         /// <summary>

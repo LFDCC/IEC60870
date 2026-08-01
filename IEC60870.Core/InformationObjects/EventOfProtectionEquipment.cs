@@ -20,10 +20,6 @@ namespace IEC60870.Core.InformationObjects
     /// </summary>
     public class EventOfProtectionEquipment : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 6;
-        }
 
         override public TypeID Type
         {
@@ -111,9 +107,9 @@ namespace IEC60870.Core.InformationObjects
 
             frame.SetNextByte(singleEvent.EncodedValue);
 
-            frame.AppendBytes(elapsedTime.GetEncodedValue());
+            frame.AppendBytes(elapsedTime.AsSpan());
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 
@@ -122,10 +118,6 @@ namespace IEC60870.Core.InformationObjects
     /// </summary>
     public class EventOfProtectionEquipmentWithCP56Time2a : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 10;
-        }
 
         override public TypeID Type
         {
@@ -213,9 +205,9 @@ namespace IEC60870.Core.InformationObjects
 
             frame.SetNextByte(singleEvent.EncodedValue);
 
-            frame.AppendBytes(elapsedTime.GetEncodedValue());
+            frame.AppendBytes(elapsedTime.AsSpan());
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 }

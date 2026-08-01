@@ -19,10 +19,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class PackedStartEventsOfProtectionEquipment : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 7;
-        }
 
         override public TypeID Type
         {
@@ -125,18 +121,14 @@ namespace IEC60870.Core.InformationObjects
 
             frame.SetNextByte(qdp.EncodedValue);
 
-            frame.AppendBytes(elapsedTime.GetEncodedValue());
+            frame.AppendBytes(elapsedTime.AsSpan());
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 
     public class PackedStartEventsOfProtectionEquipmentWithCP56Time2a : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 11;
-        }
 
         override public TypeID Type
         {
@@ -239,9 +231,9 @@ namespace IEC60870.Core.InformationObjects
 
             frame.SetNextByte(qdp.EncodedValue);
 
-            frame.AppendBytes(elapsedTime.GetEncodedValue());
+            frame.AppendBytes(elapsedTime.AsSpan());
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 }

@@ -17,7 +17,6 @@ using System.IO.Ports;
 using System.Threading;
 using System.Threading.Tasks;
 using IEC60870.CS101.LinkLayer;
-using LinkLayerType = IEC60870.CS101.LinkLayer.LinkLayer;
 using IEC60870.Core;
 using IEC60870.CS101.File;
 using IEC60870.Core.InformationObjects;
@@ -107,7 +106,7 @@ namespace IEC60870.CS101
             }
         }
 
-        private LinkLayerType linkLayer = null;
+        private LinkLayerEngine linkLayer = null;
 
         private byte[] buffer = new byte[300];
         private SerialPort _port = null;
@@ -575,7 +574,7 @@ namespace IEC60870.CS101
         {
             if (initialized == false)
             {
-                linkLayer = new LinkLayerType(buffer, linkLayerParameters, _transport, DebugLog);
+                linkLayer = new LinkLayerEngine(buffer, linkLayerParameters, _transport, DebugLog);
                 linkLayer.LinkLayerMode = linkLayerMode;
 
                 if (linkLayerMode == LinkLayerMode.BALANCED)

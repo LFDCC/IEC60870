@@ -38,7 +38,7 @@ namespace IEC60870.CS101.LinkLayer
 
     internal class PrimaryLinkLayerUnbalanced : PrimaryLinkLayer, IPrimaryLinkLayerUnbalanced
     {
-        private LinkLayer linkLayer;
+        private LinkLayerEngine linkLayer;
         private Action<string> DebugLog;
 
         private List<SlaveConnection> slaveConnections;
@@ -85,7 +85,7 @@ namespace IEC60870.CS101.LinkLayer
             public bool requestClass2Data = false;
             public bool requestClass1Data = false;
 
-            private LinkLayer linkLayer;
+            private LinkLayerEngine linkLayer;
 
             private void SetState(LinkLayerState newState)
             {
@@ -100,7 +100,7 @@ namespace IEC60870.CS101.LinkLayer
                 }
             }
 
-            public SlaveConnection(int address, LinkLayer linkLayer, Action<string> debugLog, PrimaryLinkLayerUnbalanced linkLayerUnbalanced)
+            public SlaveConnection(int address, LinkLayerEngine linkLayer, Action<string> debugLog, PrimaryLinkLayerUnbalanced linkLayerUnbalanced)
             {
                 this.address = address;
                 this.linkLayer = linkLayer;
@@ -682,7 +682,7 @@ namespace IEC60870.CS101.LinkLayer
          * END IPrimaryLinkLayerUnbalanced
          ********************************/
 
-        public PrimaryLinkLayerUnbalanced(LinkLayer linkLayer, IClientLinkLayerCallbacks callbacks, Action<string> debugLog)
+        public PrimaryLinkLayerUnbalanced(LinkLayerEngine linkLayer, IClientLinkLayerCallbacks callbacks, Action<string> debugLog)
         {
             this.linkLayer = linkLayer;
             this.callbacks = callbacks;

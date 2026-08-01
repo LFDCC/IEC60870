@@ -20,12 +20,12 @@ namespace IEC60870.CS101.LinkLayer
         private bool expectedFcb = true;
 
         private Action<string> DebugLog;
-        private LinkLayer linkLayer;
+        private LinkLayerEngine linkLayer;
         private IServerApplicationLayer applicationLayer;
 
         private int linkLayerAddress = 0;
 
-        public SecondaryLinkLayerUnbalanced(LinkLayer linkLayer, int address, IServerApplicationLayer applicationLayer, Action<string> debugLog)
+        public SecondaryLinkLayerUnbalanced(LinkLayerEngine linkLayer, int address, IServerApplicationLayer applicationLayer, Action<string> debugLog)
         {
             this.linkLayer = linkLayer;
             linkLayerAddress = address;

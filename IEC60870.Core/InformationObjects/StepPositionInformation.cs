@@ -21,10 +21,6 @@ namespace IEC60870.Core.InformationObjects
     /// </summary>
     public class StepPositionInformation : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 2;
-        }
 
         override public TypeID Type
         {
@@ -160,10 +156,6 @@ namespace IEC60870.Core.InformationObjects
     /// </summary>
     public class StepPositionWithCP24Time2a : StepPositionInformation
     {
-        override public int GetEncodedSize()
-        {
-            return 5;
-        }
 
         override public TypeID Type
         {
@@ -226,7 +218,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
 
     }
@@ -236,10 +228,6 @@ namespace IEC60870.Core.InformationObjects
     /// </summary>
     public class StepPositionWithCP56Time2a : StepPositionInformation
     {
-        override public int GetEncodedSize()
-        {
-            return 9;
-        }
 
         override public TypeID Type
         {
@@ -302,7 +290,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 

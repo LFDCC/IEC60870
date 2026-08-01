@@ -335,6 +335,20 @@ namespace IEC60870.Core.Time
             return encodedValue;
         }
 
+        /// <summary>
+        /// Returns the encoded value as a ReadOnlySpan for zero-allocation encoding.
+        /// </summary>
+        public ReadOnlySpan<byte> AsSpan() => encodedValue.AsSpan();
+
+        /// <summary>
+        /// Writes the 7-byte CP56Time2a encoding into <paramref name="destination"/>
+        /// without intermediate allocation. Throws if the destination is too small.
+        /// </summary>
+        public void WriteTo(Span<byte> destination)
+        {
+            encodedValue.AsSpan().CopyTo(destination);
+        }
+
         public override string ToString()
         {
             return string.Format("[CP56Time2a: Millisecond={0}, Second={1}, Minute={2}, Hour={3}, DayOfWeek={4}, DayOfMonth={5}, Month={6}, Year={7}, SummerTime={8}, Invalid={9} Substituted={10}]", Millisecond, Second, Minute, Hour, DayOfWeek, DayOfMonth, Month, Year, SummerTime, Invalid, Substituted);

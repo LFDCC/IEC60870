@@ -16,10 +16,6 @@ namespace IEC60870.Core.InformationObjects
 {
     public class SinglePointInformation : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 1;
-        }
 
         override public TypeID Type
         {
@@ -109,10 +105,6 @@ namespace IEC60870.Core.InformationObjects
 
     public class SinglePointWithCP24Time2a : SinglePointInformation
     {
-        override public int GetEncodedSize()
-        {
-            return 4;
-        }
 
         override public TypeID Type
         {
@@ -171,7 +163,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 
@@ -180,10 +172,6 @@ namespace IEC60870.Core.InformationObjects
     /// </summary>
     public class SinglePointWithCP56Time2a : SinglePointInformation
     {
-        override public int GetEncodedSize()
-        {
-            return 8;
-        }
 
         override public TypeID Type
         {
@@ -242,16 +230,12 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 
     public class PackedSinglePointWithSCD : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 5;
-        }
 
         override public TypeID Type
         {
@@ -330,7 +314,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(scd.GetEncodedValue());
+            frame.AppendBytes(scd.AsSpan());
 
             frame.SetNextByte(qds.EncodedValue);
         }

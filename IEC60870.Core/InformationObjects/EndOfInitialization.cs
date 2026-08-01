@@ -36,11 +36,6 @@ namespace IEC60870.Core.InformationObjects
             }
         }
 
-        override public int GetEncodedSize()
-        {
-            return 1;
-        }
-
         override public TypeID Type
         {
             get

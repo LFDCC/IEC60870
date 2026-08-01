@@ -87,10 +87,6 @@ namespace IEC60870.Core.File
     /// </summary>
     public class FileReady : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 6;
-        }
 
         override public TypeID Type
         {
@@ -221,10 +217,6 @@ namespace IEC60870.Core.File
     /// </summary>
     public class SectionReady : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 7;
-        }
 
         override public TypeID Type
         {
@@ -367,10 +359,6 @@ namespace IEC60870.Core.File
     /// </summary>
     public class FileCallOrSelect : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 4;
-        }
 
         override public TypeID Type
         {
@@ -481,10 +469,6 @@ namespace IEC60870.Core.File
     /// </summary>
     public class FileLastSegmentOrSection : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 5;
-        }
 
         override public TypeID Type
         {
@@ -613,10 +597,6 @@ namespace IEC60870.Core.File
     /// </summary>
     public class FileACK : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 4;
-        }
 
         override public TypeID Type
         {
@@ -754,10 +734,6 @@ namespace IEC60870.Core.File
     /// </summary>
     public class FileDirectory : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 13;
-        }
 
         override public TypeID Type
         {
@@ -928,7 +904,7 @@ namespace IEC60870.Core.File
 
             frame.SetNextByte(sof);
 
-            frame.AppendBytes(creationTime.GetEncodedValue());
+            frame.AppendBytes(creationTime.AsSpan());
         }
     }
 

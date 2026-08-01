@@ -55,6 +55,11 @@ namespace IEC60870.Core.InformationObjects
             return encodedValue;
         }
 
+        /// <summary>
+        /// Returns the encoded value as a ReadOnlySpan for zero-allocation encoding.
+        /// </summary>
+        public ReadOnlySpan<byte> AsSpan() => encodedValue.AsSpan();
+
         public int Value
         {
             get

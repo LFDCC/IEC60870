@@ -232,6 +232,20 @@ namespace IEC60870.Core.Time
             return encodedValue;
         }
 
+        /// <summary>
+        /// Returns the encoded value as a ReadOnlySpan for zero-allocation encoding.
+        /// </summary>
+        public ReadOnlySpan<byte> AsSpan() => encodedValue.AsSpan();
+
+        /// <summary>
+        /// Writes the 4-byte CP32Time2a encoding into <paramref name="destination"/>
+        /// without intermediate allocation. Throws if the destination is too small.
+        /// </summary>
+        public void WriteTo(Span<byte> destination)
+        {
+            encodedValue.AsSpan().CopyTo(destination);
+        }
+
         public override string ToString()
         {
             return string.Format("[CP32Time2a: Millisecond={0}, Second={1}, Minute={2}, Hour={3}, SummerTime={4}, Invalid={5} Substituted={6}]", Millisecond, Second, Minute, Hour, SummerTime, Invalid, Substituted);

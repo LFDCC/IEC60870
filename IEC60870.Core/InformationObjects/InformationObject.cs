@@ -60,10 +60,17 @@ namespace IEC60870.Core.InformationObjects
         }
 
         /// <summary>
-        /// Gets the encoded payload size of the object (information object size without the IOA)
+        /// Gets the encoded payload size of the object (information object size without the IOA).
+        /// 默认实现从 <see cref="AsduDecoder"/> 的 TypeID 注册表派生（单一事实源）；
+        /// 变长类型（如 FileSegment）必须 override 覆盖。
         /// </summary>
         /// <returns>The encoded size in bytes</returns>
-        public abstract int GetEncodedSize();
+        public virtual int GetEncodedSize()
+        {
+            if (AsduDecoder.TryGetDescriptor(Type, out TypeDescriptor descriptor) && descriptor.PayloadSize >= 0)
+                return descriptor.PayloadSize;
+            return 0;
+        }
 
         public int ObjectAddress
         {

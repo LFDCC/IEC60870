@@ -6,7 +6,7 @@
     <Copyright>Copyright 2026 LFDCC</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageId>LFDCC.IEC60870.CS101</PackageId>
-    <Version>4.0.6</Version>
+    <Version>4.0.7</Version>
     <RootNamespace>IEC60870.CS101</RootNamespace>
     <AssemblyName>IEC60870.CS101</AssemblyName>
     <TargetFramework>net6.0</TargetFramework>

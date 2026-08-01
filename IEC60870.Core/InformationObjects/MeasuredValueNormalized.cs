@@ -21,10 +21,6 @@ namespace IEC60870.Core.InformationObjects
     /// </summary>
     public class MeasuredValueNormalizedWithoutQuality : InformationObject
     {
-        override public int GetEncodedSize()
-        {
-            return 2;
-        }
 
         override public TypeID Type
         {
@@ -103,7 +99,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(scaledValue.GetEncodedValue());
+            frame.AppendBytes(scaledValue.AsSpan());
         }
     }
 
@@ -112,10 +108,6 @@ namespace IEC60870.Core.InformationObjects
     /// </summary>
     public class MeasuredValueNormalized : MeasuredValueNormalizedWithoutQuality
     {
-        override public int GetEncodedSize()
-        {
-            return 3;
-        }
 
         override public TypeID Type
         {
@@ -189,10 +181,6 @@ namespace IEC60870.Core.InformationObjects
     /// </summary>
     public class MeasuredValueNormalizedWithCP24Time2a : MeasuredValueNormalized
     {
-        override public int GetEncodedSize()
-        {
-            return 6;
-        }
 
         override public TypeID Type
         {
@@ -258,7 +246,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 
@@ -267,10 +255,6 @@ namespace IEC60870.Core.InformationObjects
     /// </summary>
     public class MeasuredValueNormalizedWithCP56Time2a : MeasuredValueNormalized
     {
-        override public int GetEncodedSize()
-        {
-            return 10;
-        }
 
         override public TypeID Type
         {
@@ -335,7 +319,7 @@ namespace IEC60870.Core.InformationObjects
         {
             base.Encode(frame, parameters, isSequence);
 
-            frame.AppendBytes(timestamp.GetEncodedValue());
+            frame.AppendBytes(timestamp.AsSpan());
         }
     }
 

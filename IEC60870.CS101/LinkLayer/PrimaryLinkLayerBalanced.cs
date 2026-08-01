@@ -31,14 +31,14 @@ namespace IEC60870.CS101.LinkLayer
 
         private int linkLayerAddressOtherStation = 0;
 
-        private LinkLayer linkLayer;
+        private LinkLayerEngine linkLayer;
 
         Func<BufferFrame> GetUserData;
 
         private LinkLayerStateChanged stateChangedCallback = null;
         private object stateChangedCallbackParameter = null;
 
-        public PrimaryLinkLayerBalanced(LinkLayer linkLayer, Func<BufferFrame> getUserData, Action<string> debugLog)
+        public PrimaryLinkLayerBalanced(LinkLayerEngine linkLayer, Func<BufferFrame> getUserData, Action<string> debugLog)
         {
             DebugLog = debugLog;
             GetUserData = getUserData;
