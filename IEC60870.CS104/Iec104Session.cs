@@ -11,7 +11,6 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using TouchSocket.Core;
 using TouchSocket.Sockets;
 using IEC60870.Core;
 
@@ -48,7 +47,7 @@ namespace IEC60870.CS104
         // ── IApduSink ─────────────────────────────────────────────────
 
         ValueTask IApduSink.SendAsync(ReadOnlyMemory<byte> apdu, CancellationToken cancellationToken)
-            => new ValueTask(base.SendAsync(apdu));
+            => new ValueTask(base.SendAsync(apdu, cancellationToken));
 
         bool IApduSink.IsConnected => Online;
 
@@ -84,10 +83,9 @@ namespace IEC60870.CS104
 
         protected override async Task OnTcpReceived(ReceivedDataEventArgs e)
         {
-            ByteBlock bb = e.ByteBlock;
-            if (bb != null && bb.Length > 0 && _connection != null)
+            if (!e.Memory.IsEmpty && _connection != null)
             {
-                _framer.Append(bb.TotalMemory.Span.Slice(0, bb.Length));
+                _framer.Append(e.Memory.Span);
 
                 if (!_framer.Process(_connection))
                 {

@@ -121,14 +121,17 @@ namespace IEC60870.CS104
         // ── IApduSink ─────────────────────────────────────────────────
 
         ValueTask IApduSink.SendAsync(ReadOnlyMemory<byte> apdu, CancellationToken cancellationToken)
-            => new ValueTask(base.SendAsync(apdu));
+            => new ValueTask(base.SendAsync(apdu, cancellationToken));
 
         bool IApduSink.IsConnected => Online;
 
         // ── 连接生命周期 ──────────────────────────────────────────────
 
         /// <summary>建立 TCP 连接（不自动 STARTDT）。</summary>
-        public async Task ConnectAsync(CancellationToken cancellationToken = default)
+        /// <remarks>4.x 中 <see cref="TcpClient.ConnectAsync(CancellationToken)"/> 与本方法签名一致，
+        /// 显式 <c>new</c> 隐藏基类成员：库调用方以 <see cref="Iec104Client"/> 类型引用时解析到本实现
+        /// （额外完成 Setup/SSL/建连超时），基类-typed 引用（如 TouchSocket 内部）则连接为纯网络握手。</remarks>
+        public new async Task ConnectAsync(CancellationToken cancellationToken = default)
         {
             // 重连/重复调用：先释放上一次连接遗留的 CTS / 连接 / 帧重组器，避免资源泄漏（代码评审 #7）
             _cts?.Dispose();
@@ -147,10 +150,20 @@ namespace IEC60870.CS104
             var config = new TouchSocketConfig();
             config.SetRemoteIPHost(new IPHost($"{_host}:{_port}"));
             if (_sslOption != null)
-                config.SetClientSslOption(_sslOption);
+                config.SetClientSslOption(o =>
+                {
+                    o.TargetHost = _sslOption.TargetHost;
+                    o.ClientCertificates = _sslOption.ClientCertificates;
+                    o.SslProtocols = _sslOption.SslProtocols;
+                    o.CheckCertificateRevocation = _sslOption.CheckCertificateRevocation;
+                    o.CertificateValidationCallback = _sslOption.CertificateValidationCallback;
+                });
 
             await SetupAsync(config).ConfigureAwait(false);
-            await base.ConnectAsync(_apci.T0 * 1000, cancellationToken).ConfigureAwait(false);
+            // TouchSocket 4.x 的 ConnectAsync 不再接收超时参数，用取消令牌保留 IEC104 T0 建连超时语义。
+            using var connectTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            connectTimeout.CancelAfter(TimeSpan.FromMilliseconds(_apci.T0 * 1000));
+            await base.ConnectAsync(connectTimeout.Token).ConfigureAwait(false);
 
             if (Autostart)
                 await StartDataTransferAsync(cancellationToken).ConfigureAwait(false);
@@ -284,10 +297,9 @@ namespace IEC60870.CS104
 
         protected override async Task OnTcpReceived(ReceivedDataEventArgs e)
         {
-            ByteBlock bb = e.ByteBlock;
-            if (bb != null && bb.Length > 0)
+            if (!e.Memory.IsEmpty)
             {
-                _framer.Append(bb.TotalMemory.Span.Slice(0, bb.Length));
+                _framer.Append(e.Memory.Span);
 
                 if (!_framer.Process(_connection))
                 {

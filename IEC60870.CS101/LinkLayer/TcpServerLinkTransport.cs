@@ -13,7 +13,6 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using TouchSocket;
 using TouchSocket.Core;
 using TouchSocket.Sockets;
 
@@ -60,9 +59,8 @@ namespace IEC60870.CS101.LinkLayer
 
             protected override async Task OnTcpReceived(ReceivedDataEventArgs e)
             {
-                var bb = e.ByteBlock;
-                if (bb != null && bb.Length > 0 && Owner != null)
-                    Owner._queue.Write(bb.TotalMemory.Span.Slice(0, bb.Length));
+                if (!e.Memory.IsEmpty && Owner != null)
+                    Owner._queue.Write(e.Memory.Span);
                 await base.OnTcpReceived(e).ConfigureAwait(false);
             }
         }
@@ -121,7 +119,7 @@ namespace IEC60870.CS101.LinkLayer
             {
                 try
                 {
-                    await _activeSession.SendAsync(data).ConfigureAwait(false);
+                    await _activeSession.SendAsync(data, ct).ConfigureAwait(false);
                 }
                 catch (Exception)
                 {

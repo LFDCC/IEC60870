@@ -13,7 +13,6 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using TouchSocket;
 using TouchSocket.Core;
 using TouchSocket.Sockets;
 
@@ -58,18 +57,22 @@ namespace IEC60870.CS101.LinkLayer
 
         protected override async Task OnTcpReceived(ReceivedDataEventArgs e)
         {
-            var bb = e.ByteBlock;
-            if (bb != null && bb.Length > 0)
-                _queue.Write(bb.TotalMemory.Span.Slice(0, bb.Length));
+            if (!e.Memory.IsEmpty)
+                _queue.Write(e.Memory.Span);
             await base.OnTcpReceived(e).ConfigureAwait(false);
         }
 
-        public async Task ConnectAsync(CancellationToken ct)
+        // 4.x 中 TcpClient.ConnectAsync 签名变为 ConnectAsync(CancellationToken)，与本包装同名，显式 new 隐藏
+        // 基类成员（本方法额外完成 SetupAsync 与建连超时，调用方类型为 TcpClientLinkTransport，解析到本实现）。
+        public new async Task ConnectAsync(CancellationToken ct)
         {
             var config = new TouchSocketConfig();
             config.SetRemoteIPHost(new IPHost($"{_host}:{_port}"));
             await SetupAsync(config).ConfigureAwait(false);
-            await base.ConnectAsync(1000, ct).ConfigureAwait(false);
+            // TouchSocket 4.x 的 ConnectAsync 不再接收超时参数，用取消令牌保留 1s 建连超时。
+            using var connectTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            connectTimeout.CancelAfter(1000);
+            await base.ConnectAsync(connectTimeout.Token).ConfigureAwait(false);
         }
 
         public async ValueTask<int> ReadFrameAsync(Memory<byte> buffer, CancellationToken ct)
@@ -88,7 +91,7 @@ namespace IEC60870.CS101.LinkLayer
             _log("SEND " + BitConverter.ToString(data.Span.ToArray()));
             try
             {
-                await base.SendAsync(data).ConfigureAwait(false);
+                await base.SendAsync(data, ct).ConfigureAwait(false);
             }
             catch (Exception)
             {

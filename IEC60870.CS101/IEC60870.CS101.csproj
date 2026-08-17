@@ -6,7 +6,7 @@
     <Copyright>Copyright 2026 LFDCC</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageId>LFDCC.IEC60870.CS101</PackageId>
-    <Version>4.0.7</Version>
+    <Version>4.0.8</Version>
     <RootNamespace>IEC60870.CS101</RootNamespace>
     <AssemblyName>IEC60870.CS101</AssemblyName>
     <TargetFramework>net6.0</TargetFramework>
@@ -42,7 +42,7 @@
     <ProjectReference Include="..\IEC60870.Core\IEC60870.Core.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="TouchSocket" Version="3.0.3" />
+    <PackageReference Include="TouchSocket" Version="4.3.2" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="System.IO.Ports" Version="8.0.0" />

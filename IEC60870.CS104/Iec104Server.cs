@@ -77,7 +77,14 @@ namespace IEC60870.CS104
             var config = new TouchSocketConfig();
             config.SetListenIPHosts(new IPHost(port));
             if (_sslOption != null)
-                config.SetServiceSslOption(_sslOption);
+                config.SetServiceSslOption(o =>
+                {
+                    o.Certificate = _sslOption.Certificate;
+                    o.ClientCertificateRequired = _sslOption.ClientCertificateRequired;
+                    o.SslProtocols = _sslOption.SslProtocols;
+                    o.CheckCertificateRevocation = _sslOption.CheckCertificateRevocation;
+                    o.CertificateValidationCallback = _sslOption.CertificateValidationCallback;
+                });
 
             await SetupAsync(config).ConfigureAwait(false);
             await StartAsync().ConfigureAwait(false);
@@ -137,7 +144,7 @@ namespace IEC60870.CS104
         /// （每个会话已在关闭前标记 <see cref="Iec104Session.MarkIntentionalClose"/>，避免刷屏）；
         /// 客户端侧断开、超时或协议错误仍会正常派发，使订阅者感知“哪个会话”断开。
         /// </summary>
-        public new async Task StopAsync()
+        public async Task StopAsync()
         {
             foreach (Iec104Session s in _sessions.Values)
                 s.MarkIntentionalClose();
