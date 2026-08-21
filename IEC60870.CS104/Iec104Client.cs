@@ -69,6 +69,20 @@ namespace IEC60870.CS104
         }
         private AsduViewHandler _asduReceived;
 
+        /// <summary>
+        /// 上行原始报文（从站→本客户端）。参数为完整单个 APDU（含 0x68 APCI 头），
+        /// 生命周期安全（已拷贝为 byte[]，可安全长期持有/入队/落盘）。
+        /// 仅在有订阅者时才会分配该数组，无订阅者零开销。适用于报文调试/抓包。
+        /// </summary>
+        public event Action<byte[]> RawFrameReceived;
+
+        /// <summary>
+        /// 下行原始报文（本客户端→从站）。参数为即将发送的完整单个 APDU（含 0x68 APCI 头），
+        /// 覆盖 I/S/U 三类帧。生命周期安全（已拷贝为 byte[]）。
+        /// 仅在有订阅者时分配，无订阅者零开销。
+        /// </summary>
+        public event Action<byte[]> RawFrameSent;
+
         /// <summary>连接层事件回调（STARTDT_CON 等，支持多订阅者）。</summary>
         public event Action<ApduConnectionEvent> ConnectionEvent
         {
@@ -121,7 +135,11 @@ namespace IEC60870.CS104
         // ── IApduSink ─────────────────────────────────────────────────
 
         ValueTask IApduSink.SendAsync(ReadOnlyMemory<byte> apdu, CancellationToken cancellationToken)
-            => new ValueTask(base.SendAsync(apdu, cancellationToken));
+        {
+            // 下行原始报文（有订阅者才分配拷贝，无订阅者零开销）
+            if (RawFrameSent != null) RawFrameSent(apdu.ToArray());
+            return new ValueTask(base.SendAsync(apdu, cancellationToken));
+        }
 
         bool IApduSink.IsConnected => Online;
 
@@ -146,6 +164,11 @@ namespace IEC60870.CS104
             if (_connEvent != null) _connection.EventHandler += _connEvent;
             _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             _framer = new ApduFramer();
+            // 上行原始报文：framer 每切出完整 APDU 时同步回调（有订阅者才拷贝，无订阅者零开销）
+            _framer.OnFrameParsed = frame =>
+            {
+                if (RawFrameReceived != null) RawFrameReceived(frame.ToArray());
+            };
 
             var config = new TouchSocketConfig();
             config.SetRemoteIPHost(new IPHost($"{_host}:{_port}"));

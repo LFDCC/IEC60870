@@ -210,6 +210,19 @@ namespace IEC60870.CS101.LinkLayer
         private RawMessageHandler sentRawMessageHandler = null;
         private object sentRawMessageHandlerParameter = null;
 
+        /// <summary>
+        /// 收到完整 FT1.2 帧时触发（原始报文，含起始符/控制域/校验）。参数已拷贝为 byte[]，
+        /// 生命周期安全，可长期持有。仅在有订阅者时分配，无订阅者零开销。
+        /// </summary>
+        public event Action<byte[]> RawFrameReceived;
+
+        /// <summary>
+        /// 发送完整 FT1.2 帧时触发（原始报文，含起始符/控制域/校验）。参数已拷贝为 byte[]，
+        /// 生命周期安全。覆盖固定帧(0x10)/变长帧(0x68)/单字符 ACK(0xE5)。
+        /// 仅在有订阅者时分配，无订阅者零开销。
+        /// </summary>
+        public event Action<byte[]> RawFrameSent;
+
         public LinkLayerEngine(byte[] buffer, LinkLayerParameters parameters, ISerialLinkTransport transceiver, Action<string> debugLog)
         {
             this.buffer = buffer;
@@ -323,6 +336,8 @@ namespace IEC60870.CS101.LinkLayer
             if (sentRawMessageHandler != null)
                 sentRawMessageHandler(sentRawMessageHandlerParameter, SINGLE_CHAR_ACK, 1);
 
+            RawFrameSent?.Invoke((byte[])SINGLE_CHAR_ACK.Clone()); // 单字符 ACK 原始报文
+
             SendMessage(SINGLE_CHAR_ACK, 1);
         }
 
@@ -406,6 +421,14 @@ namespace IEC60870.CS101.LinkLayer
             if (sentRawMessageHandler != null)
                 sentRawMessageHandler(sentRawMessageHandlerParameter, buffer, bufPos);
 
+            // 固定帧(0x10) 原始报文（有订阅者才拷贝）
+            if (RawFrameSent != null)
+            {
+                var copy = new byte[bufPos];
+                Array.Copy(buffer, copy, bufPos);
+                RawFrameSent(copy);
+            }
+
             SendMessage(buffer, bufPos);
         }
 
@@ -466,6 +489,14 @@ namespace IEC60870.CS101.LinkLayer
             if (sentRawMessageHandler != null)
                 sentRawMessageHandler(sentRawMessageHandlerParameter, buffer, bufPos);
 
+            // 变长帧(0x68) 原始报文（有订阅者才拷贝）
+            if (RawFrameSent != null)
+            {
+                var copy = new byte[bufPos];
+                Array.Copy(buffer, copy, bufPos);
+                RawFrameSent(copy);
+            }
+
             SendMessage(buffer, bufPos);
         }
 
@@ -525,6 +556,14 @@ namespace IEC60870.CS101.LinkLayer
 
             if (sentRawMessageHandler != null)
                 sentRawMessageHandler(sentRawMessageHandlerParameter, buffer, bufPos);
+
+            // 变长帧(0x68) 原始报文（有订阅者才拷贝）
+            if (RawFrameSent != null)
+            {
+                var copy = new byte[bufPos];
+                Array.Copy(buffer, copy, bufPos);
+                RawFrameSent(copy);
+            }
 
             SendMessage(buffer, bufPos);
         }
@@ -798,6 +837,14 @@ namespace IEC60870.CS101.LinkLayer
         void HandleMessageAction(byte[] msg, int msgSize)
         {
             DebugLog("RECV " + BitConverter.ToString(msg, 0, msgSize));
+
+            // 上行原始报文（有订阅者才拷贝，无订阅者零开销）
+            if (RawFrameReceived != null)
+            {
+                var copy = new byte[msgSize];
+                Array.Copy(msg, copy, msgSize);
+                RawFrameReceived(copy);
+            }
 
             bool handleMessage = true;
 

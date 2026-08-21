@@ -1,3 +1,9 @@
+Changes to version 4.0.9
+------------------------
+- Raw protocol frame events: unified `RawFrameReceived` / `RawFrameSent` on IEC 104 client/server and IEC 101 client/server. Complete single frame (APDU for 104 incl. 0x68 APCI header; FT1.2 frame for 101 incl. start/control/checksum), delivered as a freshly-copied byte[] that is safe to keep/queue/log. Fires only when a subscriber is attached (zero overhead otherwise). IEC 104 receive side upgraded from raw TCP chunks to reassembled complete APDUs (ApduReader.Frame + ApduFramer.FrameParsedHandler). IEC 101 LinkLayerEngine bridges its existing RawMessageHandler hooks into modern events.
+- New example: examples/cs104-client-raw shows subscribing to raw frames on both IEC 104 (default) and IEC 101 (--101) clients.
+- Aligned all three package versions to 4.0.9 (Core, CS101, CS104).
+
 Changes to version 4.0.7
 ------------------------
 - ASDU god class split: ASDU.cs is now a thin facade; encoding moved to AsduEncoder, decoding + TypeID registry to AsduDecoder (new AsduDecoding.cs)

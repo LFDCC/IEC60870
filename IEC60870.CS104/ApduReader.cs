@@ -49,6 +49,9 @@ namespace IEC60870.CS104
         /// <summary>当前 APDU 的 ASDU 负载（零拷贝切片）；U/S 帧为空。</summary>
         public ReadOnlySpan<byte> Payload;
 
+        /// <summary>当前完整 APDU（含 APCI 头，零拷贝切片，范围即本次消费的 <c>total</c> 字节）。</summary>
+        public ReadOnlySpan<byte> Frame;
+
         /// <summary>解析中是否遇到格式错误（非法起始字节/长度）。</summary>
         public bool HasError { get; private set; }
 
@@ -61,6 +64,7 @@ namespace IEC60870.CS104
             RecvSeq = -1;
             UFunction = 0;
             Payload = default;
+            Frame = default;
             HasError = false;
         }
 
@@ -96,6 +100,7 @@ namespace IEC60870.CS104
                 ? remaining.Slice(payloadOffset, payloadLength)
                 : default;
 
+            Frame = remaining.Slice(0, total);
             _consumed += total;
             return true;
         }

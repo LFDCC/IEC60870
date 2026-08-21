@@ -577,6 +577,10 @@ namespace IEC60870.CS101
                 linkLayer = new LinkLayerEngine(buffer, linkLayerParameters, _transport, DebugLog);
                 linkLayer.LinkLayerMode = linkLayerMode;
 
+                // 桥接原始报文事件：linkLayer 首次运行时创建，此后任意时刻订阅均能收到（lambda 动态读取订阅者）
+                linkLayer.RawFrameReceived += f => RawFrameReceived?.Invoke(f);
+                linkLayer.RawFrameSent += f => RawFrameSent?.Invoke(f);
+
                 if (linkLayerMode == LinkLayerMode.BALANCED)
                 {
                     PrimaryLinkLayerBalanced primaryLinkLayerBalanced = new PrimaryLinkLayerBalanced(linkLayer, GetUserData, DebugLog);
@@ -665,5 +669,17 @@ namespace IEC60870.CS101
         {
             linkLayer.SetSentRawMessageHandler(handler, parameter);
         }
+
+        /// <summary>
+        /// 上行原始报文（主站→本从站）。参数为完整 FT1.2 帧（含起始符/控制域/校验），
+        /// 生命周期安全（已拷贝为 byte[]），无订阅者零开销。兼容"先订阅后启动"。
+        /// </summary>
+        public event Action<byte[]> RawFrameReceived;
+
+        /// <summary>
+        /// 下行原始报文（本从站→主站）。参数为完整 FT1.2 帧，覆盖固定/变长/单字符 ACK。
+        /// 生命周期安全（已拷贝为 byte[]），无订阅者零开销。
+        /// </summary>
+        public event Action<byte[]> RawFrameSent;
     }
 }
