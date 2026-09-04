@@ -15,6 +15,10 @@
     <Description>IEC 60870-5-101 protocol library (balanced/unbalanced link layer, serial and TCP transport, client/server) built on IEC60870.Core.</Description>
     <PackageOutputPath>nupkg</PackageOutputPath>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <!-- 生成 XML 文档：NuGet 包内随 dll 分发 .xml，消费方 IDE 才有中文 IntelliSense 提示 -->
+    <!-- CS1591（公有成员缺注释）已按库现状抑制，避免海量噪声警告 -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
   <!-- 源码按 SDK 默认通配编译（**/*.cs）：LinkLayer/ 链路层、File/ 文件服务、根/ 站点组件，新增文件无需维护清单 -->
