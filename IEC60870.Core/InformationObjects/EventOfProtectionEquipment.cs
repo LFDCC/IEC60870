@@ -1,214 +1,150 @@
+//------------------------------------------------------------------------------
+//  IEC60870.Core.NET — 保护设备事件（M_EP_TA_1 / M_EP_TD_1）
+//
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
+using System;
 
-/*
- *  EventOfProtectionEquipment.cs
- *
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+namespace IEC60870.Core;
 
-using IEC60870.Core.Time;
-namespace IEC60870.Core.InformationObjects
+/// <summary>
+/// 保护设备事件信息体（M_EP_TA_1）。编码：SEP(1) + CP16Time2a(2) + CP24Time2a(3)。
+/// </summary>
+public class EventOfProtectionEquipment : InformationObject
 {
-    /// <summary>
-    /// Event of protection equipment information object (M_EP_TA_1)
-    /// </summary>
-    public class EventOfProtectionEquipment : InformationObject
+    private SingleEvent _singleEvent;
+    private CP16Time2a _elapsedTime;
+    private CP24Time2a _timestamp;
+
+    /// <summary>单事件。</summary>
+    public SingleEvent Event => _singleEvent;
+
+    /// <summary>相对动作时间（相对时标）。</summary>
+    public CP16Time2a ElapsedTime => _elapsedTime;
+
+    /// <summary>CP24Time2a 时标。</summary>
+    public CP24Time2a Timestamp => _timestamp;
+
+    public override TypeID Type => TypeID.M_EP_TA_1;
+
+    public override bool SupportsSequence => false;
+
+    public EventOfProtectionEquipment(int ioa, SingleEvent singleEvent, CP16Time2a elapsedTime, CP24Time2a timestamp)
+        : base(ioa)
     {
-
-        override public TypeID Type
-        {
-            get
-            {
-                return TypeID.M_EP_TA_1;
-            }
-        }
-
-        override public bool SupportsSequence
-        {
-            get
-            {
-                return false;
-            }
-        }
-
-        private SingleEvent singleEvent;
-
-        public SingleEvent Event
-        {
-            get
-            {
-                return singleEvent;
-            }
-        }
-
-        private CP16Time2a elapsedTime;
-
-        public CP16Time2a ElapsedTime
-        {
-            get
-            {
-                return elapsedTime;
-            }
-        }
-
-        private CP24Time2a timestamp;
-
-        public CP24Time2a Timestamp
-        {
-            get
-            {
-                return timestamp;
-            }
-        }
-
-        public EventOfProtectionEquipment(int ioa, SingleEvent singleEvent, CP16Time2a elapsedTime, CP24Time2a timestamp)
-            : base(ioa)
-        {
-            this.singleEvent = singleEvent;
-            this.elapsedTime = elapsedTime;
-            this.timestamp = timestamp;
-        }
-
-        public EventOfProtectionEquipment(EventOfProtectionEquipment original)
-            : base(original.ObjectAddress)
-        {
-            singleEvent = new SingleEvent(original.singleEvent);
-            elapsedTime = new CP16Time2a(original.elapsedTime);
-            timestamp = new CP24Time2a(original.timestamp);
-        }
-
-        internal EventOfProtectionEquipment(ApplicationLayerParameters parameters, byte[] msg, int startIndex, bool isSequence)
-            : base(parameters, msg, startIndex, isSequence)
-        {
-            if (!isSequence)
-                startIndex += parameters.SizeOfIOA; /* skip IOA */
-
-            if ((msg.Length - startIndex) < GetEncodedSize())
-                throw new ASDUParsingException("Message too small");
-
-            singleEvent = new SingleEvent(msg[startIndex++]);
-
-            elapsedTime = new CP16Time2a(msg, startIndex);
-            startIndex += 2;
-
-            /* parse CP56Time2a (time stamp) */
-            timestamp = new CP24Time2a(msg, startIndex);
-        }
-
-        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
-        {
-            base.Encode(frame, parameters, isSequence);
-
-            frame.SetNextByte(singleEvent.EncodedValue);
-
-            frame.AppendBytes(elapsedTime.AsSpan());
-
-            frame.AppendBytes(timestamp.AsSpan());
-        }
+        _singleEvent = singleEvent;
+        _elapsedTime = elapsedTime;
+        _timestamp = timestamp;
     }
 
-    /// <summary>
-    /// Event of protection equipment information object with CP56Time2a time tag (M_EP_TD_1)
-    /// </summary>
-    public class EventOfProtectionEquipmentWithCP56Time2a : InformationObject
+    public EventOfProtectionEquipment(EventOfProtectionEquipment original)
+        : base(original.ObjectAddress)
     {
+        _singleEvent = new SingleEvent(original._singleEvent);
+        _elapsedTime = new CP16Time2a(original._elapsedTime);
+        _timestamp = new CP24Time2a(original._timestamp);
+    }
 
-        override public TypeID Type
+    internal EventOfProtectionEquipment(ApplicationLayerParameters parameters, ReadOnlySpan<byte> msg, int startIndex, bool isSequence)
+        : base(parameters, msg, startIndex, isSequence)
+    {
+        if (!isSequence)
         {
-            get
-            {
-                return TypeID.M_EP_TD_1;
-            }
+            startIndex += parameters.SizeOfIOA; /* 跳过信息体地址 */
         }
 
-        override public bool SupportsSequence
+        if ((msg.Length - startIndex) < GetEncodedSize())
         {
-            get
-            {
-                return false;
-            }
+            throw new ASDUParsingException("Message too small");
         }
 
-        private SingleEvent singleEvent;
+        _singleEvent = new SingleEvent(msg[startIndex++]);
+        _elapsedTime = new CP16Time2a(msg, startIndex);
+        startIndex += 2;
 
-        public SingleEvent Event
-        {
-            get
-            {
-                return singleEvent;
-            }
-        }
+        _timestamp = new CP24Time2a(msg, startIndex);
+    }
 
-        private CP16Time2a elapsedTime;
+    internal override bool HasAsduWriterBody => true;
 
-        public CP16Time2a ElapsedTime
-        {
-            get
-            {
-                return elapsedTime;
-            }
-        }
+    protected internal override void EncodeBody(ref AsduWriter w, ApplicationLayerParameters parameters, bool isSequence)
+    {
+        base.EncodeBody(ref w, parameters, isSequence);
 
-        private CP56Time2a timestamp;
-
-        public CP56Time2a Timestamp
-        {
-            get
-            {
-                return timestamp;
-            }
-        }
-
-        public EventOfProtectionEquipmentWithCP56Time2a(int ioa, SingleEvent singleEvent, CP16Time2a elapsedTime, CP56Time2a timestamp)
-            : base(ioa)
-        {
-            this.singleEvent = singleEvent;
-            this.elapsedTime = elapsedTime;
-            this.timestamp = timestamp;
-        }
-
-        public EventOfProtectionEquipmentWithCP56Time2a(EventOfProtectionEquipmentWithCP56Time2a original)
-            : base(original.ObjectAddress)
-        {
-            singleEvent = new SingleEvent(original.singleEvent);
-            elapsedTime = new CP16Time2a(original.elapsedTime);
-            timestamp = new CP56Time2a(original.timestamp);
-        }
-
-        internal EventOfProtectionEquipmentWithCP56Time2a(ApplicationLayerParameters parameters, byte[] msg, int startIndex, bool isSequence)
-            : base(parameters, msg, startIndex, isSequence)
-        {
-            if (!isSequence)
-                startIndex += parameters.SizeOfIOA; /* skip IOA */
-
-            if ((msg.Length - startIndex) < GetEncodedSize())
-                throw new ASDUParsingException("Message too small");
-
-            singleEvent = new SingleEvent(msg[startIndex++]);
-
-            elapsedTime = new CP16Time2a(msg, startIndex);
-            startIndex += 2;
-
-            /* parse CP56Time2a (time stamp) */
-            timestamp = new CP56Time2a(msg, startIndex);
-        }
-
-        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
-        {
-            base.Encode(frame, parameters, isSequence);
-
-            frame.SetNextByte(singleEvent.EncodedValue);
-
-            frame.AppendBytes(elapsedTime.AsSpan());
-
-            frame.AppendBytes(timestamp.AsSpan());
-        }
+        w.WriteByte(_singleEvent.EncodedValue);
+        w.WriteBytes(_elapsedTime.AsSpan());
+        w.WriteBytes(_timestamp.AsSpan());
     }
 }
 
+/// <summary>
+/// 带 CP56Time2a 时标的保护设备事件信息体（M_EP_TD_1）。
+/// 编码：SEP(1) + CP16Time2a(2) + CP56Time2a(7)。
+/// </summary>
+public class EventOfProtectionEquipmentWithCP56Time2a : InformationObject
+{
+    private SingleEvent _singleEvent;
+    private CP16Time2a _elapsedTime;
+    private CP56Time2a _timestamp;
+
+    /// <summary>单事件。</summary>
+    public SingleEvent Event => _singleEvent;
+
+    /// <summary>相对动作时间（相对时标）。</summary>
+    public CP16Time2a ElapsedTime => _elapsedTime;
+
+    /// <summary>CP56Time2a 时标。</summary>
+    public CP56Time2a Timestamp => _timestamp;
+
+    public override TypeID Type => TypeID.M_EP_TD_1;
+
+    public override bool SupportsSequence => false;
+
+    public EventOfProtectionEquipmentWithCP56Time2a(int ioa, SingleEvent singleEvent, CP16Time2a elapsedTime, CP56Time2a timestamp)
+        : base(ioa)
+    {
+        _singleEvent = singleEvent;
+        _elapsedTime = elapsedTime;
+        _timestamp = timestamp;
+    }
+
+    public EventOfProtectionEquipmentWithCP56Time2a(EventOfProtectionEquipmentWithCP56Time2a original)
+        : base(original.ObjectAddress)
+    {
+        _singleEvent = new SingleEvent(original._singleEvent);
+        _elapsedTime = new CP16Time2a(original._elapsedTime);
+        _timestamp = new CP56Time2a(original._timestamp);
+    }
+
+    internal EventOfProtectionEquipmentWithCP56Time2a(ApplicationLayerParameters parameters, ReadOnlySpan<byte> msg, int startIndex, bool isSequence)
+        : base(parameters, msg, startIndex, isSequence)
+    {
+        if (!isSequence)
+        {
+            startIndex += parameters.SizeOfIOA; /* 跳过信息体地址 */
+        }
+
+        if ((msg.Length - startIndex) < GetEncodedSize())
+        {
+            throw new ASDUParsingException("Message too small");
+        }
+
+        _singleEvent = new SingleEvent(msg[startIndex++]);
+        _elapsedTime = new CP16Time2a(msg, startIndex);
+        startIndex += 2;
+
+        _timestamp = new CP56Time2a(msg, startIndex);
+    }
+
+    internal override bool HasAsduWriterBody => true;
+
+    protected internal override void EncodeBody(ref AsduWriter w, ApplicationLayerParameters parameters, bool isSequence)
+    {
+        base.EncodeBody(ref w, parameters, isSequence);
+
+        w.WriteByte(_singleEvent.EncodedValue);
+        w.WriteBytes(_elapsedTime.AsSpan());
+        w.WriteBytes(_timestamp.AsSpan());
+    }
+}

@@ -21,3 +21,4 @@ lib60870.NET.sln
 
 # Tool / agent internal data (not source, must not be published)
 .workbuddy/
+.zcode

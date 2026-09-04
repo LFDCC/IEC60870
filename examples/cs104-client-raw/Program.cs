@@ -17,8 +17,6 @@ using System.Threading.Tasks;
 using IEC60870.Core;
 using IEC60870.CS104;
 using IEC60870.CS101;
-using IEC60870.CS101.LinkLayer;
-using IEC60870.Core.InformationObjects;
 
 namespace cs104_client_raw
 {
@@ -40,7 +38,7 @@ namespace cs104_client_raw
 
         private static async Task Run104ClientAsync()
         {
-            var client = new Iec104Client("127.0.0.1", 2404);
+            await using var client = new Iec104Client("127.0.0.1", 2404);
 
             // Subscribe BEFORE connecting so every frame (STARTDT, I/S/U) is captured.
             client.RawFrameReceived += f => PrintApdu("RX", f);
@@ -87,16 +85,21 @@ namespace cs104_client_raw
             Console.WriteLine("IEC 101: disconnecting...");
             cts.Cancel();
             client.Stop();
+            client.Dispose();
         }
 
         public static async Task Main(string[] args)
         {
-            bool use101 = args.Length > 0 && args[0] == "--101";
+            var use101 = args.Length > 0 && args[0] == "--101";
 
             if (use101)
+            {
                 await Run101ClientAsync();
+            }
             else
+            {
                 await Run104ClientAsync();
+            }
 
             Console.WriteLine("Done. (run with --101 to exercise the IEC 101 raw frame events)");
         }

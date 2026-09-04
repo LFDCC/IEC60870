@@ -1,345 +1,280 @@
-/*
- *  ASDU.cs
- *
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+//------------------------------------------------------------------------------
+//  IEC60870.Core.NET — ASDU 应用层消息模型（类型标识/可变结构限定词/传送原因/公共地址与信息体载荷）
+//
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
-using System;
-using System.Collections.Generic;
-using IEC60870.Core.InformationObjects;
-using IEC60870.Core.File;
+namespace IEC60870.Core;
 
-
-
-namespace IEC60870.Core
+/// <summary>
+/// 应用层消息（ASDU）。承载通用报文头信息（TI/VSQ/COT/OA/CA）与一组同类型信息对象，
+/// 既用于组包发送，也用于解析接收报文。
+/// </summary>
+public class ASDU
 {
+    // COT 字节内的控制位。
+    private const byte MaskTest = 0x80;
+    private const byte MaskNegative = 0x40;
+    private const byte MaskCotValue = 0x3F;
+    // VSQ 字节内的序列位。
+    private const byte MaskSequence = 0x80;
+    private const byte MaskElementCount = 0x7F;
+
+    /* ---- 以下内部字段由同程序集的 AsduEncoder / AsduDecoder 直接读写 ---- */
+    internal ApplicationLayerParameters _parameters;
+
+    internal TypeID _typeId;
+    internal bool _hasTypeId;
+
+    // 可变结构限定词（VSQ）：最高位为序列标志，低 7 位为信息对象个数
+    internal byte _vsq;
+
+    internal CauseOfTransmission _cot;
+
+    // 源发站地址（OA）
+    internal byte _oa;
+
+    // 本报文是否为试验报文
+    internal bool _isTest;
+
+    // 本报文是否为否定确认
+    internal bool _isNegative;
+
+    // ASDU 公共地址（CA）
+    internal int _ca;
+
+    internal int _spaceLeft = 0;
+
+    internal byte[] _payload = null;
+    internal List<InformationObject> _informationObjects = null;
+
+    internal PrivateInformationObjectTypes _privateObjectTypes = null;
 
     /// <summary>
-    /// This class represents an application layer message. It contains some generic message information and
-    /// one or more InformationObject instances of the same type. It is used to send and receive messages.
+    /// 解码该 ASDU 元素时使用的类型处理器注册表。
+    /// null(默认)时使用 <see cref="AsduTypeHandlerRegistry.Default"/>;
+    /// 私有类型场景可注入含自定义 <see cref="IAsduTypeHandler"/> 的独立注册表。
     /// </summary>
-    public class ASDU
+    public AsduTypeHandlerRegistry TypeHandlers { get; set; }
+
+    /// <summary>类型标识（TI）。</summary>
+    public TypeID TypeId => _typeId;
+
+    /// <summary>传送原因（COT），可读写。</summary>
+    public CauseOfTransmission Cot
     {
-        /* ---- internal fields (accessed by AsduEncoder / AsduDecoder in same assembly) ---- */
-        internal ApplicationLayerParameters parameters;
+        get => _cot;
+        set => _cot = value;
+    }
 
-        internal TypeID typeId;
-        internal bool hasTypeId;
+    /// <summary>源发站地址（OA）。</summary>
+    public byte Oa => _oa;
 
-        /* variable structure qualifier */
-        internal byte vsq;
+    /// <summary>报文是否为试验报文。</summary>
+    public bool IsTest => _isTest;
 
-        internal CauseOfTransmission cot;
+    /// <summary>报文是否为否定确认，可读写。</summary>
+    public bool IsNegative
+    {
+        get => _isNegative;
+        set => _isNegative = value;
+    }
 
-        /* originator address */
-        internal byte oa;
+    /// <summary>ASDU 公共地址（CA）。</summary>
+    public int Ca => _ca;
 
-        /* is message a test message */
-        internal bool isTest;
+    /// <summary>
+    /// 信息体是否按序列组织：序列内各信息对象共用首地址、地址依次递增。
+    /// </summary>
+    public bool IsSequence => (_vsq & MaskSequence) != 0;
 
-        /* is message a negative confirmation */
-        internal bool isNegative;
+    /// <summary>VSQ 低 7 位声明的信息对象（元素）个数。</summary>
+    public int NumberOfElements => _vsq & MaskElementCount;
 
-        /* Common address of ASDU */
-        internal int ca;
+    /// <summary>
+    /// 以默认类型 M_SP_NA_1 之外的任意类型创建待发送 ASDU（类型在首个信息对象加入时确定）。
+    /// </summary>
+    /// <param name="parameters">编解码使用的应用层参数</param>
+    /// <param name="cot">传送原因（COT）</param>
+    /// <param name="isTest">是否为试验报文</param>
+    /// <param name="isNegative">是否为否定确认</param>
+    /// <param name="oa">源发站地址（OA）</param>
+    /// <param name="ca">ASDU 公共地址（CA）</param>
+    /// <param name="isSequence">信息体是否按序列组织</param>
+    public ASDU(ApplicationLayerParameters parameters, CauseOfTransmission cot, bool isTest, bool isNegative, byte oa, int ca, bool isSequence)
+        : this(parameters, TypeID.M_SP_NA_1, cot, isTest, isNegative, oa, ca, isSequence)
+    {
+        _hasTypeId = false;
+    }
 
-        internal int spaceLeft = 0;
-
-        internal byte[] payload = null;
-        internal List<InformationObject> informationObjects = null;
-
-        internal PrivateInformationObjectTypes privateObjectTypes = null;
-
-        /// <summary>
-        /// Initializes a new instance of the <see cref="IEC60870.Core.ASDU"/> class.
-        /// </summary>
-        /// <param name="parameters">application layer parameters to be used for encoding/decoding</param>
-        /// <param name="cot">Cause of transmission (COT)</param>
-        /// <param name="isTest">If set to <c>true</c> ASDU is a test ASDU.</param>
-        /// <param name="isNegative">If set to <c>true</c> is negative confirmation.</param>
-        /// <param name="oa">originator address (OA)</param>
-        /// <param name="ca">common address of the ASDU (CA)</param>
-        /// <param name="isSequence">If set to <c>true</c> is a sequence of information objects.</param>
-        public ASDU(ApplicationLayerParameters parameters, CauseOfTransmission cot, bool isTest, bool isNegative, byte oa, int ca, bool isSequence)
-            : this(parameters, TypeID.M_SP_NA_1, cot, isTest, isNegative, oa, ca, isSequence)
-        {
-            hasTypeId = false;
-        }
-
-        internal ASDU(ApplicationLayerParameters parameters, TypeID typeId, CauseOfTransmission cot, bool isTest, bool isNegative, byte oa, int ca, bool isSequence)
-        {
-            this.parameters = parameters;
-            this.typeId = typeId;
-            this.cot = cot;
-            this.isTest = isTest;
-            this.isNegative = isNegative;
-            this.oa = oa;
-            this.ca = ca;
-            spaceLeft = parameters.MaxAsduLength -
+    internal ASDU(ApplicationLayerParameters parameters, TypeID typeId, CauseOfTransmission cot, bool isTest, bool isNegative, byte oa, int ca, bool isSequence)
+    {
+        _parameters = parameters;
+        _typeId = typeId;
+        _cot = cot;
+        _isTest = isTest;
+        _isNegative = isNegative;
+        _oa = oa;
+        _ca = ca;
+        _spaceLeft = parameters.MaxAsduLength -
             parameters.SizeOfTypeId - parameters.SizeOfVSQ - parameters.SizeOfCA - parameters.SizeOfCOT;
 
-            if (isSequence)
-                vsq = 0x80;
-            else
-                vsq = 0;
+        _vsq = isSequence ? MaskSequence : (byte)0;
+        _hasTypeId = true;
+    }
 
-            hasTypeId = true;
-        }
+    /// <summary>
+    /// 从接收字节缓冲的指定位置解析出 ASDU 头，并把剩余信息体区域原样保存为载荷。
+    /// </summary>
+    public ASDU(ApplicationLayerParameters parameters, byte[] msg, int bufPos, int msgLength)
+    {
+        _parameters = parameters;
 
-        /// <summary>
-        /// Initializes a new instance of the <see cref="IEC60870.Core.ASDU"/> class from a byte buffer.
-        /// </summary>
-        public ASDU(ApplicationLayerParameters parameters, byte[] msg, int bufPos, int msgLength)
+        // 头部固定为 TI + VSQ，外加 COT 与 CA 的可变长度
+        var asduHeaderSize = 2 + parameters.SizeOfCOT + parameters.SizeOfCA;
+
+        if ((msgLength - bufPos) < asduHeaderSize)
         {
-            this.parameters = parameters;
-
-            int asduHeaderSize = 2 + parameters.SizeOfCOT + parameters.SizeOfCA;
-
-            if ((msgLength - bufPos) < asduHeaderSize)
-                throw new ASDUParsingException("Message header too small");
-
-            typeId = (TypeID)msg[bufPos++];
-            vsq = msg[bufPos++];
-
-            hasTypeId = true;
-
-            byte cotByte = msg[bufPos++];
-
-            if ((cotByte & 0x80) != 0)
-                isTest = true;
-            else
-                isTest = false;
-
-            if ((cotByte & 0x40) != 0)
-                isNegative = true;
-            else
-                isNegative = false;
-
-            cot = (CauseOfTransmission)(cotByte & 0x3f);
-
-            if (parameters.SizeOfCOT == 2)
-                oa = msg[bufPos++];
-
-            ca = msg[bufPos++];
-
-            if (parameters.SizeOfCA > 1)
-                ca += (msg[bufPos++] * 0x100);
-
-            int payloadSize = msgLength - bufPos;
-
-            // 校验 payload 长度是否足以容纳 VSQ 声明的信息对象数（代码评审 #15 / 原 TODO）。
-            // 短 payload + 过大 VSQ 会让 GetElement(index) 算出越界偏移，导致部分类型 IndexOutOfRange。
-            int expected = AsduDecoder.ComputeExpectedPayloadSize(this);
-            if (expected >= 0 && payloadSize < expected)
-                throw new ASDUParsingException("Payload too small for declared VSQ/TypeID (need " + expected + ", got " + payloadSize + ")");
-
-            payload = new byte[payloadSize];
-
-            /* save payload */
-            Buffer.BlockCopy(msg, bufPos, payload, 0, payloadSize);
+            throw new ASDUParsingException("Message header too small");
         }
 
-        /// <summary>
-        /// Adds an information object to the ASDU.
-        /// </summary>
-        /// <returns><c>true</c>, if information object was added, <c>false</c> otherwise.</returns>
-        /// <param name="io">The information object to add</param>
-        public bool AddInformationObject(InformationObject io)
+        _typeId = (TypeID)msg[bufPos++];
+        _vsq = msg[bufPos++];
+        _hasTypeId = true;
+
+        var cotByte = msg[bufPos++];
+        _isTest = (cotByte & MaskTest) != 0;
+        _isNegative = (cotByte & MaskNegative) != 0;
+        _cot = (CauseOfTransmission)(cotByte & MaskCotValue);
+
+        if (parameters.SizeOfCOT == 2)
         {
-            return AsduEncoder.AddInformationObject(io, this);
+            _oa = msg[bufPos++];
         }
 
-        public void Encode(Frame frame, ApplicationLayerParameters parameters)
+        // CA 按小端逐字节拼装
+        _ca = msg[bufPos++];
+        if (parameters.SizeOfCA > 1)
         {
-            AsduEncoder.Encode(frame, parameters, this);
+            _ca += (msg[bufPos++] * 0x100);
         }
 
-        /// <summary>
-        /// 将 ASDU 编码为字节数组。
-        /// </summary>
-        /// <returns>
-        /// 编码后的字节；若实际编码长度与预期缓冲尺寸不符（理论上仅在 <see cref="AddInformationObject"/>
-        /// 与 <see cref="Encode"/> 之间参数被改动时才可能发生），返回 <c>null</c>。
-        /// 调用方必须判空（代码评审 #19）。如希望永不返回 null，可改用 <see cref="Encode"/> 配合可调长缓冲。
-        /// </returns>
-        public byte[] AsByteArray()
+        var payloadSize = msgLength - bufPos;
+
+        // 校验 payload 长度是否足以容纳 VSQ 声明的信息对象数（代码评审 #15 / 原 TODO）。
+        // 短 payload + 过大 VSQ 会让 GetElement(index) 算出越界偏移，导致部分类型 IndexOutOfRange。
+        var expected = AsduDecoder.ComputeExpectedPayloadSize(this);
+        if (expected >= 0 && payloadSize < expected)
         {
-            return AsduEncoder.AsByteArray(this);
+            throw new ASDUParsingException("Payload too small for declared VSQ/TypeID (need " + expected + ", got " + payloadSize + ")");
         }
 
-        /// <summary>
-        /// Gets the type identifier (TI).
-        /// </summary>
-        /// <value>The type identifier.</value>
-        public TypeID TypeId
+        _payload = new byte[payloadSize];
+        Buffer.BlockCopy(msg, bufPos, _payload, 0, payloadSize);
+    }
+
+    /// <summary>
+    /// 向 ASDU 追加一个信息对象（要求与已有信息对象同型）。
+    /// 空间不足或序列地址不连续时返回 <c>false</c>。
+    /// </summary>
+    /// <param name="io">待追加的信息对象</param>
+    public bool AddInformationObject(InformationObject io)
+    {
+        return AsduEncoder.AddInformationObject(io, this);
+    }
+
+    public void Encode(Frame frame, ApplicationLayerParameters parameters)
+    {
+        AsduEncoder.Encode(frame, parameters, this);
+    }
+
+    /// <summary>
+    /// 将 ASDU 直写进 <see cref="AsduWriter"/>（连续缓冲、零中间分配、无逐字节虚调用）。
+    /// CS104 发送热路径的编码出口；调用方须保证 writer 底层缓冲足够容纳整帧
+    /// （<see cref="ApplicationLayerParameters.MaxAsduLength"/> 字节）。
+    /// </summary>
+    public void Encode(ref AsduWriter writer, ApplicationLayerParameters parameters)
+    {
+        AsduEncoder.EncodeAsdu(ref writer, parameters, this);
+    }
+
+    /// <summary>
+    /// 将 ASDU 编码为字节数组。
+    /// </summary>
+    /// <returns>
+    /// 编码后的字节；若实际编码长度与预期缓冲尺寸不符（理论上仅在 <see cref="AddInformationObject"/>
+    /// 与 <see cref="Encode"/> 之间参数被改动时才可能发生），返回 <c>null</c>。
+    /// 调用方必须判空（代码评审 #19）。如希望永不返回 null，可改用 <see cref="Encode"/> 配合可调长缓冲。
+    /// </returns>
+    public byte[] AsByteArray()
+    {
+        return AsduEncoder.AsByteArray(this);
+    }
+
+    /// <summary>按索引取信息对象，支持私有类型注册表。</summary>
+    public InformationObject GetElement(int index, PrivateInformationObjectTypes privateObjectTypes)
+    {
+        return AsduDecoder.GetElement(index, privateObjectTypes, this);
+    }
+
+    /// <summary>按索引取信息对象，支持用户自定义 IO 工厂。</summary>
+    public InformationObject GetElement(int index, IPrivateIOFactory ioFactory)
+    {
+        return AsduDecoder.GetElement(index, ioFactory, this);
+    }
+
+    /// <summary>
+    /// 类型安全版 <see cref="GetElement(int)"/>：按报文 typeId 解析后，断言实际类型为 <typeparamref name="T"/>。
+    /// </summary>
+    /// <typeparam name="T">期望的信息对象具体类型，须为 <see cref="InformationObject"/> 的子类</typeparam>
+    /// <param name="index">元素索引（从 0 开始）</param>
+    /// <returns>类型为 <typeparamref name="T"/> 的信息对象</returns>
+    /// <exception cref="IEC60870.Core.ASDUParsingException">
+    /// 当 index 越界、解析结果为 <c>null</c>，或解析出的实际类型不是 <typeparamref name="T"/> 时抛出
+    /// </exception>
+    public T GetElement<T>(int index) where T : InformationObject
+    {
+        return AsduDecoder.GetElement<T>(index, this);
+    }
+
+    /// <summary>
+    /// 按索引解码信息对象（索引从 0 开始）。
+    /// </summary>
+    /// <exception cref="IEC60870.Core.ASDUParsingException">报文解析失败时抛出</exception>
+    public InformationObject GetElement(int index)
+    {
+        return AsduDecoder.GetElement(index, this);
+    }
+
+    public override string ToString()
+    {
+        var builder = new StringBuilder()
+            .Append("TypeID: ").Append(_typeId)
+            .Append(" COT: ").Append(_cot);
+
+        if (_parameters.SizeOfCOT == 2)
         {
-            get
-            {
-                return typeId;
-            }
+            builder.Append(" OA: ").Append(_oa);
         }
 
-        /// <summary>
-        /// Gets or sets the cause of transmission (COT)
-        /// </summary>
-        /// <value>The COT value</value>
-        public CauseOfTransmission Cot
+        if (_isTest)
         {
-            get
-            {
-                return cot;
-            }
-            set
-            {
-                cot = value;
-            }
+            builder.Append(" [TEST]");
         }
 
-        /// <summary>
-        /// Gets the originator address (OA)
-        /// </summary>
-        /// <value>The OA</value>
-        public byte Oa
+        if (_isNegative)
         {
-            get
-            {
-                return oa;
-            }
+            builder.Append(" [NEG]");
         }
 
-        /// <summary>
-        /// Gets a value indicating whether this instance is a test message.
-        /// </summary>
-        /// <value><c>true</c> if this instance is a test message; otherwise, <c>false</c>.</value>
-        public bool IsTest
+        if (IsSequence)
         {
-            get
-            {
-                return isTest;
-            }
+            builder.Append(" [SEQ]");
         }
 
-        /// <summary>
-        /// Gets or sets a value indicating whether this instance is a negative confirmation.
-        /// </summary>
-        /// <value><c>true</c> if this instance is a negative confirmation; otherwise, <c>false</c>.</value>
-        public bool IsNegative
-        {
-            get
-            {
-                return isNegative;
-            }
-            set
-            {
-                isNegative = value;
-            }
-        }
+        builder.Append(" elements: ").Append(NumberOfElements);
+        builder.Append(" CA: ").Append(_ca);
 
-        /// <summary>
-        /// Gets the common address of the ASDU (CA)
-        /// </summary>
-        /// <value>The CA value</value>
-        public int Ca
-        {
-            get
-            {
-                return ca;
-            }
-        }
-
-        /// <summary>
-        /// Gets a value indicating whether this instance is a sequence of information objects
-        /// </summary>
-        /// A sequence of information objects contains multiple information objects with successive
-        /// information object addresses (IOA).
-        /// <value><c>true</c> if this instance is a sequence; otherwise, <c>false</c>.</value>
-        public bool IsSequence
-        {
-            get
-            {
-                if ((vsq & 0x80) != 0)
-                    return true;
-                else
-                    return false;
-            }
-        }
-
-        /// <summary>
-        /// Gets the number of elements (information objects) of the ASDU
-        /// </summary>
-        /// <value>The number of information objects.</value>
-        public int NumberOfElements
-        {
-            get
-            {
-                return (vsq & 0x7f);
-            }
-        }
-
-        public InformationObject GetElement(int index, PrivateInformationObjectTypes privateObjectTypes)
-        {
-            return AsduDecoder.GetElement(index, privateObjectTypes, this);
-        }
-
-        public InformationObject GetElement(int index, IPrivateIOFactory ioFactory)
-        {
-            return AsduDecoder.GetElement(index, ioFactory, this);
-        }
-
-        /// <summary>
-        /// 类型安全版 <see cref="GetElement(int)"/>：按报文 typeId 解析后，断言实际类型为 <typeparamref name="T"/>。
-        /// </summary>
-        /// <typeparam name="T">期望的信息对象具体类型，须为 <see cref="InformationObject"/> 的子类</typeparam>
-        /// <param name="index">元素索引（从 0 开始）</param>
-        /// <returns>类型为 <typeparamref name="T"/> 的信息对象</returns>
-        /// <exception cref="IEC60870.Core.ASDUParsingException">
-        /// 当 index 越界、解析结果为 <c>null</c>，或解析出的实际类型不是 <typeparamref name="T"/> 时抛出
-        /// </exception>
-        public T GetElement<T>(int index) where T : InformationObject
-        {
-            return AsduDecoder.GetElement<T>(index, this);
-        }
-
-        /// <summary>
-        /// Gets the element (information object) with the specified index
-        /// </summary>
-        /// <returns>the information object at index</returns>
-        /// <param name="index">index of the element (starting with 0)</param>
-        /// <exception cref="IEC60870.Core.ASDUParsingException">Thrown when there is a problem parsing the ASDU</exception>
-        public InformationObject GetElement(int index)
-        {
-            return AsduDecoder.GetElement(index, this);
-        }
-
-        public override string ToString()
-        {
-            string ret;
-
-            ret = "TypeID: " + typeId.ToString() + " COT: " + cot.ToString();
-
-            if (parameters.SizeOfCOT == 2)
-                ret += " OA: " + oa;
-
-            if (isTest)
-                ret += " [TEST]";
-
-            if (isNegative)
-                ret += " [NEG]";
-
-            if (IsSequence)
-                ret += " [SEQ]";
-
-            ret += " elements: " + NumberOfElements;
-
-            ret += " CA: " + ca;
-
-            return ret;
-        }
+        return builder.ToString();
     }
 }

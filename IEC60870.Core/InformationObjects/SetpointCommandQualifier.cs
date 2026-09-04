@@ -1,54 +1,45 @@
+//------------------------------------------------------------------------------
+//  IEC60870.Core.NET — QL 设定值命令限定词
+//
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
+namespace IEC60870.Core;
 
-/*
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
-
-namespace IEC60870.Core.InformationObjects
+/// <summary>
+/// 设定值命令限定词（QOL）：bit0-6 = QL（设定值限定词），bit7 = S/E 选择标志。
+/// </summary>
+public class SetpointCommandQualifier
 {
-    public class SetpointCommandQualifier
+    private const byte MaskQl = 0x7F;      // QL 域（bit0-6）
+    private const byte MaskSelect = 0x80;  // S/E 选择标志
+
+    private readonly byte _encodedValue;
+
+    /// <summary>以原始编码字节构造。</summary>
+    public SetpointCommandQualifier(byte encodedValue) => _encodedValue = encodedValue;
+
+    /// <summary>以选择标志与 QL 构造。</summary>
+    /// <param name="select">是否选择（预置）命令。</param>
+    /// <param name="ql">设定值限定词（0…127）。</param>
+    public SetpointCommandQualifier(bool select, int ql)
     {
-        private byte encodedValue;
+        var value = (byte)(ql & MaskQl);
 
-        public SetpointCommandQualifier(byte encodedValue)
+        if (select)
         {
-            this.encodedValue = encodedValue;
+            value |= MaskSelect;
         }
 
-        public SetpointCommandQualifier(bool select, int ql)
-        {
-            encodedValue = (byte)(ql & 0x7f);
-
-            if (select)
-                encodedValue |= 0x80;
-        }
-
-        public int QL
-        {
-            get
-            {
-                return (encodedValue & 0x7f);
-            }
-        }
-
-        public bool Select
-        {
-            get
-            {
-                return ((encodedValue & 0x80) == 0x80);
-            }
-        }
-
-        public byte GetEncodedValue()
-        {
-            return encodedValue;
-        }
+        _encodedValue = value;
     }
-}
 
+    /// <summary>设定值限定词 QL（0…127）。</summary>
+    public int QL => _encodedValue & MaskQl;
+
+    /// <summary>是否选择（预置）命令。</summary>
+    public bool Select => (_encodedValue & MaskSelect) != 0;
+
+    /// <summary>原始编码字节。</summary>
+    public byte GetEncodedValue() => _encodedValue;
+}

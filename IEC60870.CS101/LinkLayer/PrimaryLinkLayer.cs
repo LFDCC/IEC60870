@@ -1,20 +1,12 @@
-/*
- *  PrimaryLinkLayer.cs
- *
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+//------------------------------------------------------------------------------
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
 using System;
 
 
-namespace IEC60870.CS101.LinkLayer
-{
+namespace IEC60870.CS101;
+
     public class LinkLayerBusyException : Exception
     {
         public LinkLayerBusyException(string message)
@@ -32,7 +24,7 @@ namespace IEC60870.CS101.LinkLayer
     {
 
         /// <summary>
-        /// Indicate an access demand request form the client (ACD bit set in response)
+        /// 表示客户端发起的访问请求（响应中置位 ACD 位）
         /// </summary>
         /// <param name="slaveAddress">address of the slave that requested the access demand</param>
         void AccessDemand(int slaveAddress);
@@ -48,7 +40,7 @@ namespace IEC60870.CS101.LinkLayer
 
         /// <summary>
         /// A former request to the slave (UD Class 1, UD Class 2, confirmed...) resulted in a timeout
-        /// Station does not respond indication
+        /// 站点无响应指示
         /// </summary>
         /// <param name="slaveAddress">address of the slave that caused the timeout</param>
         void Timeout(int slaveAddress);
@@ -64,4 +56,3 @@ namespace IEC60870.CS101.LinkLayer
         public abstract void SendLinkLayerTestFunction();
     }
 
-}

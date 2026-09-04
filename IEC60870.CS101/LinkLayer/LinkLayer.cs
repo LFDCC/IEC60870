@@ -1,14 +1,6 @@
-/*
- *  LinkLayer.cs (LinkLayerEngine)
- *
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+//------------------------------------------------------------------------------
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
 using System;
 using System.Threading;
@@ -16,10 +8,10 @@ using System.Threading.Tasks;
 using IEC60870.Core;
 
 
-namespace IEC60870.CS101.LinkLayer
-{
+namespace IEC60870.CS101;
+
     /// <summary>
-    /// Will be called by the stack when the state of a link layer connection changes
+    /// 链路层连接状态变化时由协议栈回调
     /// </summary>
     /// <param name="address">Address of the slave (only used for unbalanced master mode)</param>
     public delegate void LinkLayerStateChanged(object parameter, int address, LinkLayerState newState);
@@ -38,24 +30,24 @@ namespace IEC60870.CS101.LinkLayer
         BALANCED
     }
 
-    /* Function codes for unbalanced transmission */
+    /* 非平衡传输功能码 */
     internal enum FunctionCodePrimary
     {
         RESET_REMOTE_LINK = 0,
-        /* Reset CU (communication unit) */
+        /* 复位通信单元（CU） */
         RESET_USER_PROCESS = 1,
         TEST_FUNCTION_FOR_LINK = 2,
         USER_DATA_CONFIRMED = 3,
         USER_DATA_NO_REPLY = 4,
         RESET_FCB = 7,
-        /* required/only for CS103 */
+        /* CS103 专用 */
         REQUEST_FOR_ACCESS_DEMAND = 8,
         REQUEST_LINK_STATUS = 9,
         REQUEST_USER_DATA_CLASS_1 = 10,
         REQUEST_USER_DATA_CLASS_2 = 11
     }
 
-    /* Function codes for unbalanced transmission */
+    /* 非平衡传输功能码 */
     internal enum FunctionCodeSecondary
     {
         ACK = 0,
@@ -65,108 +57,6 @@ namespace IEC60870.CS101.LinkLayer
         STATUS_OF_LINK_OR_ACCESS_DEMAND = 11,
         LINK_SERVICE_NOT_FUNCTIONING = 14,
         LINK_SERVICE_NOT_IMPLEMENTED = 15
-    }
-
-    /// <summary>
-    /// Link layer specific parameters.
-    /// </summary>
-    public class LinkLayerParameters
-    {
-        /* 0/1/2 bytes address length */
-        private int addressLength = 1;
-
-        /* timeout for ACKs in ms */
-        private int timeoutForACK = 1000;
-
-        /* timeout for repeating messages when no ACK received in ms */
-        private long timeoutRepeat = 1000;
-
-        /* use single char ACK for ACK (FC=0) or RESP_NO_USER_DATA (FC=9) */
-        private bool useSingleCharACK = true;
-
-        /* interval to repeat request status of link (FC=9) after response timeout */
-        private int timeoutLinkState;
-
-        /// <summary>
-        /// Gets or sets the length of the link layer address field
-        /// </summary>
-        /// <para>The value can be either 0, 1, or 2 for balanced mode or 0, or 1 for unbalanced mode</para>
-        /// <value>The length of the address in byte</value>
-        public int AddressLength
-        {
-            get
-            {
-                return addressLength;
-            }
-            set
-            {
-                addressLength = value;
-            }
-        }
-
-        /// <summary>
-        /// Gets or sets the timeout for message ACK
-        /// </summary>
-        /// <value>The timeout to wait for message ACK in ms</value>
-        public int TimeoutForACK
-        {
-            get
-            {
-                return timeoutForACK;
-            }
-            set
-            {
-                timeoutForACK = value;
-            }
-        }
-
-        /// <summary>
-        /// Gets or sets the timeout for message repetition in case of missing ACK messages
-        /// </summary>
-        /// <value>The timeout for message repetition in ms</value>
-        public long TimeoutRepeat
-        {
-            get
-            {
-                return timeoutRepeat;
-            }
-            set
-            {
-                timeoutRepeat = value;
-            }
-        }
-
-        /// <summary>
-        /// Gets or sets a value indicating whether the secondary link layer uses single character ACK instead of FC 0 or FC 9
-        /// </summary>
-        /// <value><c>true</c> if use single char ACK; otherwise, <c>false</c>.</value>
-        public bool UseSingleCharACK
-        {
-            get
-            {
-                return useSingleCharACK;
-            }
-            set
-            {
-                useSingleCharACK = value;
-            }
-        }
-
-        /// <summary>
-        /// Gets or sets the interval to repeat request status of link (FC=9) after response timeout 
-        /// </summary>
-        /// <value>the timeout value in ms</value>
-        public int TimeoutLinkState
-        {
-            get
-            {
-                return timeoutLinkState;
-            }
-            set
-            {
-                timeoutLinkState = value;
-            }
-        }
     }
 
     internal enum PrimaryLinkLayerState
@@ -185,30 +75,33 @@ namespace IEC60870.CS101.LinkLayer
     {
         protected Action<string> DebugLog;
 
-        protected byte[] buffer;
-        /* byte buffer to receice and send frames */
+        protected byte[] _buffer;
+        /* byte buffer to receive and send frames */
+
+        /// <summary>接收专用缓冲：与发送缓冲 <see cref="_buffer"/> 分离，消除共享缓冲的数据竞争隐患。</summary>
+        private readonly byte[] _recvBuffer = new byte[300];
 
         public LinkLayerParameters linkLayerParameters;
-        protected ISerialLinkTransport transceiver;
-        private LinkLayerMode linkLayerMode = LinkLayerMode.BALANCED;
+        protected ISerialLinkTransport _transceiver;
+        private LinkLayerMode _linkLayerMode = LinkLayerMode.BALANCED;
 
         /* 发送缓冲：SendXxx 先写入此处，RunAsync 每轮统一冲刷，避免状态机内部多次 await 写。 */
         private byte[] _sendBuffer = new byte[300];
         private int _sendLen = 0;
 
-        private PrimaryLinkLayer primaryLinkLayer = null;
-        private SecondaryLinkLayer secondaryLinkLayer = null;
+        private PrimaryLinkLayer _primaryLinkLayer = null;
+        private SecondaryLinkLayer _secondaryLinkLayer = null;
 
-        private byte[] SINGLE_CHAR_ACK = new byte[] { 0xe5 };
+        private byte[] _singleCharAck = new byte[] { 0xe5 };
 
-        private bool dir;
-        /* ONLY for balanced link layer */
+        private bool _dir;
+        /* 仅用于平衡链路层 */
 
-        private RawMessageHandler receivedRawMessageHandler = null;
-        private object receivedRawMessageHandlerParameter = null;
+        private RawMessageHandler _receivedRawMessageHandler = null;
+        private object _receivedRawMessageHandlerParameter = null;
 
-        private RawMessageHandler sentRawMessageHandler = null;
-        private object sentRawMessageHandlerParameter = null;
+        private RawMessageHandler _sentRawMessageHandler = null;
+        private object _sentRawMessageHandlerParameter = null;
 
         /// <summary>
         /// 收到完整 FT1.2 帧时触发（原始报文，含起始符/控制域/校验）。参数已拷贝为 byte[]，
@@ -225,22 +118,22 @@ namespace IEC60870.CS101.LinkLayer
 
         public LinkLayerEngine(byte[] buffer, LinkLayerParameters parameters, ISerialLinkTransport transceiver, Action<string> debugLog)
         {
-            this.buffer = buffer;
+            _buffer = buffer;
             linkLayerParameters = parameters;
-            this.transceiver = transceiver;
+            _transceiver = transceiver;
             DebugLog = debugLog;
         }
 
         public void SetReceivedRawMessageHandler(RawMessageHandler handler, object parameter)
         {
-            receivedRawMessageHandler = handler;
-            receivedRawMessageHandlerParameter = parameter;
+            _receivedRawMessageHandler = handler;
+            _receivedRawMessageHandlerParameter = parameter;
         }
 
         public void SetSentRawMessageHandler(RawMessageHandler handler, object parameter)
         {
-            sentRawMessageHandler = handler;
-            sentRawMessageHandlerParameter = parameter;
+            _sentRawMessageHandler = handler;
+            _sentRawMessageHandlerParameter = parameter;
         }
 
         internal int GetBroadcastAddress()
@@ -257,24 +150,32 @@ namespace IEC60870.CS101.LinkLayer
             return 0;
         }
 
-        private int ownAddress = 0;
+        private int _ownAddress = 0;
 
         public int OwnAddress
         {
             get
             {
-                if (secondaryLinkLayer is SecondaryLinkLayerUnbalanced)
-                    return secondaryLinkLayer.Address;
-                else
-                    return ownAddress;
+                if (_secondaryLinkLayer is SecondaryLinkLayerUnbalanced)
+            {
+                return _secondaryLinkLayer.Address;
             }
+            else
+            {
+                return _ownAddress;
+            }
+        }
             set
             {
-                if (secondaryLinkLayer is SecondaryLinkLayerUnbalanced)
-                    secondaryLinkLayer.Address = value;
-                else
-                    ownAddress = value;
+                if (_secondaryLinkLayer is SecondaryLinkLayerUnbalanced)
+            {
+                _secondaryLinkLayer.Address = value;
             }
+            else
+            {
+                _ownAddress = value;
+            }
+        }
         }
 
         /// <summary>
@@ -285,11 +186,11 @@ namespace IEC60870.CS101.LinkLayer
         {
             get
             {
-                return dir;
+                return _dir;
             }
             set
             {
-                dir = value;
+                _dir = value;
             }
         }
 
@@ -305,40 +206,44 @@ namespace IEC60870.CS101.LinkLayer
 
         public void SetPrimaryLinkLayer(PrimaryLinkLayer primaryLinkLayer)
         {
-            this.primaryLinkLayer = primaryLinkLayer;
+            _primaryLinkLayer = primaryLinkLayer;
         }
 
         public void SetSecondaryLinkLayer(SecondaryLinkLayer secondaryLinkLayer)
         {
-            this.secondaryLinkLayer = secondaryLinkLayer;
+            _secondaryLinkLayer = secondaryLinkLayer;
         }
 
         public LinkLayerMode LinkLayerMode
         {
             get
             {
-                return linkLayerMode;
+                return _linkLayerMode;
             }
             set
             {
-                linkLayerMode = value;
+                _linkLayerMode = value;
             }
         }
 
         public void SendTestFunction()
         {
-            if (primaryLinkLayer != null)
-                primaryLinkLayer.SendLinkLayerTestFunction();
+            if (_primaryLinkLayer != null)
+        {
+            _primaryLinkLayer.SendLinkLayerTestFunction();
         }
+    }
 
         public void SendSingleCharACK()
         {
-            if (sentRawMessageHandler != null)
-                sentRawMessageHandler(sentRawMessageHandlerParameter, SINGLE_CHAR_ACK, 1);
+            if (_sentRawMessageHandler != null)
+        {
+            _sentRawMessageHandler(_sentRawMessageHandlerParameter, _singleCharAck, 1);
+        }
 
-            RawFrameSent?.Invoke((byte[])SINGLE_CHAR_ACK.Clone()); // 单字符 ACK 原始报文
+        RawFrameSent?.Invoke((byte[])_singleCharAck.Clone()); // 单字符 ACK 原始报文
 
-            SendMessage(SINGLE_CHAR_ACK, 1);
+            SendMessage(_singleCharAck, 1);
         }
 
         /// <summary>
@@ -351,7 +256,7 @@ namespace IEC60870.CS101.LinkLayer
                 // 缓冲不足：扩展缓冲继续累积，避免同步阻塞冲刷线程池线程做异步 I/O
                 // （原 FlushSendsAsync(...).GetAwaiter().GetResult() 在高负载下可能线程池饥饿，代码评审 #10）。
                 // 每轮 RunAsync 末尾都会清空，实际增长有限。
-                int need = _sendLen + msgSize;
+                var need = _sendLen + msgSize;
                 Array.Resize(ref _sendBuffer, Math.Max(_sendBuffer.Length * 2, need));
             }
 
@@ -363,7 +268,7 @@ namespace IEC60870.CS101.LinkLayer
         {
             if (_sendLen > 0)
             {
-                await transceiver.WriteAsync(_sendBuffer.AsMemory(0, _sendLen), ct).ConfigureAwait(false);
+                await _transceiver.WriteAsync(_sendBuffer.AsMemory(0, _sendLen), ct).ConfigureAwait(false);
                 _sendLen = 0;
             }
         }
@@ -371,212 +276,258 @@ namespace IEC60870.CS101.LinkLayer
 
         public void SendFixedFramePrimary(FunctionCodePrimary fc, int address, bool fcb, bool fcv)
         {
-            SendFixedFrame((byte)fc, address, true, dir, fcb, fcv);
+            SendFixedFrame((byte)fc, address, true, _dir, fcb, fcv);
         }
 
         public void SendFixedFrameSecondary(FunctionCodeSecondary fc, int address, bool acd, bool dfc)
         {
-            SendFixedFrame((byte)fc, address, false, dir, acd, dfc);
+            SendFixedFrame((byte)fc, address, false, _dir, acd, dfc);
         }
 
         public void SendFixedFrame(byte fc, int address, bool prm, bool dir, bool acd, bool dfc)
         {
-            int bufPos = 0;
+            var bufPos = 0;
 
-            buffer[bufPos++] = 0x10; /* START */
+            _buffer[bufPos++] = 0x10; /* START */
 
-            byte c = fc;
+            var c = fc;
 
             if (prm)
-                c += 0x40;
+        {
+            c += 0x40;
+        }
 
-            if (dir)
-                c += 0x80;
+        if (dir)
+        {
+            c += 0x80;
+        }
 
-            if (acd)
-                c += 0x20;
+        if (acd)
+        {
+            c += 0x20;
+        }
 
-            if (dfc)
-                c += 0x10;
+        if (dfc)
+        {
+            c += 0x10;
+        }
 
-            buffer[bufPos++] = c;
+        _buffer[bufPos++] = c;
 
             if (linkLayerParameters.AddressLength > 0)
             {
-                buffer[bufPos++] = (byte)(address % 0x100);
+                _buffer[bufPos++] = (byte)(address % 0x100);
 
                 if (linkLayerParameters.AddressLength > 1)
-                    buffer[bufPos++] = (byte)((address / 0x100) % 0x100);
+            {
+                _buffer[bufPos++] = (byte)((address / 0x100) % 0x100);
             }
+        }
 
             byte checksum = 0;
 
-            for (int i = 1; i < bufPos; i++)
-                checksum += buffer[i];
+            for (var i = 1; i < bufPos; i++)
+        {
+            checksum += _buffer[i];
+        }
 
-            buffer[bufPos++] = checksum;
+        _buffer[bufPos++] = checksum;
 
-            buffer[bufPos++] = 0x16; /* END */
+            _buffer[bufPos++] = 0x16; /* END */
 
-            if (sentRawMessageHandler != null)
-                sentRawMessageHandler(sentRawMessageHandlerParameter, buffer, bufPos);
+            if (_sentRawMessageHandler != null)
+        {
+            _sentRawMessageHandler(_sentRawMessageHandlerParameter, _buffer, bufPos);
+        }
 
-            // 固定帧(0x10) 原始报文（有订阅者才拷贝）
-            if (RawFrameSent != null)
+        // 固定帧(0x10) 原始报文（有订阅者才拷贝）
+        if (RawFrameSent != null)
             {
                 var copy = new byte[bufPos];
-                Array.Copy(buffer, copy, bufPos);
+                Array.Copy(_buffer, copy, bufPos);
                 RawFrameSent(copy);
             }
 
-            SendMessage(buffer, bufPos);
+            SendMessage(_buffer, bufPos);
         }
 
 
         public void SendVariableLengthFramePrimary(FunctionCodePrimary fc, int address, bool fcb, bool fcv, BufferFrame frame)
         {
-            buffer[0] = 0x68; /* START */
-            buffer[3] = 0x68; /* START */
+            _buffer[0] = 0x68; /* START */
+            _buffer[3] = 0x68; /* START */
 
-            byte c = (byte)fc;
+            var c = (byte)fc;
 
-            if (dir)
-                c += 0x80;
+            if (_dir)
+        {
+            c += 0x80;
+        }
 
-            c += 0x40; // PRM = 1;
+        c += 0x40; // PRM = 1;
 
             if (fcv)
-                c += 0x10;
+        {
+            c += 0x10;
+        }
 
-            if (fcb)
-                c += 0x20;
+        if (fcb)
+        {
+            c += 0x20;
+        }
 
-            buffer[4] = c;
+        _buffer[4] = c;
 
-            int bufPos = 5;
+            var bufPos = 5;
 
             if (linkLayerParameters.AddressLength > 0)
             {
-                buffer[bufPos++] = (byte)(address % 0x100);
+                _buffer[bufPos++] = (byte)(address % 0x100);
 
                 if (linkLayerParameters.AddressLength > 1)
-                    buffer[bufPos++] = (byte)((address / 0x100) % 0x100);
+            {
+                _buffer[bufPos++] = (byte)((address / 0x100) % 0x100);
             }
+        }
 
-            byte[] userData = frame.GetBuffer();
-            int userDataLength = frame.GetMsgSize();
+            var userData = frame.GetBuffer();
+            var userDataLength = frame.GetMsgSize();
 
-            for (int i = 0; i < userDataLength; i++)
-                buffer[bufPos++] = userData[i];
+            for (var i = 0; i < userDataLength; i++)
+        {
+            _buffer[bufPos++] = userData[i];
+        }
 
-            int l = 1 + linkLayerParameters.AddressLength + frame.GetMsgSize();
+        var l = 1 + linkLayerParameters.AddressLength + frame.GetMsgSize();
 
             if (l > 255)
-                return;
+        {
+            return;
+        }
 
-            buffer[1] = (byte)l;
-            buffer[2] = (byte)l;
+        _buffer[1] = (byte)l;
+            _buffer[2] = (byte)l;
 
             byte checksum = 0;
 
-            for (int i = 4; i < bufPos; i++)
-                checksum += buffer[i];
+            for (var i = 4; i < bufPos; i++)
+        {
+            checksum += _buffer[i];
+        }
 
-            buffer[bufPos++] = checksum;
+        _buffer[bufPos++] = checksum;
 
-            buffer[bufPos++] = 0x16; /* END */
+            _buffer[bufPos++] = 0x16; /* END */
 
-            if (sentRawMessageHandler != null)
-                sentRawMessageHandler(sentRawMessageHandlerParameter, buffer, bufPos);
+            if (_sentRawMessageHandler != null)
+        {
+            _sentRawMessageHandler(_sentRawMessageHandlerParameter, _buffer, bufPos);
+        }
 
-            // 变长帧(0x68) 原始报文（有订阅者才拷贝）
-            if (RawFrameSent != null)
+        // 变长帧(0x68) 原始报文（有订阅者才拷贝）
+        if (RawFrameSent != null)
             {
                 var copy = new byte[bufPos];
-                Array.Copy(buffer, copy, bufPos);
+                Array.Copy(_buffer, copy, bufPos);
                 RawFrameSent(copy);
             }
 
-            SendMessage(buffer, bufPos);
+            SendMessage(_buffer, bufPos);
         }
 
         internal void SendVariableLengthFrameSecondary(FunctionCodeSecondary fc, int address, bool acd, bool dfc, BufferFrame frame)
         {
-            buffer[0] = 0x68; /* START */
-            buffer[3] = 0x68; /* START */
+            _buffer[0] = 0x68; /* START */
+            _buffer[3] = 0x68; /* START */
 
-            byte c = (byte)((int)fc & 0x1f);
+            var c = (byte)((int)fc & 0x1f);
 
-            if (linkLayerMode == LinkLayerMode.BALANCED)
+            if (_linkLayerMode == LinkLayerMode.BALANCED)
             {
-                if (dir)
-                    c += 0x80;
+                if (_dir)
+            {
+                c += 0x80;
             }
+        }
 
             if (acd)
-                c += 0x20;
+        {
+            c += 0x20;
+        }
 
-            if (dfc)
-                c += 0x10;
+        if (dfc)
+        {
+            c += 0x10;
+        }
 
-            buffer[4] = c;
+        _buffer[4] = c;
 
-            int bufPos = 5;
+            var bufPos = 5;
 
             if (linkLayerParameters.AddressLength > 0)
             {
-                buffer[bufPos++] = (byte)(address % 0x100);
+                _buffer[bufPos++] = (byte)(address % 0x100);
 
                 if (linkLayerParameters.AddressLength > 1)
-                    buffer[bufPos++] = (byte)((address / 0x100) % 0x100);
+            {
+                _buffer[bufPos++] = (byte)((address / 0x100) % 0x100);
             }
+        }
 
-            byte[] userData = frame.GetBuffer();
-            int userDataLength = frame.GetMsgSize();
+            var userData = frame.GetBuffer();
+            var userDataLength = frame.GetMsgSize();
 
-            int l = 1 + linkLayerParameters.AddressLength + userDataLength;
+            var l = 1 + linkLayerParameters.AddressLength + userDataLength;
 
             if (l > 255)
-                return;
+        {
+            return;
+        }
 
-            buffer[1] = (byte)l;
-            buffer[2] = (byte)l;
+        _buffer[1] = (byte)l;
+            _buffer[2] = (byte)l;
 
-            for (int i = 0; i < userDataLength; i++)
-                buffer[bufPos++] = userData[i];
+            for (var i = 0; i < userDataLength; i++)
+        {
+            _buffer[bufPos++] = userData[i];
+        }
 
-            byte checksum = 0;
+        byte checksum = 0;
 
-            for (int i = 4; i < bufPos; i++)
-                checksum += buffer[i];
+            for (var i = 4; i < bufPos; i++)
+        {
+            checksum += _buffer[i];
+        }
 
-            buffer[bufPos++] = checksum;
+        _buffer[bufPos++] = checksum;
 
-            buffer[bufPos++] = 0x16; /* END */
+            _buffer[bufPos++] = 0x16; /* END */
 
-            if (sentRawMessageHandler != null)
-                sentRawMessageHandler(sentRawMessageHandlerParameter, buffer, bufPos);
+            if (_sentRawMessageHandler != null)
+        {
+            _sentRawMessageHandler(_sentRawMessageHandlerParameter, _buffer, bufPos);
+        }
 
-            // 变长帧(0x68) 原始报文（有订阅者才拷贝）
-            if (RawFrameSent != null)
+        // 变长帧(0x68) 原始报文（有订阅者才拷贝）
+        if (RawFrameSent != null)
             {
                 var copy = new byte[bufPos];
-                Array.Copy(buffer, copy, bufPos);
+                Array.Copy(_buffer, copy, bufPos);
                 RawFrameSent(copy);
             }
 
-            SendMessage(buffer, bufPos);
+            SendMessage(_buffer, bufPos);
         }
 
 
         private void ParseHeaderSecondaryUnbalanced(byte[] msg, int msgSize)
         {
-            int userDataLength = 0;
-            int userDataStart = 0;
+            var userDataLength = 0;
+            var userDataStart = 0;
             byte c;
             int csStart;
             int csIndex;
-            int address = 0;
+            var address = 0;
 
             if (msg[0] == 0x68)
             {
@@ -593,7 +544,7 @@ namespace IEC60870.CS101.LinkLayer
                 csStart = 4;
                 csIndex = userDataStart + userDataLength;
 
-                // check if message size is reasonable
+                // 校验报文长度是否合理
                 if (msgSize != (userDataStart + userDataLength + 2 /* CS + END */))
                 {
                     DebugLog("ERROR: Invalid message length");
@@ -611,7 +562,7 @@ namespace IEC60870.CS101.LinkLayer
             }
             else if (msg[0] == 0xE5)
             {
-                /* Confirmation message from other slave --> ignore */
+                /* 来自其他从站的确认帧，直接忽略 */
                 return;
             }
             else
@@ -620,7 +571,7 @@ namespace IEC60870.CS101.LinkLayer
                 return;
             }
 
-            bool isBroadcast = false;
+            var isBroadcast = false;
 
             //check address
             if (linkLayerParameters.AddressLength > 0)
@@ -632,16 +583,20 @@ namespace IEC60870.CS101.LinkLayer
                     address += (msg[csStart + 2] * 0x100);
 
                     if (address == 65535)
-                        isBroadcast = true;
+                {
+                    isBroadcast = true;
                 }
+            }
                 else
                 {
                     if (address == 255)
-                        isBroadcast = true;
+                {
+                    isBroadcast = true;
                 }
             }
+            }
 
-            int fc = c & 0x0f;
+            var fc = c & 0x0f;
             FunctionCodePrimary fcp = (FunctionCodePrimary)fc;
 
             if (isBroadcast)
@@ -655,7 +610,7 @@ namespace IEC60870.CS101.LinkLayer
             }
             else
             {
-                if (address != secondaryLinkLayer.Address)
+                if (address != _secondaryLinkLayer.Address)
                 {
                     DebugLog("INFO: unknown link layer address -> ignore message");
                     return;
@@ -665,10 +620,12 @@ namespace IEC60870.CS101.LinkLayer
             //check checksum
             byte checksum = 0;
 
-            for (int i = csStart; i < csIndex; i++)
-                checksum += msg[i];
+            for (var i = csStart; i < csIndex; i++)
+        {
+            checksum += msg[i];
+        }
 
-            if (checksum != msg[csIndex])
+        if (checksum != msg[csIndex])
             {
                 DebugLog("ERROR: checksum invalid!");
                 return;
@@ -676,7 +633,7 @@ namespace IEC60870.CS101.LinkLayer
 
 
             // parse C field bits
-            bool prm = ((c & 0x40) == 0x40);
+            var prm = ((c & 0x40) == 0x40);
 
             if (prm == false)
             {
@@ -684,31 +641,35 @@ namespace IEC60870.CS101.LinkLayer
                 return;
             }
 
-            bool fcb = ((c & 0x20) == 0x20);
-            bool fcv = ((c & 0x10) == 0x10);
+            var fcb = ((c & 0x20) == 0x20);
+            var fcv = ((c & 0x10) == 0x10);
 
             DebugLog("PRM=" + (prm == true ? "1" : "0") + " FCB=" + (fcb == true ? "1" : "0") + " FCV=" + (fcv == true ? "1" : "0")
                 + " FC=" + fc + "(" + fcp.ToString() + ")");
 
-            if (secondaryLinkLayer != null)
-                secondaryLinkLayer.HandleMessage(fcp, isBroadcast, address, fcb, fcv, msg, userDataStart, userDataLength);
-            else
-                DebugLog("No secondary link layer available!");
+            if (_secondaryLinkLayer != null)
+        {
+            _secondaryLinkLayer.HandleMessage(fcp, isBroadcast, address, fcb, fcv, msg, userDataStart, userDataLength);
         }
+        else
+        {
+            DebugLog("No secondary link layer available!");
+        }
+    }
 
 
         public void HandleMessageBalancedAndPrimaryUnbalanced(byte[] msg, int msgSize)
         {
-            int userDataLength = 0;
-            int userDataStart = 0;
+            var userDataLength = 0;
+            var userDataStart = 0;
             byte c = 0;
-            int csStart = 0;
-            int csIndex = 0;
-            int address = 0; /* address can be ignored in balanced mode? */
-            bool prm = true;
-            int fc = 0;
+            var csStart = 0;
+            var csIndex = 0;
+            var address = 0; /* 平衡模式下地址是否可忽略？ */
+            var prm = true;
+            var fc = 0;
 
-            bool isAck = false;
+            var isAck = false;
 
             if (msg[0] == 0x68)
             {
@@ -725,7 +686,7 @@ namespace IEC60870.CS101.LinkLayer
                 csStart = 4;
                 csIndex = userDataStart + userDataLength;
 
-                // check if message size is reasonable
+                // 校验报文长度是否合理
                 if (msgSize != (userDataStart + userDataLength + 2 /* CS + END */))
                 {
                     DebugLog("ERROR: Invalid message length");
@@ -735,11 +696,15 @@ namespace IEC60870.CS101.LinkLayer
                 c = msg[4];
 
                 if (linkLayerParameters.AddressLength > 0)
-                    address += msg[5];
-
-                if (linkLayerParameters.AddressLength > 1)
-                    address += msg[6] * 0x100;
+            {
+                address += msg[5];
             }
+
+            if (linkLayerParameters.AddressLength > 1)
+            {
+                address += msg[6] * 0x100;
+            }
+        }
             else if (msg[0] == 0x10)
             {
                 c = msg[1];
@@ -747,17 +712,20 @@ namespace IEC60870.CS101.LinkLayer
                 csIndex = 2 + linkLayerParameters.AddressLength;
 
                 if (linkLayerParameters.AddressLength > 0)
-                    address += msg[2];
-
-                if (linkLayerParameters.AddressLength > 1)
-                    address += msg[3] * 0x100;
-
+            {
+                address += msg[2];
             }
+
+            if (linkLayerParameters.AddressLength > 1)
+            {
+                address += msg[3] * 0x100;
+            }
+        }
             else if (msg[0] == 0xe5)
             {
                 isAck = true;
                 fc = (int)FunctionCodeSecondary.ACK;
-                prm = false; /* single char ACK is only sent by secondary station */
+                prm = false; /* 单字符 ACK 仅由副站发送 */
                 DebugLog("Received single char ACK");
             }
             else
@@ -772,10 +740,12 @@ namespace IEC60870.CS101.LinkLayer
                 //check checksum
                 byte checksum = 0;
 
-                for (int i = csStart; i < csIndex; i++)
-                    checksum += msg[i];
+                for (var i = csStart; i < csIndex; i++)
+            {
+                checksum += msg[i];
+            }
 
-                if (checksum != msg[csIndex])
+            if (checksum != msg[csIndex])
                 {
                     DebugLog("ERROR: checksum invalid!");
                     return;
@@ -786,51 +756,61 @@ namespace IEC60870.CS101.LinkLayer
                 prm = ((c & 0x40) == 0x40);
 
                 if (prm)
-                { /* we are secondary link layer */
-                    bool fcb = ((c & 0x20) == 0x20);
-                    bool fcv = ((c & 0x10) == 0x10);
+                { /* 本端为副站链路层 */
+                    var fcb = ((c & 0x20) == 0x20);
+                    var fcv = ((c & 0x10) == 0x10);
 
                     DebugLog("PRM=" + (prm == true ? "1" : "0") + " FCB=" + (fcb == true ? "1" : "0") + " FCV=" + (fcv == true ? "1" : "0")
                         + " FC=" + fc + "(" + ((FunctionCodePrimary)c).ToString() + ")");
 
                     FunctionCodePrimary fcp = (FunctionCodePrimary)fc;
 
-                    if (secondaryLinkLayer != null)
-                        secondaryLinkLayer.HandleMessage(fcp, false, address, fcb, fcv, msg, userDataStart, userDataLength);
-                    else
-                        DebugLog("No secondary link layer available!");
-
+                    if (_secondaryLinkLayer != null)
+                {
+                    _secondaryLinkLayer.HandleMessage(fcp, false, address, fcb, fcv, msg, userDataStart, userDataLength);
                 }
                 else
-                { /* we are primary link layer */
-                    bool dir = ((c & 0x80) == 0x80); /* DIR - direction for balanced transmission */
-                    bool dfc = ((c & 0x10) == 0x10); /* DFC - Data flow control */
-                    bool acd = ((c & 0x20) == 0x20); /* ACD - access demand for class 1 data - for unbalanced transmission */
+                {
+                    DebugLog("No secondary link layer available!");
+                }
+            }
+                else
+                { /* 本端为主站链路层 */
+                    var dir = ((c & 0x80) == 0x80); /* DIR：平衡传输方向位 */
+                    var dfc = ((c & 0x10) == 0x10); /* DFC：数据流控制 */
+                    var acd = ((c & 0x20) == 0x20); /* ACD：1 类数据访问请求（非平衡传输） */
 
                     DebugLog("PRM=" + (prm == true ? "1" : "0") + " DIR=" + (dir == true ? "1" : "0") + " DFC=" + (dfc == true ? "1" : "0")
                         + " FC=" + fc + "(" + ((FunctionCodeSecondary)c).ToString() + ")");
 
                     FunctionCodeSecondary fcs = (FunctionCodeSecondary)fc;
 
-                    if (primaryLinkLayer != null)
+                    if (_primaryLinkLayer != null)
                     {
 
-                        if (linkLayerMode == LinkLayerMode.BALANCED)
-                            primaryLinkLayer.HandleMessage(fcs, dir, dfc, address, msg, userDataStart, userDataLength);
-                        else
-                            primaryLinkLayer.HandleMessage(fcs, acd, dfc, address, msg, userDataStart, userDataLength);
+                        if (_linkLayerMode == LinkLayerMode.BALANCED)
+                    {
+                        _primaryLinkLayer.HandleMessage(fcs, dir, dfc, address, msg, userDataStart, userDataLength);
                     }
                     else
-                        DebugLog("No primary link layer available!");
-
+                    {
+                        _primaryLinkLayer.HandleMessage(fcs, acd, dfc, address, msg, userDataStart, userDataLength);
+                    }
                 }
+                    else
+                {
+                    DebugLog("No primary link layer available!");
+                }
+            }
 
             }
             else
-            { /* Single byte ACK */
-                if (primaryLinkLayer != null)
-                    primaryLinkLayer.HandleMessage(FunctionCodeSecondary.ACK, false, false, -1, null, 0, 0);
+            { /* 单字节 ACK */
+                if (_primaryLinkLayer != null)
+            {
+                _primaryLinkLayer.HandleMessage(FunctionCodeSecondary.ACK, false, false, -1, null, 0, 0);
             }
+        }
 
         }
 
@@ -846,39 +826,53 @@ namespace IEC60870.CS101.LinkLayer
                 RawFrameReceived(copy);
             }
 
-            bool handleMessage = true;
+            var handleMessage = true;
 
-            if (receivedRawMessageHandler != null)
-                handleMessage = receivedRawMessageHandler(receivedRawMessageHandlerParameter, msg, msgSize);
+            if (_receivedRawMessageHandler != null)
+        {
+            handleMessage = _receivedRawMessageHandler(_receivedRawMessageHandlerParameter, msg, msgSize);
+        }
 
-            if (handleMessage)
+        if (handleMessage)
             {
 
-                if (linkLayerMode == LinkLayerMode.BALANCED)
-                    HandleMessageBalancedAndPrimaryUnbalanced(buffer, msgSize);
-                else
-                {
-                    if (secondaryLinkLayer != null)
-                        ParseHeaderSecondaryUnbalanced(buffer, msgSize);
-                    else if (primaryLinkLayer != null)
-                        HandleMessageBalancedAndPrimaryUnbalanced(buffer, msgSize);
-                    else
-                        DebugLog("ERROR: Neither primary nor secondary link layer available!");
-                }
+                if (_linkLayerMode == LinkLayerMode.BALANCED)
+            {
+                HandleMessageBalancedAndPrimaryUnbalanced(msg, msgSize);
             }
             else
-                DebugLog("Message ignored because of raw message handler");
+                {
+                    if (_secondaryLinkLayer != null)
+                {
+                    ParseHeaderSecondaryUnbalanced(msg, msgSize);
+                }
+                else if (_primaryLinkLayer != null)
+                {
+                    HandleMessageBalancedAndPrimaryUnbalanced(msg, msgSize);
+                }
+                else
+                {
+                    DebugLog("ERROR: Neither primary nor secondary link layer available!");
+                }
+            }
+            }
+            else
+        {
+            DebugLog("Message ignored because of raw message handler");
         }
+    }
 
         public async ValueTask RunAsync(CancellationToken ct)
         {
             try
             {
-                int n = await transceiver.ReadFrameAsync(buffer, ct).ConfigureAwait(false);
+                var n = await _transceiver.ReadFrameAsync(_recvBuffer, ct).ConfigureAwait(false);
 
                 if (n > 0)
-                    HandleMessageAction(buffer, n);
+            {
+                HandleMessageAction(_recvBuffer, n);
             }
+        }
             catch (OperationCanceledException)
             {
                 // 外部取消：本轮直接结束
@@ -888,26 +882,28 @@ namespace IEC60870.CS101.LinkLayer
                 DebugLog?.Invoke("LinkLayerEngine RunAsync error: " + ex.GetType().Name + ": " + ex.Message);
             }
 
-            if (linkLayerMode == LinkLayerMode.BALANCED)
+            if (_linkLayerMode == LinkLayerMode.BALANCED)
             {
-                primaryLinkLayer.RunStateMachine();
-                secondaryLinkLayer.RunStateMachine();
+                _primaryLinkLayer.RunStateMachine();
+                _secondaryLinkLayer.RunStateMachine();
             }
             else
             {
-                if (primaryLinkLayer != null)
-                    primaryLinkLayer.RunStateMachine();
-                else if (secondaryLinkLayer != null)
-                    secondaryLinkLayer.RunStateMachine();
+                if (_primaryLinkLayer != null)
+            {
+                _primaryLinkLayer.RunStateMachine();
             }
+            else if (_secondaryLinkLayer != null)
+            {
+                _secondaryLinkLayer.RunStateMachine();
+            }
+        }
 
             await FlushSendsAsync(ct).ConfigureAwait(false);
         }
 
         public void AddPortDeniedHandler(EventHandler eventHandler)
         {
-            transceiver.PortDenied += eventHandler;
+            _transceiver.PortDenied += eventHandler;
         }
     }
-}
-

@@ -14,8 +14,6 @@ using System.Threading.Tasks;
 using TouchSocket.Sockets;
 using IEC60870.Core;
 using IEC60870.CS104;
-using IEC60870.Core.InformationObjects;
-using IEC60870.Core.Time;
 
 
 
@@ -27,14 +25,14 @@ namespace cs104_tls_client
 
         private static void AsduReceivedHandler(in AsduView view)
         {
-            byte[] raw = view.Raw.ToArray();
+            var raw = view.Raw.ToArray();
             ASDU asdu = new ASDU(_client.Parameters, raw, 0, raw.Length);
 
             Console.WriteLine(asdu.ToString());
 
             if (asdu.TypeId == TypeID.M_SP_NA_1)
             {
-                for (int i = 0; i < asdu.NumberOfElements; i++)
+                for (var i = 0; i < asdu.NumberOfElements; i++)
                 {
                     var val = (SinglePointInformation)asdu.GetElement(i);
                     Console.WriteLine("  IOA: " + val.ObjectAddress + " SP value: " + val.Value);
@@ -43,7 +41,7 @@ namespace cs104_tls_client
             }
             else if (asdu.TypeId == TypeID.M_ME_TE_1)
             {
-                for (int i = 0; i < asdu.NumberOfElements; i++)
+                for (var i = 0; i < asdu.NumberOfElements; i++)
                 {
                     var msv = (MeasuredValueScaledWithCP56Time2a)asdu.GetElement(i);
                     Console.WriteLine("  IOA: " + msv.ObjectAddress + " scaled value: " + msv.ScaledValue);
@@ -53,7 +51,7 @@ namespace cs104_tls_client
             }
             else if (asdu.TypeId == TypeID.M_ME_TF_1)
             {
-                for (int i = 0; i < asdu.NumberOfElements; i++)
+                for (var i = 0; i < asdu.NumberOfElements; i++)
                 {
                     var mfv = (MeasuredValueShortWithCP56Time2a)asdu.GetElement(i);
                     Console.WriteLine("  IOA: " + mfv.ObjectAddress + " float value: " + mfv.Value);
@@ -64,7 +62,7 @@ namespace cs104_tls_client
             }
             else if (asdu.TypeId == TypeID.M_SP_TB_1)
             {
-                for (int i = 0; i < asdu.NumberOfElements; i++)
+                for (var i = 0; i < asdu.NumberOfElements; i++)
                 {
                     var val = (SinglePointWithCP56Time2a)asdu.GetElement(i);
                     Console.WriteLine("  IOA: " + val.ObjectAddress + " SP value: " + val.Value);
@@ -74,7 +72,7 @@ namespace cs104_tls_client
             }
             else if (asdu.TypeId == TypeID.M_ME_NC_1)
             {
-                for (int i = 0; i < asdu.NumberOfElements; i++)
+                for (var i = 0; i < asdu.NumberOfElements; i++)
                 {
                     var mfv = (MeasuredValueShort)asdu.GetElement(i);
                     Console.WriteLine("  IOA: " + mfv.ObjectAddress + " float value: " + mfv.Value);
@@ -83,7 +81,7 @@ namespace cs104_tls_client
             }
             else if (asdu.TypeId == TypeID.M_ME_NB_1)
             {
-                for (int i = 0; i < asdu.NumberOfElements; i++)
+                for (var i = 0; i < asdu.NumberOfElements; i++)
                 {
                     var msv = (MeasuredValueScaled)asdu.GetElement(i);
                     Console.WriteLine("  IOA: " + msv.ObjectAddress + " scaled value: " + msv.ScaledValue);
@@ -92,7 +90,7 @@ namespace cs104_tls_client
             }
             else if (asdu.TypeId == TypeID.M_ME_ND_1)
             {
-                for (int i = 0; i < asdu.NumberOfElements; i++)
+                for (var i = 0; i < asdu.NumberOfElements; i++)
                 {
                     var msv = (MeasuredValueNormalizedWithoutQuality)asdu.GetElement(i);
                     Console.WriteLine("  IOA: " + msv.ObjectAddress + " scaled value: " + msv.NormalizedValue);
@@ -101,9 +99,13 @@ namespace cs104_tls_client
             else if (asdu.TypeId == TypeID.C_IC_NA_1)
             {
                 if (asdu.Cot == CauseOfTransmission.ACTIVATION_CON)
+                {
                     Console.WriteLine((asdu.IsNegative ? "Negative" : "Positive") + "confirmation for interrogation command");
+                }
                 else if (asdu.Cot == CauseOfTransmission.ACTIVATION_TERMINATION)
+                {
                     Console.WriteLine("Interrogation command terminated");
+                }
             }
             else
             {
@@ -146,7 +148,7 @@ namespace cs104_tls_client
 
         public static async Task Main(string[] args)
         {
-            string hostname = "127.0.0.1";
+            var hostname = "127.0.0.1";
 
             if (args.Length > 0)
             {
@@ -169,7 +171,7 @@ namespace cs104_tls_client
                 CertificateValidationCallback = (s, c, ch, err) => true
             };
 
-            Iec104Client con = new Iec104Client(hostname, 19998, null, null, ssl);
+            await using Iec104Client con = new Iec104Client(hostname, 19998, null, null, ssl);
             _client = con;
 
             con.AsduReceived += AsduReceivedHandler;

@@ -4,10 +4,8 @@ using System.IO.Ports;
 
 using System.Threading;
 using System.Threading.Tasks;
-using IEC60870.CS101.LinkLayer;
 using IEC60870.Core;
 using IEC60870.CS101;
-using IEC60870.Core.InformationObjects;
 
 namespace cs101_master_tcp
 {
@@ -36,7 +34,7 @@ namespace cs101_master_tcp
 
         public static async Task Main (string[] args)
         {
-            bool running = true;
+            var running = true;
 
             // use Ctrl-C to stop the programm
             Console.CancelKeyPress += delegate(object? sender, ConsoleCancelEventArgs e) {
@@ -44,14 +42,18 @@ namespace cs101_master_tcp
                 running = false;
             };
 
-            string hostname = "127.0.0.1";
-            int tcpPort = 2404;
+            var hostname = "127.0.0.1";
+            var tcpPort = 2404;
 
             if (args.Length > 0)
+            {
                 hostname = args [0];
+            }
 
             if (args.Length > 1)
+            {
                 int.TryParse (args [1], out tcpPort);
+            }
 
             // NOTE: new API uses a TouchSocket TCP tunnel ctor (hostname, port, mode) instead of
             // the old TcpClientVirtualSerialPort wrapper.
@@ -60,7 +62,7 @@ namespace cs101_master_tcp
             llParameters.UseSingleCharACK = true;
 
             Iec101Client master = new Iec101Client (hostname, tcpPort, LinkLayerMode.BALANCED, llParameters);
-            master.DebugOutput = false;
+            // master.Logger = new LoggerGroup().AddConsoleLogger(LogLevel.Debug); // 需要协议调试日志时启用
             master.OwnAddress = 1;
             master.SlaveAddress = 3;
             master.SetASDUReceivedHandler (asduReceivedHandler, null);
@@ -70,17 +72,21 @@ namespace cs101_master_tcp
             var cts = new CancellationTokenSource ();
             var loop = master.StartAsync (cts.Token);
 
-            long lastTimestamp = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds ();
+            var lastTimestamp = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds ();
 
-            while (running) {
+            while (running)
+            {
 
-                if ((System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - lastTimestamp) >= 5000) {
+                if ((System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - lastTimestamp) >= 5000)
+                {
 
                     lastTimestamp = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds ();
 
-                    if (master.GetLinkLayerState () == LinkLayerState.AVAILABLE) {
+                    if (master.GetLinkLayerState () == LinkLayerState.AVAILABLE)
+                    {
                         master.SendInterrogationCommand (CauseOfTransmission.ACTIVATION, 1, QualifierOfInterrogation.STATION);
-                    } else {
+                    } else
+                    {
                         Console.WriteLine ("Link layer: " + master.GetLinkLayerState ().ToString ());
                     }
                 }
@@ -90,6 +96,7 @@ namespace cs101_master_tcp
 
             master.Stop ();
             await loop;
+            master.Dispose ();
         }
     }
 }

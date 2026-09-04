@@ -23,9 +23,6 @@ using System;
 using System.Linq;
 using System.Threading.Tasks;
 using IEC60870.Core;
-using IEC60870.Core.InformationObjects;
-using IEC60870.Core.Quality;
-using IEC60870.Core.Time;
 using IEC60870.CS104;
 
 namespace cs104_xuji_private_ioa
@@ -50,11 +47,13 @@ namespace cs104_xuji_private_ioa
         // ────────────────────────────────────────────────────────────────
         private static void OnClientAsdu(in AsduView view)
         {
-            byte[] raw = view.Raw.ToArray();
+            var raw = view.Raw.ToArray();
             ASDU asdu = new ASDU(_clientParams!, raw, 0, raw.Length);
 
             if (asdu.TypeId != (TypeID)166 && asdu.TypeId != (TypeID)168)
+            {
                 return; // 忽略非许继私有类型（如 STARTDT/测试帧对应的系统 ASDU）
+            }
 
             Console.WriteLine($"\n[主站] 收到上送 TypeID={(int)asdu.TypeId} COT={asdu.Cot} CA={asdu.Ca}");
             Console.WriteLine(raw.ToTelegram("主站接收"));
@@ -80,7 +79,9 @@ namespace cs104_xuji_private_ioa
             }
 
             if (System.Threading.Interlocked.Increment(ref _received) >= 2)
+            {
                 _allReceived.TrySetResult(true);
+            }
         }
 
         /// <summary>主站侧对故障量的实际处理：这里演示打印 byte[] 原始数据与解码后的 float[]。</summary>
@@ -89,7 +90,10 @@ namespace cs104_xuji_private_ioa
             Console.WriteLine($"       FaultCount = {faultCount}");
             Console.WriteLine($"       FaultData(byte[]) = {Hex(faultData)}  (长度 {faultData.Length} = {faultData.Length / 4} × 4字节 R32.23)");
             if (faultData.Length / 4 != faultCount)
+            {
                 Console.WriteLine($"       (警告: 字节数 {faultData.Length} 与 FaultCount*4={faultCount * 4} 不一致)");
+            }
+
             Console.WriteLine($"       float[] = [{string.Join(", ", values.Select(v => v.ToString("0.######")))}]");
         }
 
@@ -105,7 +109,7 @@ namespace cs104_xuji_private_ioa
 
             // ── 上送 1：TypeID 166（无选相结果），6 个故障量 ──
             float[] faultValues166 = { 12.5f, -3.14159f, 0.0f, 100.25f, 0.0001f, 99999.0f };
-            byte[] faultBytes166 = XujiPrivateTypes.EncodeFaultValues(faultValues166);
+            var faultBytes166 = XujiPrivateTypes.EncodeFaultValues(faultValues166);
             // qual1 = 0x0A: ES=2(动作, 低2位), EI=1(bit3) → 直接构造 SingleEvent
             var evt166 = new SingleEvent(0x0A);
             var io166 = new XujiType166Object(
@@ -127,7 +131,7 @@ namespace cs104_xuji_private_ioa
 
             // ── 上送 2：TypeID 168（含选相结果），4 个故障量 ──
             float[] faultValues168 = { 220.0f, 110.5f, 50.0f, 12.345f };
-            byte[] faultBytes168 = XujiPrivateTypes.EncodeFaultValues(faultValues168);
+            var faultBytes168 = XujiPrivateTypes.EncodeFaultValues(faultValues168);
             // qual1 = 0x0B: GC=1(bit0) CL1/A=1(bit1) CL3/C=1(bit3) → 直接构造 StartEvent
             var spe168 = new StartEvent(0x0B);
             // qual2 = 0x88: IV=1(bit7) EI=1(bit3) → 直接构造 QualityDescriptorP
@@ -166,8 +170,14 @@ namespace cs104_xuji_private_ioa
                     Console.WriteLine("[从站] 链路已激活(STARTDT)，开始主动上送故障量\n");
                     _ = Task.Run(async () =>
                     {
-                        try { await PushFaultReportsAsync(server); }
-                        catch (Exception ex) { Console.WriteLine("[从站] 上送异常: " + ex.Message); }
+                        try
+                        {
+                            await PushFaultReportsAsync(server);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine("[从站] 上送异常: " + ex.Message);
+                        }
                     });
                 }
             };
@@ -184,11 +194,18 @@ namespace cs104_xuji_private_ioa
 
             // 等两条上送都被主站处理完（最多等 5s）
             using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(5));
-            try { await _allReceived.Task.WaitAsync(cts.Token); }
-            catch (OperationCanceledException) { Console.WriteLine("\n(超时: 未收全 2 条上送)"); }
+            try
+            {
+                await _allReceived.Task.WaitAsync(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                Console.WriteLine("\n(超时: 未收全 2 条上送)");
+            }
             Console.Read();
             Console.WriteLine("\n完成。");
             await client.DisconnectAsync();
+            await client.DisposeAsync();
             server.Dispose();
         }
     }

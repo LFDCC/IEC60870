@@ -1,14 +1,6 @@
-/*
- *  Iec101Server.cs
- *
- *  Copyright 2016-2024 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+//------------------------------------------------------------------------------
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
@@ -16,32 +8,137 @@ using System.IO;
 using System.IO.Ports;
 using System.Threading;
 using System.Threading.Tasks;
-using IEC60870.CS101.LinkLayer;
+using TouchSocket.Core;
+using TouchSocket.Sockets;
 using IEC60870.Core;
-using IEC60870.CS101.File;
-using IEC60870.Core.InformationObjects;
 
 
 
-namespace IEC60870.CS101
-{
+namespace IEC60870.CS101;
+
     /// <summary>
-    /// IEC 60870-5-101 异步从站（ServerBase）。全异步：无工作线程阻塞，收发循环由 <see cref="Task"/> 驱动，
-    /// 底层可接串口或 TouchSocket TCP 隧道。实现 <see cref="ServerBase"/>、<see cref="IServerApplicationLayer"/>、
-    /// <see cref="IClientConnection"/>。
+    /// IEC 60870-5-101 异步从站。全异步：无工作线程阻塞，收发循环由 <see cref="Task"/> 驱动，
+    /// 底层可接串口或 TouchSocket TCP 隧道。实现 <see cref="IServerApplicationLayer"/>、<see cref="IClientConnection"/>，
+    /// 公共契约见 <see cref="IIec101Slave"/>。
     /// </summary>
-    public class Iec101Server : ServerBase, IServerApplicationLayer, IClientConnection
+    /// <remarks>日志：默认静默，设置 <see cref="Logger"/> 可启用（<see cref="LoggerGroup"/> + <see cref="LoggerContainerExtension.AddConsoleLogger(LoggerGroup, LogLevel)"/>）。</remarks>
+    public class Iec101Server : IIec101Slave, IServerApplicationLayer, IClientConnection, IDisposable
     {
         private CancellationTokenSource _cts = null;
 
-        private void DebugLog(string msg)
+        /// <summary>
+        /// 日志记录器（TouchSocket <see cref="ILog"/>）。默认 null（静默）；
+        /// 链路层与文件服务的调试日志经由此输出。
+        /// </summary>
+        /// <example>
+        /// <code>
+        /// var logger = new LoggerGroup();
+        /// logger.AddConsoleLogger(LogLevel.Debug);
+        /// server.Logger = logger;
+        /// </code>
+        /// </example>
+        public ILog Logger { get; set; } = null;
+
+        private void DebugLog(string msg) => Logger?.Debug("CS101 SLAVE: " + msg);
+
+        #region 应用层回调（原 ServerBase 成员）
+
+        private InterrogationHandler _interrogationHandler = null;
+        private object _interrogationHandlerParameter = null;
+
+        private CounterInterrogationHandler _counterInterrogationHandler = null;
+        private object _counterInterrogationHandlerParameter = null;
+
+        private ReadHandler _readHandler = null;
+        private object _readHandlerParameter = null;
+
+        private ClockSynchronizationHandler _clockSynchronizationHandler = null;
+        private object _clockSynchronizationHandlerParameter = null;
+
+        private ResetProcessHandler _resetProcessHandler = null;
+        private object _resetProcessHandlerParameter = null;
+
+        private DelayAcquisitionHandler _delayAcquisitionHandler = null;
+        private object _delayAcquisitionHandlerParameter = null;
+
+        private ASDUHandler _asduHandler = null;
+        private object _asduHandlerParameter = null;
+
+        /// <summary>收到 ASDU 的事件（多播，与 <see cref="SetASDUHandler"/> 并存；消费语义仍由 SetASDUHandler 的返回值驱动）。</summary>
+        public event ASDUHandler AsduReceived;
+
+        private void RaiseAsduReceived(object parameter, IClientConnection connection, ASDU asdu)
+            => AsduReceived?.Invoke(parameter, connection, asdu);
+
+        private FileReadyHandler _fileReadyHandler = null;
+        private object _fileReadyHandlerParameter = null;
+
+        /// <summary>Sets a callback for interrogation requests.</summary>
+        public void SetInterrogationHandler(InterrogationHandler handler, object parameter)
         {
-            if (debugOutput)
-            {
-                Console.Write("CS101 SLAVE: ");
-                Console.WriteLine(msg);
-            }
+            _interrogationHandler = handler;
+            _interrogationHandlerParameter = parameter;
         }
+
+        /// <summary>Sets a callback for counter interrogation requests.</summary>
+        public void SetCounterInterrogationHandler(CounterInterrogationHandler handler, object parameter)
+        {
+            _counterInterrogationHandler = handler;
+            _counterInterrogationHandlerParameter = parameter;
+        }
+
+        /// <summary>Sets a callback for read requests.</summary>
+        public void SetReadHandler(ReadHandler handler, object parameter)
+        {
+            _readHandler = handler;
+            _readHandlerParameter = parameter;
+        }
+
+        /// <summary>Sets a callback for the clock synchronization request.</summary>
+        public void SetClockSynchronizationHandler(ClockSynchronizationHandler handler, object parameter)
+        {
+            _clockSynchronizationHandler = handler;
+            _clockSynchronizationHandlerParameter = parameter;
+        }
+
+        public void SetResetProcessHandler(ResetProcessHandler handler, object parameter)
+        {
+            _resetProcessHandler = handler;
+            _resetProcessHandlerParameter = parameter;
+        }
+
+        public void SetDelayAcquisitionHandler(DelayAcquisitionHandler handler, object parameter)
+        {
+            _delayAcquisitionHandler = handler;
+            _delayAcquisitionHandlerParameter = parameter;
+        }
+
+        /// <summary>
+        /// Sets a callback to handle ASDUs (commands, requests) form clients. This callback can be used when
+        /// 没有其他回调处理该主站报文。
+        /// </summary>
+        public void SetASDUHandler(ASDUHandler handler, object parameter)
+        {
+            _asduHandler = handler;
+            _asduHandlerParameter = parameter;
+        }
+
+        /// <summary>Sets a callback handler that is called when a file ready message is received from a master.</summary>
+        public void SetFileReadyHandler(FileReadyHandler handler, object parameter)
+        {
+            _fileReadyHandler = handler;
+            _fileReadyHandlerParameter = parameter;
+        }
+
+        private FilesAvailable _filesAvailable = new FilesAvailable();
+
+        /// <summary>Gets the available files that are registered with the file server.</summary>
+        public FilesAvailable GetAvailableFiles()
+        {
+            return _filesAvailable;
+        }
+
+        #endregion
 
         void IClientConnection.SendASDU(ASDU asdu)
         {
@@ -66,7 +163,7 @@ namespace IEC60870.CS101
 
         ApplicationLayerParameters IClientConnection.GetApplicationLayerParameters()
         {
-            return parameters;
+            return _parameters;
         }
 
         bool IServerApplicationLayer.IsClass1DataAvailable()
@@ -81,12 +178,14 @@ namespace IEC60870.CS101
 
         BufferFrame IServerApplicationLayer.GetCLass2Data()
         {
-            BufferFrame asdu = DequeueUserDataClass2();
+            var asdu = DequeueUserDataClass2();
 
             if (asdu == null)
-                asdu = DequeueUserDataClass1();
+        {
+            asdu = DequeueUserDataClass1();
+        }
 
-            return asdu;
+        return asdu;
         }
 
         bool IServerApplicationLayer.HandleReceivedData(byte[] msg, bool isBroadcast, int userDataStart, int userDataLength)
@@ -96,193 +195,266 @@ namespace IEC60870.CS101
 
         void IServerApplicationLayer.ResetCUReceived(bool onlyFcb)
         {
-            lock (userDataClass1Queue)
+            lock (_userDataClass1Queue)
             {
-                userDataClass1Queue.Clear();
+                _userDataClass1Queue.Clear();
             }
-            lock (userDataClass2Queue)
+            lock (_userDataClass2Queue)
             {
-                userDataClass2Queue.Clear();
+                _userDataClass2Queue.Clear();
             }
         }
 
-        private LinkLayerEngine linkLayer = null;
+        private LinkLayerEngine _linkLayer = null;
 
-        private byte[] buffer = new byte[300];
+        private byte[] _buffer = new byte[300];
         private SerialPort _port = null;
         private ISerialLinkTransport _transport;
-        private LinkLayerParameters linkLayerParameters;
-        private LinkLayerMode linkLayerMode = LinkLayerMode.UNBALANCED;
+        private LinkLayerParameters _linkLayerParameters;
+        private LinkLayerMode _linkLayerMode = LinkLayerMode.UNBALANCED;
 
         private int _listenPort = 2404;
 
         PrimaryLinkLayerBalanced primaryLinkLayerBalanced = null;
 
-        private int linkLayerAddress = 0;
-        private int linkLayerAddressOtherStation;
-        /* link layer address of other station in balanced mode */
+        private int _linkLayerAddress = 0;
+        private int _linkLayerAddressOtherStation;
+        /* 平衡模式下对端链路层地址 */
 
-        private Queue<BufferFrame> userDataClass1Queue = new Queue<BufferFrame>();
-        private int userDataClass1QueueMaxSize = 100;
+        private Queue<BufferFrame> _userDataClass1Queue = new Queue<BufferFrame>();
+        private int _userDataClass1QueueMaxSize = 100;
 
-        private Queue<BufferFrame> userDataClass2Queue = new Queue<BufferFrame>();
-        private int userDataClass2QueueMaxSize = 100;
+        private Queue<BufferFrame> _userDataClass2Queue = new Queue<BufferFrame>();
+        private int _userDataClass2QueueMaxSize = 100;
 
-        private FileServer fileServer;
+        private FileServer _fileServer;
 
-        private bool initialized;
+        private bool _initialized;
 
-        private ApplicationLayerParameters parameters = new ApplicationLayerParameters();
+        private ApplicationLayerParameters _parameters = new ApplicationLayerParameters();
 
         public ApplicationLayerParameters Parameters
         {
-            get { return parameters; }
-            set { parameters = value; }
+            get { return _parameters; }
+            set { _parameters = value; }
         }
+
+        /// <summary>
+        /// ASDU 类型处理器注册表(与 IEC60870.CS104 的 Iec104Client.TypeHandlers 对齐)。
+        /// 默认共享全局 <see cref="AsduTypeHandlerRegistry.Default"/>;
+        /// 私有类型场景可整体替换或直接在其上 Register 自定义 <see cref="IAsduTypeHandler"/>,
+        /// 接收路径解析出的 ASDU 会自动戳记本注册表。
+        /// </summary>
+        public AsduTypeHandlerRegistry TypeHandlers { get; set; } = AsduTypeHandlerRegistry.Default;
 
         public bool DIR
         {
-            get { return linkLayer.DIR; }
-            set { linkLayer.DIR = value; }
+            get { return _linkLayer.DIR; }
+            set { _linkLayer.DIR = value; }
         }
 
         public LinkLayerMode LinkLayerMode
         {
-            get { return linkLayerMode; }
-            set { if (initialized == false) linkLayerMode = value; }
+            get { return _linkLayerMode; }
+            set
+        {
+            if (_initialized == false)
+            {
+                _linkLayerMode = value;
+            }
         }
+    }
 
         public void Stop()
         {
             _cts?.Cancel();
         }
 
-        internal bool IsUserDataClass1Available()
+        /// <summary>
+        /// 释放全部资源：取消并释放运行循环 CTS、关闭链路传输（TCP 监听/连接/字节队列），
+        /// 并 Close 构造时传入的串口（仅 Close 不 Dispose，串口对象所有权仍归调用方，
+        /// Close 后可重新 Open 复用）。
+        /// </summary>
+        public void Dispose()
         {
-            lock (userDataClass1Queue)
+            Stop();
+            _cts.SafeDispose();
+            _cts = null;
+            _transport.SafeDispose();
+            _transport = null;
+            try
+        {
+            if (_port is { IsOpen: true })
             {
-                if (userDataClass1Queue.Count > 0)
-                    return true;
-                else
-                    return false;
+                _port.Close(); }
+        }
+        catch { /* port already gone */ }
+    }
+
+    internal bool IsUserDataClass1Available()
+        {
+            lock (_userDataClass1Queue)
+            {
+                if (_userDataClass1Queue.Count > 0)
+            {
+                return true;
             }
+            else
+            {
+                return false;
+            }
+        }
         }
 
         public void SetUserDataQueueSizes(int class1QueueSize, int class2QueueSize)
         {
-            userDataClass1QueueMaxSize = class1QueueSize;
-            userDataClass2QueueMaxSize = class2QueueSize;
+            _userDataClass1QueueMaxSize = class1QueueSize;
+            _userDataClass2QueueMaxSize = class2QueueSize;
         }
 
         public bool IsUserDataClass1QueueFull()
         {
-            return (userDataClass1Queue.Count == userDataClass1QueueMaxSize);
+            return (_userDataClass1Queue.Count == _userDataClass1QueueMaxSize);
         }
 
         public void EnqueueUserDataClass1(ASDU asdu)
         {
-            lock (userDataClass1Queue)
+            lock (_userDataClass1Queue)
             {
                 BufferFrame frame = new BufferFrame(new byte[256], 0);
 
-                asdu.Encode(frame, parameters);
+                asdu.Encode(frame, _parameters);
 
-                userDataClass1Queue.Enqueue(frame);
+                _userDataClass1Queue.Enqueue(frame);
 
-                while (userDataClass1Queue.Count > userDataClass1QueueMaxSize)
-                    userDataClass1Queue.Dequeue();
+                while (_userDataClass1Queue.Count > _userDataClass1QueueMaxSize)
+            {
+                _userDataClass1Queue.Dequeue();
             }
+        }
         }
 
         internal BufferFrame DequeueUserDataClass1()
         {
-            lock (userDataClass1Queue)
+            lock (_userDataClass1Queue)
             {
-                if (userDataClass1Queue.Count > 0)
-                    return userDataClass1Queue.Dequeue();
-                else
-                    return null;
+                if (_userDataClass1Queue.Count > 0)
+            {
+                return _userDataClass1Queue.Dequeue();
             }
+            else
+            {
+                return null;
+            }
+        }
         }
 
         internal bool IsUserDataClass2Available()
         {
-            lock (userDataClass2Queue)
+            lock (_userDataClass2Queue)
             {
-                if (userDataClass2Queue.Count > 0)
-                    return true;
-                else
-                    return false;
+                if (_userDataClass2Queue.Count > 0)
+            {
+                return true;
             }
+            else
+            {
+                return false;
+            }
+        }
         }
 
         public bool IsUserDataClass2QueueFull()
         {
-            return (userDataClass2Queue.Count == userDataClass2QueueMaxSize);
+            return (_userDataClass2Queue.Count == _userDataClass2QueueMaxSize);
         }
 
         public void EnqueueUserDataClass2(ASDU asdu)
         {
-            lock (userDataClass2Queue)
+            lock (_userDataClass2Queue)
             {
                 BufferFrame frame = new BufferFrame(new byte[256], 0);
 
-                asdu.Encode(frame, parameters);
+                asdu.Encode(frame, _parameters);
 
-                userDataClass2Queue.Enqueue(frame);
+                _userDataClass2Queue.Enqueue(frame);
 
-                while (userDataClass2Queue.Count > userDataClass2QueueMaxSize)
-                    userDataClass2Queue.Dequeue();
+                while (_userDataClass2Queue.Count > _userDataClass2QueueMaxSize)
+            {
+                _userDataClass2Queue.Dequeue();
             }
+        }
         }
 
         internal BufferFrame DequeueUserDataClass2()
         {
-            lock (userDataClass2Queue)
+            lock (_userDataClass2Queue)
             {
-                if (userDataClass2Queue.Count > 0)
-                    return userDataClass2Queue.Dequeue();
-                else
-                    return null;
+                if (_userDataClass2Queue.Count > 0)
+            {
+                return _userDataClass2Queue.Dequeue();
             }
+            else
+            {
+                return null;
+            }
+        }
         }
 
         public int LinkLayerAddress
         {
-            get { return linkLayerAddress; }
-            set { linkLayerAddress = value; }
+            get { return _linkLayerAddress; }
+            set { _linkLayerAddress = value; }
         }
 
         public int LinkLayerAddressOtherStation
         {
-            get { return linkLayerAddressOtherStation; }
+            get { return _linkLayerAddressOtherStation; }
             set
             {
-                linkLayerAddressOtherStation = value;
+                _linkLayerAddressOtherStation = value;
                 if (primaryLinkLayerBalanced != null)
-                    primaryLinkLayerBalanced.LinkLayerAddressOtherStation = value;
+            {
+                primaryLinkLayerBalanced.LinkLayerAddressOtherStation = value;
             }
         }
+        }
+
+        /// <summary>
+        /// 协议标识（约定同 TouchSocket 组件体系）：串口构造为 <see cref="Iec60870Utility.Iec101"/>，
+        /// TCP 隧道构造为 <see cref="Iec60870Utility.Iec101OverTcp"/>。
+        /// </summary>
+        public Protocol Protocol { get; protected set; }
 
         public Iec101Server(SerialPort port, LinkLayerParameters parameters = null)
         {
-            this._port = port;
-            linkLayerParameters = parameters;
-            if (linkLayerParameters == null)
-                linkLayerParameters = new LinkLayerParameters();
-            _transport = new SerialTransceiverFT12(port, linkLayerParameters, DebugLog);
-            initialized = false;
-            fileServer = new FileServer(this, GetAvailableFiles(), DebugLog);
+            Protocol = new Protocol(Iec60870Utility.Iec101);
+
+            _port = port;
+            _linkLayerParameters = parameters;
+            if (_linkLayerParameters == null)
+        {
+            _linkLayerParameters = new LinkLayerParameters();
+        }
+
+        _transport = new SerialTransceiverFT12(port, _linkLayerParameters, DebugLog);
+            _initialized = false;
+            _fileServer = new FileServer(this, GetAvailableFiles(), DebugLog);
         }
 
         public Iec101Server(Stream serialStream, LinkLayerParameters parameters = null)
         {
-            linkLayerParameters = parameters;
-            if (linkLayerParameters == null)
-                linkLayerParameters = new LinkLayerParameters();
-            _transport = new SerialTransceiverFT12(serialStream, linkLayerParameters, DebugLog);
-            initialized = false;
-            fileServer = new FileServer(this, GetAvailableFiles(), DebugLog);
+            Protocol = new Protocol(Iec60870Utility.Iec101);
+
+            _linkLayerParameters = parameters;
+            if (_linkLayerParameters == null)
+        {
+            _linkLayerParameters = new LinkLayerParameters();
+        }
+
+        _transport = new SerialTransceiverFT12(serialStream, _linkLayerParameters, DebugLog);
+            _initialized = false;
+            _fileServer = new FileServer(this, GetAvailableFiles(), DebugLog);
         }
 
         /// <summary>
@@ -290,13 +462,18 @@ namespace IEC60870.CS101
         /// </summary>
         public Iec101Server(int listenPort, LinkLayerParameters parameters = null)
         {
+            Protocol = new Protocol(Iec60870Utility.Iec101OverTcp);
+
             _listenPort = listenPort;
-            linkLayerParameters = parameters;
-            if (linkLayerParameters == null)
-                linkLayerParameters = new LinkLayerParameters();
-            _transport = new TcpServerLinkTransport(linkLayerParameters, DebugLog);
-            initialized = false;
-            fileServer = new FileServer(this, GetAvailableFiles(), DebugLog);
+            _linkLayerParameters = parameters;
+            if (_linkLayerParameters == null)
+        {
+            _linkLayerParameters = new LinkLayerParameters();
+        }
+
+        _transport = new TcpServerLinkTransport(_linkLayerParameters, DebugLog);
+            _initialized = false;
+            _fileServer = new FileServer(this, GetAvailableFiles(), DebugLog);
         }
 
         internal void SendASDU(ASDU asdu)
@@ -310,7 +487,9 @@ namespace IEC60870.CS101
 
             try
             {
-                asdu = new ASDU(parameters, buffer, userDataStart, userDataStart + userDataLength);
+                // 解析 msg（链路层接收缓冲）而非 this._buffer（发送缓冲），两者已分离
+                asdu = new ASDU(_parameters, msg, userDataStart, userDataStart + userDataLength);
+                asdu.TypeHandlers = TypeHandlers;
             }
             catch (ASDUParsingException e)
             {
@@ -318,7 +497,7 @@ namespace IEC60870.CS101
                 return false;
             }
 
-            bool messageHandled = false;
+            var messageHandled = false;
 
             switch (asdu.TypeId)
             {
@@ -328,7 +507,7 @@ namespace IEC60870.CS101
 
                     if ((asdu.Cot == CauseOfTransmission.ACTIVATION) || (asdu.Cot == CauseOfTransmission.DEACTIVATION))
                     {
-                        if (interrogationHandler != null)
+                        if (_interrogationHandler != null)
                         {
                             InterrogationCommand irc = (InterrogationCommand)asdu.GetElement(0);
 
@@ -342,9 +521,11 @@ namespace IEC60870.CS101
                                 break;
                             }
 
-                            if (interrogationHandler(InterrogationHandlerParameter, this, asdu, irc.QOI))
-                                messageHandled = true;
+                            if (_interrogationHandler(_interrogationHandlerParameter, this, asdu, irc.QOI))
+                        {
+                            messageHandled = true;
                         }
+                    }
                     }
                     else
                     {
@@ -361,7 +542,7 @@ namespace IEC60870.CS101
 
                     if ((asdu.Cot == CauseOfTransmission.ACTIVATION) || (asdu.Cot == CauseOfTransmission.DEACTIVATION))
                     {
-                        if (counterInterrogationHandler != null)
+                        if (_counterInterrogationHandler != null)
                         {
                             CounterInterrogationCommand cic = (CounterInterrogationCommand)asdu.GetElement(0);
 
@@ -375,9 +556,11 @@ namespace IEC60870.CS101
                                 break;
                             }
 
-                            if (counterInterrogationHandler(counterInterrogationHandlerParameter, this, asdu, cic.QCC))
-                                messageHandled = true;
+                            if (_counterInterrogationHandler(_counterInterrogationHandlerParameter, this, asdu, cic.QCC))
+                        {
+                            messageHandled = true;
                         }
+                    }
                     }
                     else
                     {
@@ -396,13 +579,15 @@ namespace IEC60870.CS101
                     {
                         DebugLog("Read request for object: " + asdu.Ca);
 
-                        if (readHandler != null)
+                        if (_readHandler != null)
                         {
                             ReadCommand rc = (ReadCommand)asdu.GetElement(0);
 
-                            if (readHandler(readHandlerParameter, this, asdu, rc.ObjectAddress))
-                                messageHandled = true;
+                            if (_readHandler(_readHandlerParameter, this, asdu, rc.ObjectAddress))
+                        {
+                            messageHandled = true;
                         }
+                    }
                     }
                     else
                     {
@@ -419,7 +604,7 @@ namespace IEC60870.CS101
 
                     if (asdu.Cot == CauseOfTransmission.ACTIVATION)
                     {
-                        if (clockSynchronizationHandler != null)
+                        if (_clockSynchronizationHandler != null)
                         {
                             ClockSynchronizationCommand csc = (ClockSynchronizationCommand)asdu.GetElement(0);
 
@@ -433,10 +618,12 @@ namespace IEC60870.CS101
                                 break;
                             }
 
-                            if (clockSynchronizationHandler(clockSynchronizationHandlerParameter,
+                            if (_clockSynchronizationHandler(_clockSynchronizationHandlerParameter,
                                 this, asdu, csc.NewTime))
-                                messageHandled = true;
+                        {
+                            messageHandled = true;
                         }
+                    }
                     }
                     else
                     {
@@ -457,9 +644,11 @@ namespace IEC60870.CS101
                         asdu.IsNegative = true;
                     }
                     else
-                        asdu.Cot = CauseOfTransmission.ACTIVATION_CON;
+                {
+                    asdu.Cot = CauseOfTransmission.ACTIVATION_CON;
+                }
 
-                    SendASDU(asdu);
+                SendASDU(asdu);
 
                     messageHandled = true;
 
@@ -471,7 +660,7 @@ namespace IEC60870.CS101
 
                     if (asdu.Cot == CauseOfTransmission.ACTIVATION)
                     {
-                        if (resetProcessHandler != null)
+                        if (_resetProcessHandler != null)
                         {
                             ResetProcessCommand rpc = (ResetProcessCommand)asdu.GetElement(0);
 
@@ -485,10 +674,12 @@ namespace IEC60870.CS101
                                 break;
                             }
 
-                            if (resetProcessHandler(resetProcessHandlerParameter,
+                            if (_resetProcessHandler(_resetProcessHandlerParameter,
                                 this, asdu, rpc.QRP))
-                                messageHandled = true;
+                        {
+                            messageHandled = true;
                         }
+                    }
                     }
                     else
                     {
@@ -505,7 +696,7 @@ namespace IEC60870.CS101
 
                     if ((asdu.Cot == CauseOfTransmission.ACTIVATION) || (asdu.Cot == CauseOfTransmission.SPONTANEOUS))
                     {
-                        if (delayAcquisitionHandler != null)
+                        if (_delayAcquisitionHandler != null)
                         {
                             DelayAcquisitionCommand dac = (DelayAcquisitionCommand)asdu.GetElement(0);
 
@@ -519,10 +710,12 @@ namespace IEC60870.CS101
                                 break;
                             }
 
-                            if (delayAcquisitionHandler(delayAcquisitionHandlerParameter,
+                            if (_delayAcquisitionHandler(_delayAcquisitionHandlerParameter,
                                 this, asdu, dac.Delay))
-                                messageHandled = true;
+                        {
+                            messageHandled = true;
                         }
+                    }
                     }
                     else
                     {
@@ -535,12 +728,19 @@ namespace IEC60870.CS101
             }
 
             if (messageHandled == false)
-                messageHandled = fileServer.HandleFileAsdu(asdu);
+        {
+            messageHandled = _fileServer.HandleFileAsdu(asdu);
+        }
 
-            if ((messageHandled == false) && (asduHandler != null))
-                if (asduHandler(asduHandlerParameter, this, asdu))
-                    messageHandled = true;
-            RaiseAsduReceived(asduHandlerParameter, this, asdu);
+        if ((messageHandled == false) && (_asduHandler != null))
+        {
+            if (_asduHandler(_asduHandlerParameter, this, asdu))
+            {
+                messageHandled = true;
+            }
+        }
+
+        RaiseAsduReceived(_asduHandlerParameter, this, asdu);
 
             if (messageHandled == false)
             {
@@ -555,16 +755,22 @@ namespace IEC60870.CS101
         private BufferFrame GetUserData()
         {
             if (IsUserDataClass1Available())
-                return DequeueUserDataClass1();
-            else if (IsUserDataClass2Available())
-                return DequeueUserDataClass2();
-            else
-                return null;
+        {
+            return DequeueUserDataClass1();
         }
+        else if (IsUserDataClass2Available())
+        {
+            return DequeueUserDataClass2();
+        }
+        else
+        {
+            return null;
+        }
+    }
 
         public void SendLinkLayerTestFunction()
         {
-            linkLayer.SendTestFunction();
+            _linkLayer.SendTestFunction();
         }
 
         /// <summary>
@@ -572,57 +778,66 @@ namespace IEC60870.CS101
         /// </summary>
         public async Task RunAsync(CancellationToken ct = default)
         {
-            if (initialized == false)
+            if (_initialized == false)
             {
-                linkLayer = new LinkLayerEngine(buffer, linkLayerParameters, _transport, DebugLog);
-                linkLayer.LinkLayerMode = linkLayerMode;
+                _linkLayer = new LinkLayerEngine(_buffer, _linkLayerParameters, _transport, DebugLog);
+                _linkLayer.LinkLayerMode = _linkLayerMode;
 
                 // 桥接原始报文事件：linkLayer 首次运行时创建，此后任意时刻订阅均能收到（lambda 动态读取订阅者）
-                linkLayer.RawFrameReceived += f => RawFrameReceived?.Invoke(f);
-                linkLayer.RawFrameSent += f => RawFrameSent?.Invoke(f);
+                _linkLayer.RawFrameReceived += f => RawFrameReceived?.Invoke(f);
+                _linkLayer.RawFrameSent += f => RawFrameSent?.Invoke(f);
 
-                if (linkLayerMode == LinkLayerMode.BALANCED)
+                if (_linkLayerMode == LinkLayerMode.BALANCED)
                 {
-                    PrimaryLinkLayerBalanced primaryLinkLayerBalanced = new PrimaryLinkLayerBalanced(linkLayer, GetUserData, DebugLog);
-                    primaryLinkLayerBalanced.LinkLayerAddressOtherStation = linkLayerAddressOtherStation;
+                    PrimaryLinkLayerBalanced primaryLinkLayerBalanced = new PrimaryLinkLayerBalanced(_linkLayer, GetUserData, DebugLog);
+                    primaryLinkLayerBalanced.LinkLayerAddressOtherStation = _linkLayerAddressOtherStation;
 
-                    linkLayer.SetPrimaryLinkLayer(primaryLinkLayerBalanced);
+                    _linkLayer.SetPrimaryLinkLayer(primaryLinkLayerBalanced);
 
-                    linkLayer.SetSecondaryLinkLayer(new SecondaryLinkLayerBalanced(linkLayer, linkLayerAddressOtherStation, HandleApplicationLayer, DebugLog));
+                    _linkLayer.SetSecondaryLinkLayer(new SecondaryLinkLayerBalanced(_linkLayer, _linkLayerAddressOtherStation, HandleApplicationLayer, DebugLog));
                 }
                 else
                 {
-                    linkLayer.SetSecondaryLinkLayer(new SecondaryLinkLayerUnbalanced(linkLayer, linkLayerAddress, this, DebugLog));
+                    _linkLayer.SetSecondaryLinkLayer(new SecondaryLinkLayerUnbalanced(_linkLayer, _linkLayerAddress, this, DebugLog));
                 }
 
-                initialized = true;
+                _initialized = true;
             }
 
-            if (fileServer != null)
-                fileServer.HandleFileTransmission();
+            if (_fileServer != null)
+        {
+            _fileServer.HandleFileTransmission();
+        }
 
-            await linkLayer.RunAsync(ct).ConfigureAwait(false);
+        await _linkLayer.RunAsync(ct).ConfigureAwait(false);
         }
 
         /// <summary>
         /// 启动后台异步收发循环。
         /// </summary>
-        public async Task StartAsync(CancellationToken ct = default)
+        /// <param name="ct">取消令牌。</param>
+        /// <param name="configureConfig">TCP 传输时可选的 TouchSocket 配置回调，在库默认配置（监听地址）之后执行，
+        /// 可追加插件、日志等配置。串口传输时忽略。</param>
+        public async Task StartAsync(CancellationToken ct = default, Action<TouchSocketConfig> configureConfig = null)
         {
             _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
             if (_port != null)
             {
                 if (_port.IsOpen == false)
-                    _port.Open();
+            {
+                _port.Open();
+            }
 
-                _port.DiscardInBuffer();
+            _port.DiscardInBuffer();
             }
 
             if (_transport is TcpServerLinkTransport srv)
-                await srv.StartAsync(_listenPort, _cts.Token).ConfigureAwait(false);
+        {
+            await srv.StartAsync(_listenPort, _cts.Token, configureConfig).ConfigureAwait(false);
+        }
 
-            await RunLoopAsync(_cts.Token).ConfigureAwait(false);
+        await RunLoopAsync(_cts.Token).ConfigureAwait(false);
         }
 
         private async Task RunLoopAsync(CancellationToken ct)
@@ -639,35 +854,42 @@ namespace IEC60870.CS101
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Iec101Server loop error: " + ex.Message);
+                DebugLog("Loop error: " + ex.Message);
             }
         }
 
-        public override int FileTimeout
+        /// <summary>Gets or sets the file service timeout in ms.</summary>
+        public int FileTimeout
         {
             get
             {
-                if (fileServer != null)
-                    return (int)fileServer.Timeout;
-                else
-                    return 0;
+                if (_fileServer != null)
+            {
+                return (int)_fileServer.Timeout;
             }
+            else
+            {
+                return 0;
+            }
+        }
 
             set
             {
-                if (fileServer != null)
-                    fileServer.Timeout = value;
+                if (_fileServer != null)
+            {
+                _fileServer.Timeout = value;
             }
+        }
         }
 
         public void SetReceivedRawMessageHandler(RawMessageHandler handler, object parameter)
         {
-            linkLayer.SetReceivedRawMessageHandler(handler, parameter);
+            _linkLayer.SetReceivedRawMessageHandler(handler, parameter);
         }
 
         public void SetSentRawMessageHandler(RawMessageHandler handler, object parameter)
         {
-            linkLayer.SetSentRawMessageHandler(handler, parameter);
+            _linkLayer.SetSentRawMessageHandler(handler, parameter);
         }
 
         /// <summary>
@@ -682,4 +904,3 @@ namespace IEC60870.CS101
         /// </summary>
         public event Action<byte[]> RawFrameSent;
     }
-}

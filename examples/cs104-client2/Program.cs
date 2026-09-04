@@ -7,7 +7,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using IEC60870.Core;
 using IEC60870.CS104;
-using IEC60870.Core.InformationObjects;
 
 
 
@@ -22,7 +21,7 @@ namespace cs104_client2
 
         private static void AsduReceivedHandler(in AsduView view)
         {
-            byte[] raw = view.Raw.ToArray();
+            var raw = view.Raw.ToArray();
             ASDU asdu = new ASDU(_al, raw, 0, raw.Length);
 
             Console.WriteLine(asdu.ToString());
@@ -65,7 +64,7 @@ namespace cs104_client2
         {
             Console.WriteLine("Using IEC60870.Core.NET version " + typeof(ASDU).Assembly.GetName().Version.ToString());
 
-            Iec104Client con = new Iec104Client("127.0.0.1", 2404);
+            await using Iec104Client con = new Iec104Client("127.0.0.1", 2404);
             _al = con.Parameters;
 
             con.AsduReceived += AsduReceivedHandler;
@@ -74,16 +73,18 @@ namespace cs104_client2
             await con.ConnectAsync();
             await con.StartDataTransferAsync();
 
-            int loopRuns = 6000;
+            var loopRuns = 6000;
 
-            for (int i = 0; i < loopRuns; i++)
+            for (var i = 0; i < loopRuns; i++)
             {
                 Console.WriteLine("Send GI " + i);
                 await SendInterrogation(con, 1, QualifierOfInterrogation.STATION);
             }
 
             while (interrogationTerminationReceived < loopRuns)
+            {
                 await Task.Delay(100);
+            }
 
             Console.WriteLine("interrogationTerminationReceived: " + interrogationTerminationReceived);
 

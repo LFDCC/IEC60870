@@ -1,14 +1,6 @@
-/*
- *  Iec101Client.cs
- *
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+//------------------------------------------------------------------------------
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
@@ -16,38 +8,60 @@ using System.IO;
 using System.IO.Ports;
 using System.Threading;
 using System.Threading.Tasks;
-using IEC60870.CS101.LinkLayer;
+using TouchSocket.Core;
+using TouchSocket.Sockets;
 using IEC60870.Core;
-using IEC60870.Core.Time;
-using IEC60870.Core.InformationObjects;
-using IEC60870.Core.File;
-using IEC60870.CS101.File;
 
 
 
-namespace IEC60870.CS101
-{
+namespace IEC60870.CS101;
+
     /// <summary>
-    /// IEC 60870-5-101 异步主站（ClientBase）。全异步：无工作线程阻塞，收发循环由
+    /// IEC 60870-5-101 异步主站。全异步：无工作线程阻塞，收发循环由
     /// <see cref="Task"/> 驱动，底层可接串口（<see cref="SerialPort"/>）或 TouchSocket TCP 隧道。
     /// 应用层 <c>Send*</c> 维持非阻塞入队语义（与原版一致），由链路层状态机负责确认与重发。
+    /// 公共契约见 <see cref="IIec101Master"/>。
     /// </summary>
-    public class Iec101Client : ClientBase, IClientLinkLayerCallbacks
+    /// <remarks>日志：默认静默，设置 <see cref="Logger"/> 可启用（<see cref="LoggerGroup"/> + <see cref="LoggerContainerExtension.AddConsoleLogger(LoggerGroup, LogLevel)"/>）。</remarks>
+    public class Iec101Client : IIec101Master, IClientLinkLayerCallbacks, IDisposable
     {
         private CancellationTokenSource _cts = null;
 
-        internal LinkLayerEngine linkLayer = null;
+        internal LinkLayerEngine _linkLayer = null;
 
-        internal FileClient fileClient = null;
+        internal FileClient _fileClient = null;
 
         private SerialPort _port = null;
         private ISerialLinkTransport _transport;
         private bool _fatalError = false;
 
+        /// <summary>
+        /// 日志记录器（TouchSocket <see cref="ILog"/>）。默认 null（静默）；
+        /// 链路层与文件服务的调试日志经由此输出。
+        /// </summary>
+        /// <example>
+        /// <code>
+        /// var logger = new LoggerGroup();
+        /// logger.AddConsoleLogger(LogLevel.Debug);
+        /// client.Logger = logger;
+        /// </code>
+        /// </example>
+        public ILog Logger { get; set; } = null;
+
+        private void DebugLog(string msg) => Logger?.Debug("CS101 MASTER: " + msg);
+
+        /// <summary>
+        /// ASDU 类型处理器注册表(与 IEC60870.CS104 的 Iec104Client.TypeHandlers 对齐)。
+        /// 默认共享全局 <see cref="AsduTypeHandlerRegistry.Default"/>;
+        /// 私有类型场景可整体替换或直接在其上 Register 自定义 <see cref="IAsduTypeHandler"/>,
+        /// 接收路径解析出的 ASDU 会自动戳记本注册表。
+        /// </summary>
+        public AsduTypeHandlerRegistry TypeHandlers { get; set; } = AsduTypeHandlerRegistry.Default;
+
         public bool DIR
         {
-            get { return linkLayer.DIR; }
-            set { linkLayer.DIR = value; }
+            get { return _linkLayer.DIR; }
+            set { _linkLayer.DIR = value; }
         }
 
         /// <summary>
@@ -57,11 +71,13 @@ namespace IEC60870.CS101
         {
             if (_fatalError == false)
             {
-                await linkLayer.RunAsync(ct).ConfigureAwait(false);
+                await _linkLayer.RunAsync(ct).ConfigureAwait(false);
 
-                if (fileClient != null)
-                    fileClient.HandleFileService();
+                if (_fileClient != null)
+            {
+                _fileClient.HandleFileService();
             }
+        }
         }
 
         private void FatalErrorHandler(object sender, EventArgs eventArgs)
@@ -71,13 +87,16 @@ namespace IEC60870.CS101
 
         public void AddPortDeniedHandler(EventHandler eventHandler)
         {
-            linkLayer.AddPortDeniedHandler(eventHandler);
+            _linkLayer.AddPortDeniedHandler(eventHandler);
         }
 
         /// <summary>
         /// 启动后台异步收发循环。
         /// </summary>
-        public Task StartAsync(CancellationToken ct = default)
+        /// <param name="ct">取消令牌。</param>
+        /// <param name="configureConfig">TCP 传输时可选的 TouchSocket 配置回调，在库默认配置（远程地址）之后执行，
+        /// 可追加插件、日志等配置。串口传输时忽略。</param>
+        public Task StartAsync(CancellationToken ct = default, Action<TouchSocketConfig> configureConfig = null)
         {
             // 重复调用时先释放上一次创建的 CTS，避免泄漏（代码评审 #16）。无可取消外部 token 时不分配链接源。
             _cts?.Dispose();
@@ -88,21 +107,25 @@ namespace IEC60870.CS101
             if (_port != null)
             {
                 if (_port.IsOpen == false)
-                    _port.Open();
-
-                _port.DiscardInBuffer();
+            {
+                _port.Open();
             }
 
-            linkLayer.AddPortDeniedHandler(FatalErrorHandler);
+            _port.DiscardInBuffer();
+            }
+
+            _linkLayer.AddPortDeniedHandler(FatalErrorHandler);
 
             if (_transport is TcpClientLinkTransport tcp)
-                return Task.Run(async () =>
+        {
+            return Task.Run(async () =>
                 {
-                    await tcp.ConnectAsync(_cts.Token).ConfigureAwait(false);
+                    await tcp.ConnectAsync(_cts.Token, configureConfig).ConfigureAwait(false);
                     await RunLoopAsync(_cts.Token).ConfigureAwait(false);
                 }, _cts.Token);
+        }
 
-            return RunLoopAsync(_cts.Token);
+        return RunLoopAsync(_cts.Token);
         }
 
         /// <summary>
@@ -113,13 +136,34 @@ namespace IEC60870.CS101
             _cts?.Cancel();
         }
 
-        private async Task RunLoopAsync(CancellationToken ct)
+        /// <summary>
+        /// 释放全部资源：取消并释放运行循环 CTS、关闭链路传输（TCP 连接/字节队列），
+        /// 并 Close 构造时传入的串口（仅 Close 不 Dispose，串口对象所有权仍归调用方，
+        /// Close 后可重新 Open 复用）。
+        /// </summary>
+        public void Dispose()
+        {
+            Stop();
+            _cts.SafeDispose();
+            _cts = null;
+            _transport.SafeDispose();
+            _transport = null;
+            try
+        {
+            if (_port is { IsOpen: true })
+            {
+                _port.Close(); }
+        }
+        catch { /* port already gone */ }
+    }
+
+    private async Task RunLoopAsync(CancellationToken ct)
         {
             try
             {
                 while (ct.IsCancellationRequested == false)
                 {
-                    await linkLayer.RunAsync(ct).ConfigureAwait(false);
+                    await _linkLayer.RunAsync(ct).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException)
@@ -128,32 +172,36 @@ namespace IEC60870.CS101
             catch (Exception ex)
             {
                 _fatalError = true;
-                Console.WriteLine("Iec101Client loop error: " + ex.Message);
+                DebugLog("Loop error: " + ex.Message);
             }
         }
 
         public int OwnAddress
         {
-            get { return linkLayer.OwnAddress; }
-            set { linkLayer.OwnAddress = value; }
+            get { return _linkLayer.OwnAddress; }
+            set { _linkLayer.OwnAddress = value; }
         }
 
         public LinkLayerState GetLinkLayerState()
         {
-            if (linkLayer.LinkLayerMode == LinkLayerMode.BALANCED)
-                return primaryLinkLayer.GetLinkLayerState();
-            else
-                return linkLayerUnbalanced.GetStateOfSlave(slaveAddress);
+            if (_linkLayer.LinkLayerMode == LinkLayerMode.BALANCED)
+        {
+            return _primaryLinkLayer.GetLinkLayerState();
+        }
+        else
+        {
+            return _linkLayerUnbalanced.GetStateOfSlave(_slaveAddress);
+        }
+    }
+
+        public void SetReceivedRawMessageHandler(RawMessageHandler handler, object parameter)
+        {
+            _linkLayer.SetReceivedRawMessageHandler(handler, parameter);
         }
 
-        public override void SetReceivedRawMessageHandler(RawMessageHandler handler, object parameter)
+        public void SetSentRawMessageHandler(RawMessageHandler handler, object parameter)
         {
-            linkLayer.SetReceivedRawMessageHandler(handler, parameter);
-        }
-
-        public override void SetSentRawMessageHandler(RawMessageHandler handler, object parameter)
-        {
-            linkLayer.SetSentRawMessageHandler(handler, parameter);
+            _linkLayer.SetSentRawMessageHandler(handler, parameter);
         }
 
         /// <summary>
@@ -168,72 +216,89 @@ namespace IEC60870.CS101
         /// </summary>
         public event Action<byte[]> RawFrameSent;
 
-        private PrimaryLinkLayerUnbalanced linkLayerUnbalanced = null;
-        private PrimaryLinkLayerBalanced primaryLinkLayer = null;
+        private PrimaryLinkLayerUnbalanced _linkLayerUnbalanced = null;
+        private PrimaryLinkLayerBalanced _primaryLinkLayer = null;
 
-        private SecondaryLinkLayer secondaryLinkLayer = null;
+        private SecondaryLinkLayer _secondaryLinkLayer = null;
 
-        private int slaveAddress = 0;
+        private int _slaveAddress = 0;
 
-        private byte[] buffer = new byte[300];
+        private byte[] _buffer = new byte[300];
 
-        private LinkLayerParameters linkLayerParameters;
-        private ApplicationLayerParameters appLayerParameters;
+        private LinkLayerParameters _linkLayerParameters;
+        private ApplicationLayerParameters _appLayerParameters;
 
-        private ASDUReceivedHandler asduReceivedHandler = null;
-        private object asduReceivedHandlerParameter = null;
+        private ASDUReceivedHandler _asduReceivedHandler = null;
+        private object _asduReceivedHandlerParameter = null;
 
         /// <summary>收到 ASDU 的事件（多播，与 <see cref="SetASDUReceivedHandler"/> 并存；消费语义仍由 SetASDUReceivedHandler 的返回值驱动）。</summary>
         public event ASDUReceivedHandler AsduReceived;
 
-        private Queue<BufferFrame> userDataQueue;
+        /// <summary>
+        /// 协议标识（约定同 TouchSocket 组件体系）：串口构造为 <see cref="Iec60870Utility.Iec101"/>，
+        /// TCP 隧道构造为 <see cref="Iec60870Utility.Iec101OverTcp"/>。
+        /// </summary>
+        public Protocol Protocol { get; protected set; }
 
-        private void DebugLog(string msg)
-        {
-            if (debugOutput)
-            {
-                Console.Write("CS101 MASTER: ");
-                Console.WriteLine(msg);
-            }
-        }
+        private Queue<BufferFrame> _userDataQueue;
 
         public Iec101Client(SerialPort port, LinkLayerMode mode, LinkLayerParameters llParams = null, ApplicationLayerParameters alParams = null)
         {
+            Protocol = new Protocol(Iec60870Utility.Iec101);
+
             if (llParams == null)
-                linkLayerParameters = new LinkLayerParameters();
-            else
-                linkLayerParameters = llParams;
+        {
+            _linkLayerParameters = new LinkLayerParameters();
+        }
+        else
+        {
+            _linkLayerParameters = llParams;
+        }
 
-            if (alParams == null)
-                appLayerParameters = new ApplicationLayerParameters();
-            else
-                appLayerParameters = alParams;
+        if (alParams == null)
+        {
+            _appLayerParameters = new ApplicationLayerParameters();
+        }
+        else
+        {
+            _appLayerParameters = alParams;
+        }
 
-            _transport = new SerialTransceiverFT12(port, linkLayerParameters, DebugLog);
+        _transport = new SerialTransceiverFT12(port, _linkLayerParameters, DebugLog);
 
             InitializeLinkLayer(mode);
 
-            this._port = port;
-            fileClient = null;
+            _port = port;
+            _fileClient = null;
         }
 
         public Iec101Client(Stream serialStream, LinkLayerMode mode, LinkLayerParameters llParams = null, ApplicationLayerParameters alParams = null)
         {
+            Protocol = new Protocol(Iec60870Utility.Iec101);
+
             if (llParams == null)
-                linkLayerParameters = new LinkLayerParameters();
-            else
-                linkLayerParameters = llParams;
+        {
+            _linkLayerParameters = new LinkLayerParameters();
+        }
+        else
+        {
+            _linkLayerParameters = llParams;
+        }
 
-            if (alParams == null)
-                appLayerParameters = new ApplicationLayerParameters();
-            else
-                appLayerParameters = alParams;
+        if (alParams == null)
+        {
+            _appLayerParameters = new ApplicationLayerParameters();
+        }
+        else
+        {
+            _appLayerParameters = alParams;
+        }
 
-            _transport = new SerialTransceiverFT12(serialStream, linkLayerParameters, DebugLog);
+        _transport = new SerialTransceiverFT12(serialStream, _linkLayerParameters, DebugLog);
 
             InitializeLinkLayer(mode);
 
-            fileClient = null;
+            _fileClient = null;
         }
 
         /// <summary>
@@ -241,48 +306,58 @@ namespace IEC60870.CS101
         /// </summary>
         public Iec101Client(string hostname, int tcpPort, LinkLayerMode mode, LinkLayerParameters llParams = null, ApplicationLayerParameters alParams = null)
         {
+            Protocol = new Protocol(Iec60870Utility.Iec101OverTcp);
+
             if (llParams == null)
-                linkLayerParameters = new LinkLayerParameters();
-            else
-                linkLayerParameters = llParams;
+        {
+            _linkLayerParameters = new LinkLayerParameters();
+        }
+        else
+        {
+            _linkLayerParameters = llParams;
+        }
 
-            if (alParams == null)
-                appLayerParameters = new ApplicationLayerParameters();
-            else
-                appLayerParameters = alParams;
+        if (alParams == null)
+        {
+            _appLayerParameters = new ApplicationLayerParameters();
+        }
+        else
+        {
+            _appLayerParameters = alParams;
+        }
 
-            _transport = new TcpClientLinkTransport(hostname, tcpPort, linkLayerParameters, DebugLog);
+        _transport = new TcpClientLinkTransport(hostname, tcpPort, _linkLayerParameters, DebugLog);
 
             InitializeLinkLayer(mode);
 
-            fileClient = null;
+            _fileClient = null;
         }
 
         private void InitializeLinkLayer(LinkLayerMode mode)
         {
-            linkLayer = new LinkLayerEngine(buffer, linkLayerParameters, _transport, DebugLog);
-            linkLayer.LinkLayerMode = mode;
+            _linkLayer = new LinkLayerEngine(_buffer, _linkLayerParameters, _transport, DebugLog);
+            _linkLayer.LinkLayerMode = mode;
 
             // 桥接原始报文事件：linkLayer 在构造函数即创建，此后任意时刻订阅均能收到（lambda 动态读取订阅者）
-            linkLayer.RawFrameReceived += f => RawFrameReceived?.Invoke(f);
-            linkLayer.RawFrameSent += f => RawFrameSent?.Invoke(f);
+            _linkLayer.RawFrameReceived += f => RawFrameReceived?.Invoke(f);
+            _linkLayer.RawFrameSent += f => RawFrameSent?.Invoke(f);
 
             if (mode == LinkLayerMode.BALANCED)
             {
-                linkLayer.DIR = true;
+                _linkLayer.DIR = true;
 
-                primaryLinkLayer = new PrimaryLinkLayerBalanced(linkLayer, GetUserData, DebugLog);
+                _primaryLinkLayer = new PrimaryLinkLayerBalanced(_linkLayer, GetUserData, DebugLog);
 
-                linkLayer.SetPrimaryLinkLayer(primaryLinkLayer);
-                secondaryLinkLayer = new SecondaryLinkLayerBalanced(linkLayer, 0, HandleApplicationLayer, DebugLog);
-                linkLayer.SetSecondaryLinkLayer(secondaryLinkLayer);
+                _linkLayer.SetPrimaryLinkLayer(_primaryLinkLayer);
+                _secondaryLinkLayer = new SecondaryLinkLayerBalanced(_linkLayer, 0, HandleApplicationLayer, DebugLog);
+                _linkLayer.SetSecondaryLinkLayer(_secondaryLinkLayer);
 
-                userDataQueue = new Queue<BufferFrame>();
+                _userDataQueue = new Queue<BufferFrame>();
             }
             else
             {
-                linkLayerUnbalanced = new PrimaryLinkLayerUnbalanced(linkLayer, this, DebugLog);
-                linkLayer.SetPrimaryLinkLayer(linkLayerUnbalanced);
+                _linkLayerUnbalanced = new PrimaryLinkLayerUnbalanced(_linkLayer, this, DebugLog);
+                _linkLayer.SetPrimaryLinkLayer(_linkLayerUnbalanced);
             }
         }
 
@@ -293,31 +368,41 @@ namespace IEC60870.CS101
 
         public void SetASDUReceivedHandler(ASDUReceivedHandler handler, object parameter)
         {
-            asduReceivedHandler = handler;
-            asduReceivedHandlerParameter = parameter;
+            _asduReceivedHandler = handler;
+            _asduReceivedHandlerParameter = parameter;
         }
 
         public void AddSlave(int slaveAddress)
         {
-            if (linkLayerUnbalanced != null)
-                linkLayerUnbalanced.AddSlaveConnection(slaveAddress);
+            if (_linkLayerUnbalanced != null)
+        {
+            _linkLayerUnbalanced.AddSlaveConnection(slaveAddress);
         }
+    }
 
         public LinkLayerState GetLinkLayerState(int slaveAddress)
         {
-            if (linkLayerUnbalanced != null)
-                return linkLayerUnbalanced.GetStateOfSlave(slaveAddress);
-            else
-                return primaryLinkLayer.GetLinkLayerState();
+            if (_linkLayerUnbalanced != null)
+        {
+            return _linkLayerUnbalanced.GetStateOfSlave(slaveAddress);
         }
+        else
+        {
+            return _primaryLinkLayer.GetLinkLayerState();
+        }
+    }
 
         public void SetLinkLayerStateChangedHandler(LinkLayerStateChanged handler, object parameter)
         {
-            if (linkLayerUnbalanced != null)
-                linkLayerUnbalanced.SetLinkLayerStateChanged(handler, parameter);
-            else
-                primaryLinkLayer.SetLinkLayerStateChanged(handler, parameter);
+            if (_linkLayerUnbalanced != null)
+        {
+            _linkLayerUnbalanced.SetLinkLayerStateChanged(handler, parameter);
         }
+        else
+        {
+            _primaryLinkLayer.SetLinkLayerStateChanged(handler, parameter);
+        }
+    }
 
         public int SlaveAddress
         {
@@ -325,31 +410,39 @@ namespace IEC60870.CS101
             {
                 UseSlaveAddress(value);
 
-                if (secondaryLinkLayer != null)
-                    secondaryLinkLayer.Address = slaveAddress;
+                if (_secondaryLinkLayer != null)
+            {
+                _secondaryLinkLayer.Address = _slaveAddress;
             }
+        }
 
             get
             {
-                if (primaryLinkLayer == null)
-                    return slaveAddress;
-                else
-                    return primaryLinkLayer.LinkLayerAddressOtherStation;
+                if (_primaryLinkLayer == null)
+            {
+                return _slaveAddress;
             }
+            else
+            {
+                return _primaryLinkLayer.LinkLayerAddressOtherStation;
+            }
+        }
         }
 
         public void UseSlaveAddress(int slaveAddress)
         {
-            if (primaryLinkLayer != null)
-                primaryLinkLayer.LinkLayerAddressOtherStation = slaveAddress;
+            if (_primaryLinkLayer != null)
+        {
+            _primaryLinkLayer.LinkLayerAddressOtherStation = slaveAddress;
+        }
 
-            this.slaveAddress = slaveAddress;
+        _slaveAddress = slaveAddress;
         }
 
         void IClientLinkLayerCallbacks.AccessDemand(int slaveAddress)
         {
             DebugLog("Access demand slave " + slaveAddress);
-            linkLayerUnbalanced.RequestClass1Data(slaveAddress);
+            _linkLayerUnbalanced.RequestClass1Data(slaveAddress);
         }
 
         void IClientLinkLayerCallbacks.UserData(int slaveAddress, byte[] message, int start, int length)
@@ -360,7 +453,8 @@ namespace IEC60870.CS101
 
             try
             {
-                asdu = new ASDU(appLayerParameters, message, start, start + length);
+                asdu = new ASDU(_appLayerParameters, message, start, start + length);
+                asdu.TypeHandlers = TypeHandlers;
             }
             catch (ASDUParsingException e)
             {
@@ -368,16 +462,21 @@ namespace IEC60870.CS101
                 return;
             }
 
-            bool messageHandled = false;
+            var messageHandled = false;
 
-            if (fileClient != null)
-                messageHandled = fileClient.HandleFileAsdu(asdu);
+            if (_fileClient != null)
+        {
+            messageHandled = _fileClient.HandleFileAsdu(asdu);
+        }
 
-            if (messageHandled == false)
+        if (messageHandled == false)
             {
-                if (asduReceivedHandler != null)
-                    asduReceivedHandler(asduReceivedHandlerParameter, slaveAddress, asdu);
-                AsduReceived?.Invoke(asduReceivedHandlerParameter, slaveAddress, asdu);
+                if (_asduReceivedHandler != null)
+            {
+                _asduReceivedHandler(_asduReceivedHandlerParameter, slaveAddress, asdu);
+            }
+
+            AsduReceived?.Invoke(_asduReceivedHandlerParameter, slaveAddress, asdu);
             }
         }
 
@@ -390,9 +489,11 @@ namespace IEC60870.CS101
         {
             try
             {
-                if (linkLayerUnbalanced != null)
-                    linkLayerUnbalanced.RequestClass2Data(address);
+                if (_linkLayerUnbalanced != null)
+            {
+                _linkLayerUnbalanced.RequestClass2Data(address);
             }
+        }
             catch (LinkLayerBusyException)
             {
                 DebugLog("Link layer busy");
@@ -403,9 +504,11 @@ namespace IEC60870.CS101
         {
             try
             {
-                if (linkLayerUnbalanced != null)
-                    linkLayerUnbalanced.RequestClass1Data(address);
+                if (_linkLayerUnbalanced != null)
+            {
+                _linkLayerUnbalanced.RequestClass1Data(address);
             }
+        }
             catch (LinkLayerBusyException)
             {
                 DebugLog("Link layer busy");
@@ -414,58 +517,68 @@ namespace IEC60870.CS101
 
         private void EnqueueUserData(ASDU asdu)
         {
-            if (linkLayerUnbalanced != null)
+            if (_linkLayerUnbalanced != null)
             {
                 /* 用户线程编码，使用独立缓冲区，避免与后台接收循环共享 buffer 产生数据竞争
                    （平衡分支本就使用 new byte[256]）。SendConfirmed 仅保存帧引用，稍后由
                    链路层线程发送，故此处缓冲区不会被并发访问。 */
                 BufferFrame frame = new BufferFrame(new byte[256], 0);
 
-                asdu.Encode(frame, appLayerParameters);
+                asdu.Encode(frame, _appLayerParameters);
 
-                linkLayerUnbalanced.SendConfirmed(slaveAddress, frame);
+                _linkLayerUnbalanced.SendConfirmed(_slaveAddress, frame);
             }
             else
             {
-                lock (userDataQueue)
+                lock (_userDataQueue)
                 {
                     BufferFrame frame = new BufferFrame(new byte[256], 0);
 
-                    asdu.Encode(frame, appLayerParameters);
+                    asdu.Encode(frame, _appLayerParameters);
 
-                    userDataQueue.Enqueue(frame);
+                    _userDataQueue.Enqueue(frame);
                 }
             }
         }
 
         private BufferFrame DequeueUserData()
         {
-            lock (userDataQueue)
+            lock (_userDataQueue)
             {
-                if (userDataQueue.Count > 0)
-                    return userDataQueue.Dequeue();
-                else
-                    return null;
+                if (_userDataQueue.Count > 0)
+            {
+                return _userDataQueue.Dequeue();
             }
+            else
+            {
+                return null;
+            }
+        }
         }
 
         private bool IsUserDataAvailable()
         {
-            lock (userDataQueue)
+            lock (_userDataQueue)
             {
-                if (userDataQueue.Count > 0)
-                    return true;
-                else
-                    return false;
+                if (_userDataQueue.Count > 0)
+            {
+                return true;
             }
+            else
+            {
+                return false;
+            }
+        }
         }
 
         private BufferFrame GetUserData()
         {
             if (IsUserDataAvailable())
-                return DequeueUserData();
+        {
+            return DequeueUserData();
+        }
 
-            return null;
+        return null;
         }
 
         private bool HandleApplicationLayer(int address, byte[] msg, int userDataStart, int userDataLength)
@@ -474,7 +587,9 @@ namespace IEC60870.CS101
 
             try
             {
-                asdu = new ASDU(appLayerParameters, buffer, userDataStart, userDataStart + userDataLength);
+                // 解析 msg（链路层接收缓冲）而非 this._buffer（发送缓冲），两者已分离
+                asdu = new ASDU(_appLayerParameters, msg, userDataStart, userDataStart + userDataLength);
+                asdu.TypeHandlers = TypeHandlers;
             }
             catch (ASDUParsingException e)
             {
@@ -482,16 +597,21 @@ namespace IEC60870.CS101
                 return false;
             }
 
-            bool messageHandled = false;
+            var messageHandled = false;
 
-            if (fileClient != null)
-                messageHandled = fileClient.HandleFileAsdu(asdu);
+            if (_fileClient != null)
+        {
+            messageHandled = _fileClient.HandleFileAsdu(asdu);
+        }
 
-            if (messageHandled == false)
+        if (messageHandled == false)
             {
-                if (asduReceivedHandler != null)
-                    messageHandled = asduReceivedHandler(asduReceivedHandlerParameter, address, asdu);
-                AsduReceived?.Invoke(asduReceivedHandlerParameter, address, asdu);
+                if (_asduReceivedHandler != null)
+            {
+                messageHandled = _asduReceivedHandler(_asduReceivedHandlerParameter, address, asdu);
+            }
+
+            AsduReceived?.Invoke(_asduReceivedHandlerParameter, address, asdu);
             }
 
             return messageHandled;
@@ -499,78 +619,81 @@ namespace IEC60870.CS101
 
         public void SendLinkLayerTestFunction()
         {
-            linkLayer.SendTestFunction();
+            _linkLayer.SendTestFunction();
         }
 
-        public override void SendInterrogationCommand(CauseOfTransmission cot, int ca, byte qoi)
+        public void SendInterrogationCommand(CauseOfTransmission cot, int ca, byte qoi)
         {
-            EnqueueUserData(CommandBuilder.Interrogation(appLayerParameters, cot, ca, qoi));
+            EnqueueUserData(CommandBuilder.Interrogation(_appLayerParameters, cot, ca, qoi));
         }
 
-        public override void SendCounterInterrogationCommand(CauseOfTransmission cot, int ca, byte qcc)
+        public void SendCounterInterrogationCommand(CauseOfTransmission cot, int ca, byte qcc)
         {
-            EnqueueUserData(CommandBuilder.CounterInterrogation(appLayerParameters, cot, ca, qcc));
+            EnqueueUserData(CommandBuilder.CounterInterrogation(_appLayerParameters, cot, ca, qcc));
         }
 
-        public override void SendReadCommand(int ca, int ioa)
+        public void SendReadCommand(int ca, int ioa)
         {
-            EnqueueUserData(CommandBuilder.Read(appLayerParameters, ca, ioa));
+            EnqueueUserData(CommandBuilder.Read(_appLayerParameters, ca, ioa));
         }
 
-        public override void SendClockSyncCommand(int ca, CP56Time2a time)
+        public void SendClockSyncCommand(int ca, CP56Time2a time)
         {
-            EnqueueUserData(CommandBuilder.ClockSync(appLayerParameters, ca, time));
+            EnqueueUserData(CommandBuilder.ClockSync(_appLayerParameters, ca, time));
         }
 
-        public override void SendTestCommand(int ca)
+        public void SendTestCommand(int ca)
         {
-            EnqueueUserData(CommandBuilder.Test(appLayerParameters, ca));
+            EnqueueUserData(CommandBuilder.Test(_appLayerParameters, ca));
         }
 
-        public override void SendTestCommandWithCP56Time2a(int ca, ushort tsc, CP56Time2a time)
+        public void SendTestCommandWithCP56Time2a(int ca, ushort tsc, CP56Time2a time)
         {
-            EnqueueUserData(CommandBuilder.TestWithCP56Time2a(appLayerParameters, ca, tsc, time));
+            EnqueueUserData(CommandBuilder.TestWithCP56Time2a(_appLayerParameters, ca, tsc, time));
         }
 
-        public override void SendResetProcessCommand(CauseOfTransmission cot, int ca, byte qrp)
+        public void SendResetProcessCommand(CauseOfTransmission cot, int ca, byte qrp)
         {
-            EnqueueUserData(CommandBuilder.ResetProcess(appLayerParameters, cot, ca, qrp));
+            EnqueueUserData(CommandBuilder.ResetProcess(_appLayerParameters, cot, ca, qrp));
         }
 
-        public override void SendDelayAcquisitionCommand(CauseOfTransmission cot, int ca, CP16Time2a delay)
+        public void SendDelayAcquisitionCommand(CauseOfTransmission cot, int ca, CP16Time2a delay)
         {
-            EnqueueUserData(CommandBuilder.DelayAcquisition(appLayerParameters, cot, ca, delay));
+            EnqueueUserData(CommandBuilder.DelayAcquisition(_appLayerParameters, cot, ca, delay));
         }
 
-        public override void SendControlCommand(CauseOfTransmission cot, int ca, InformationObject sc)
+        public void SendControlCommand(CauseOfTransmission cot, int ca, InformationObject sc)
         {
-            EnqueueUserData(CommandBuilder.Control(appLayerParameters, cot, ca, sc));
+            EnqueueUserData(CommandBuilder.Control(_appLayerParameters, cot, ca, sc));
         }
 
-        public override void SendASDU(ASDU asdu)
+        public void SendASDU(ASDU asdu)
         {
             EnqueueUserData(asdu);
         }
 
-        public override ApplicationLayerParameters GetApplicationLayerParameters()
+        public ApplicationLayerParameters GetApplicationLayerParameters()
         {
-            return appLayerParameters;
+            return _appLayerParameters;
         }
 
-        public override void GetFile(int ca, int ioa, NameOfFile nof, IFileReceiver receiver)
+        public void GetFile(int ca, int ioa, NameOfFile nof, IFileReceiver receiver)
         {
-            if (fileClient == null)
-                fileClient = new FileClient(this, DebugLog);
-
-            fileClient.RequestFile(ca, ioa, nof, receiver);
+            if (_fileClient == null)
+        {
+            _fileClient = new FileClient(this, DebugLog);
         }
 
-        public override void SendFile(int ca, int ioa, NameOfFile nof, IFileProvider fileProvider)
-        {
-            if (fileClient == null)
-                fileClient = new FileClient(this, DebugLog);
+        _fileClient.RequestFile(ca, ioa, nof, receiver);
+        }
 
-            fileClient.SendFile(ca, ioa, nof, fileProvider);
+        public void SendFile(int ca, int ioa, NameOfFile nof, IFileProvider fileProvider)
+        {
+            if (_fileClient == null)
+        {
+            _fileClient = new FileClient(this, DebugLog);
+        }
+
+        _fileClient.SendFile(ca, ioa, nof, fileProvider);
         }
     }
-}

@@ -6,32 +6,18 @@
     <Copyright>Copyright 2026 LFDCC</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageId>LFDCC.IEC60870.CS104</PackageId>
-    <Version>4.0.9</Version>
+    <Version>5.2.0</Version>
     <RootNamespace>IEC60870.CS104</RootNamespace>
     <AssemblyName>IEC60870.CS104</AssemblyName>
     <TargetFramework>net6.0</TargetFramework>
     <Nullable>disable</Nullable>
     <LangVersion>latest</LangVersion>
-    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <Description>IEC 60870-5-104 protocol library (TCP/TCP-TLS transport, client/server) built on IEC60870.Core. Fully async, TouchSocket-based, zero-GC hot path.</Description>
     <PackageOutputPath>nupkg</PackageOutputPath>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
   </PropertyGroup>
 
-  <ItemGroup>
-    <Compile Include="APCIParameters.cs" />
-    <Compile Include="ApduCodec.cs" />
-    <Compile Include="ApduTelegramExtensions.cs" />
-    <Compile Include="ApduConnection.cs" />
-    <Compile Include="ApduFramer.cs" />
-    <Compile Include="ApduReader.cs" />
-    <Compile Include="IApduSink.cs" />
-    <Compile Include="Iec104Client.cs" />
-    <Compile Include="Iec104Server.cs" />
-    <Compile Include="Iec104Session.cs" />
-    <Compile Include="PooledApduWriter.cs" />
-    <Compile Include="ControlWaiter.cs" />
-  </ItemGroup>
+  <!-- 源码按 SDK 默认通配编译（**/*.cs）：Connection/ 状态机层、Adapter/ 解析管线、根/ 公共 API，新增文件无需维护清单 -->
   <ItemGroup>
     <ProjectReference Include="..\IEC60870.Core\IEC60870.Core.csproj" />
   </ItemGroup>

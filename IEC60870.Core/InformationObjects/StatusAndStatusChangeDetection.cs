@@ -1,135 +1,135 @@
-/*
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+//------------------------------------------------------------------------------
+//  IEC60870.Core.NET — SCD 状态与状态变位检测（4 字节双 16 位字）
+//
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
 using System;
 using System.Text;
 
+namespace IEC60870.Core;
 
-
-namespace IEC60870.Core.InformationObjects
+/// <summary>
+/// 状态与状态变位检测（SCD）：4 字节，前 2 字节为 ST（当前状态，16 位），
+/// 后 2 字节为 CD（变位检测，16 位），均为小端。
+/// </summary>
+public class StatusAndStatusChangeDetection
 {
+    private readonly byte[] _encodedValue = new byte[4];
 
-    public class StatusAndStatusChangeDetection
+    /// <summary>状态字 ST（bit i = 通道 i 当前状态）。</summary>
+    public UInt16 STn
     {
-        public UInt16 STn
+        get => (ushort)(_encodedValue[0] | (_encodedValue[1] << 8));
+        set
         {
-            get
-            {
-                return (ushort)(encodedValue[0] + (256 * encodedValue[1]));
-            }
+            _encodedValue[0] = (byte)value;
+            _encodedValue[1] = (byte)(value >> 8);
+        }
+    }
 
-            set
-            {
-                encodedValue[0] = (byte)(value % 256);
-                encodedValue[1] = (byte)(value / 256);
-            }
+    /// <summary>变位检测字 CD（bit i = 通道 i 是否发生过变位）。</summary>
+    public UInt16 CDn
+    {
+        get => (ushort)(_encodedValue[2] | (_encodedValue[3] << 8));
+        set
+        {
+            _encodedValue[2] = (byte)value;
+            _encodedValue[3] = (byte)(value >> 8);
+        }
+    }
+
+    /// <summary>查询通道 <paramref name="i"/>（0…15）的当前状态。</summary>
+    public bool ST(int i) => InRange(i) && (STn & (1 << i)) != 0;
+
+    /// <summary>设置通道 <paramref name="i"/>（0…15）的当前状态。</summary>
+    public void ST(int i, bool value)
+    {
+        if (!InRange(i))
+        {
+            return;
         }
 
-        public UInt16 CDn
+        if (value)
         {
-            get
-            {
-                return (ushort)(encodedValue[2] + (256 * encodedValue[3]));
-            }
+            STn = (UInt16)(STn | (1 << i));
+        }
+        else
+        {
+            STn = (UInt16)(STn & ~(1 << i));
+        }
+    }
 
-            set
-            {
-                encodedValue[2] = (byte)(value % 256);
-                encodedValue[3] = (byte)(value / 256);
-            }
+    /// <summary>查询通道 <paramref name="i"/>（0…15）是否发生变位。</summary>
+    public bool CD(int i) => InRange(i) && (CDn & (1 << i)) != 0;
+
+    /// <summary>设置通道 <paramref name="i"/>（0…15）的变位检测位。</summary>
+    public void CD(int i, bool value)
+    {
+        if (!InRange(i))
+        {
+            return;
         }
 
-        public bool ST(int i)
+        if (value)
         {
-            if ((i >= 0) && (i < 16))
-                return ((STn & (1 << i)) != 0);
-            else
-                return false;
+            CDn = (UInt16)(CDn | (1 << i));
+        }
+        else
+        {
+            CDn = (UInt16)(CDn & ~(1 << i));
+        }
+    }
+
+    /// <summary>构造全零 SCD。</summary>
+    public StatusAndStatusChangeDetection()
+    {
+    }
+
+    /// <summary>复制构造。</summary>
+    public StatusAndStatusChangeDetection(StatusAndStatusChangeDetection original)
+    {
+        STn = original.STn;
+        CDn = original.CDn;
+    }
+
+    /// <summary>从报文切片解析 4 字节 SCD。</summary>
+    /// <exception cref="ASDUParsingException">剩余长度不足 4 字节时抛出。</exception>
+    public StatusAndStatusChangeDetection(ReadOnlySpan<byte> msg, int startIndex)
+    {
+        if (msg.Length < startIndex + 4)
+        {
+            throw new ASDUParsingException("报文长度不足以解析 SCD");
         }
 
-        public void ST(int i, bool value)
+        msg.Slice(startIndex, 4).CopyTo(_encodedValue);
+    }
+
+    /// <summary>内部编码数组引用（勿修改）。</summary>
+    public byte[] GetEncodedValue() => _encodedValue;
+
+    /// <summary>零分配编码切片。</summary>
+    public ReadOnlySpan<byte> AsSpan() => _encodedValue.AsSpan();
+
+    private static bool InRange(int i) => i >= 0 && i < 16;
+
+    /// <inheritdoc/>
+    public override string ToString()
+    {
+        var sb = new StringBuilder(50);
+
+        sb.Append("ST:");
+        for (var i = 0; i < 16; i++)
         {
-            if ((i >= 0) && (i < 16))
-            {
-                if (value)
-                    STn = (UInt16)(STn | (1 << i));
-                else
-                    STn = (UInt16)(STn & ~(1 << i));
-            }
+            sb.Append(ST(i) ? "1" : "0");
         }
 
-        public bool CD(int i)
+        sb.Append(" CD:");
+        for (var i = 0; i < 16; i++)
         {
-            if ((i >= 0) && (i < 16))
-                return ((CDn & (1 << i)) != 0);
-            else
-                return false;
+            sb.Append(CD(i) ? "1" : "0");
         }
 
-        public void CD(int i, bool value)
-        {
-            if ((i >= 0) && (i < 16))
-            {
-                if (value)
-                    CDn = (UInt16)(CDn | (1 << i));
-                else
-                    CDn = (UInt16)(CDn & ~(1 << i));
-            }
-        }
-
-        public StatusAndStatusChangeDetection()
-        {
-        }
-
-        public StatusAndStatusChangeDetection(StatusAndStatusChangeDetection original)
-        {
-            STn = original.STn;
-            CDn = original.CDn;
-        }
-
-        public StatusAndStatusChangeDetection(byte[] msg, int startIndex)
-        {
-            if (msg.Length < startIndex + 4)
-                throw new ASDUParsingException("Message too small for parsing StatusAndStatusChangeDetection");
-
-            for (int i = 0; i < 4; i++)
-                encodedValue[i] = msg[startIndex + i];
-        }
-
-        private byte[] encodedValue = new byte[4];
-
-        public byte[] GetEncodedValue()
-        {
-            return encodedValue;
-        }
-
-        /// <summary>
-        /// Returns the encoded value as a ReadOnlySpan for zero-allocation encoding.
-        /// </summary>
-        public ReadOnlySpan<byte> AsSpan() => encodedValue.AsSpan();
-
-        public override string ToString()
-        {
-            StringBuilder sb = new StringBuilder(50);
-
-            sb.Append("ST:");
-
-            for (int i = 0; i < 16; i++)
-                sb.Append(ST(i) ? "1" : "0");
-
-            sb.Append(" CD:");
-
-            for (int i = 0; i < 16; i++)
-                sb.Append(CD(i) ? "1" : "0");
-
-            return sb.ToString();
-        }
+        return sb.ToString();
     }
 }

@@ -1,14 +1,6 @@
-/*
- *  TcpServerLinkTransport.cs
- *
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+//------------------------------------------------------------------------------
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
 using System;
 using System.Threading;
@@ -17,8 +9,8 @@ using TouchSocket.Core;
 using TouchSocket.Sockets;
 
 
-namespace IEC60870.CS101.LinkLayer
-{
+namespace IEC60870.CS101;
+
     /// <summary>
     /// TCP 服务端虚拟串口（隧道）。基于 TouchSocket <see cref="TcpService{TClient}"/>，每个连接对应一个
     /// 会话；仅维护单条活动链路（与原 <c>TcpServerVirtualSerialPort</c> 语义一致）。收到的字节推入
@@ -36,18 +28,21 @@ namespace IEC60870.CS101.LinkLayer
                 {
                     // 虚拟串口语义：仅允许单活动链路（与原 TcpServerVirtualSerialPort 一致）。
                     // 新连接占用时关闭上一会话，避免两路字节写入同一队列、相互交错导致 FT1.2 帧损坏（代码评审 #17）。
-                    Session prev = Owner._activeSession;
+                    var prev = Owner._activeSession;
                     Owner._activeSession = this;
                     if (prev != null && prev != this)
                     {
-                        try { await prev.CloseAsync("replaced by new connection").ConfigureAwait(false); }
-                        catch { /* ignore */ }
+                        try
+                    {
+                        await prev.CloseAsync("replaced by new connection").ConfigureAwait(false);
                     }
+                    catch { /* ignore */ }
                 }
-                await base.OnTcpConnected(e).ConfigureAwait(false);
             }
+            await base.OnTcpConnected(e).ConfigureAwait(false);
+        }
 
-            protected override async Task OnTcpClosed(ClosedEventArgs e)
+        protected override async Task OnTcpClosed(ClosedEventArgs e)
             {
                 if (Owner != null && Owner._activeSession == this)
                 {
@@ -60,8 +55,11 @@ namespace IEC60870.CS101.LinkLayer
             protected override async Task OnTcpReceived(ReceivedDataEventArgs e)
             {
                 if (!e.Memory.IsEmpty && Owner != null)
-                    Owner._queue.Write(e.Memory.Span);
-                await base.OnTcpReceived(e).ConfigureAwait(false);
+            {
+                Owner._queue.Write(e.Memory.Span);
+            }
+
+            await base.OnTcpReceived(e).ConfigureAwait(false);
             }
         }
 
@@ -93,23 +91,27 @@ namespace IEC60870.CS101.LinkLayer
             _charTimeout = characterTimeout;
         }
 
-        public async Task StartAsync(int port, CancellationToken ct)
+        public async Task StartAsync(int port, CancellationToken ct, Action<TouchSocketConfig> configureConfig = null)
         {
             var config = new TouchSocketConfig();
             config.SetListenIPHosts(new IPHost(port));
+            // 用户自定义配置在库默认项之后应用
+            configureConfig?.Invoke(config);
             await SetupAsync(config).ConfigureAwait(false);
             await base.StartAsync().ConfigureAwait(false);
         }
 
         public async ValueTask<int> ReadFrameAsync(Memory<byte> buffer, CancellationToken ct)
         {
-            int n = await FT12Framer.ReadFrameAsync(_queue, buffer, _llParams, _msgTimeout, _charTimeout, _log, ct)
+            var n = await FT12Framer.ReadFrameAsync(_queue, buffer, _llParams, _msgTimeout, _charTimeout, _log, ct)
                 .ConfigureAwait(false);
 
             if (n > 0)
-                _log("RECV " + BitConverter.ToString(buffer.Span.Slice(0, n).ToArray()));
+        {
+            _log("RECV " + BitConverter.ToString(buffer.Span.Slice(0, n).ToArray()));
+        }
 
-            return n;
+        return n;
         }
 
         public async ValueTask WriteAsync(ReadOnlyMemory<byte> data, CancellationToken ct)
@@ -128,10 +130,10 @@ namespace IEC60870.CS101.LinkLayer
             }
         }
 
-        public new void Dispose()
+        /// <summary>Dispose 钩子：关闭字节队列并沿 TouchSocket 生命周期释放底层 TcpService。</summary>
+        protected override void SafetyDispose(bool disposing)
         {
-            _queue.Close();
-            try { base.Dispose(); } catch { }
+            _queue.SafeDispose();
+            base.SafetyDispose(disposing);
         }
     }
-}

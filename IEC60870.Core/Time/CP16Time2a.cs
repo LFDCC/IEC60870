@@ -1,104 +1,71 @@
+//------------------------------------------------------------------------------
+//  IEC60870.Core.NET — CP16Time2a 二进制时间间隔（2 字节毫秒计数）
+//
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
+namespace IEC60870.Core;
 
-/*
- *  CP16Time2a.cs
- *
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
-
-using System;
-
-namespace IEC60870.Core.Time
+/// <summary>
+/// CP16Time2a：2 字节小端无符号毫秒计数（IEC 60870-5-4 §5.13），
+/// 表示经过的时间，范围 0…65535 ms。
+/// </summary>
+public class CP16Time2a
 {
-    public class CP16Time2a
+    private readonly byte[] _encodedValue = new byte[2];
+
+    /// <summary>从报文切片解析 2 字节编码。</summary>
+    /// <exception cref="ASDUParsingException">剩余长度不足 2 字节时抛出。</exception>
+    public CP16Time2a(ReadOnlySpan<byte> msg, int startIndex)
     {
-        private byte[] encodedValue = new byte[2];
-
-        public CP16Time2a(byte[] msg, int startIndex)
+        if (msg.Length < startIndex + 2)
         {
-            if (msg.Length < startIndex + 2)
-                throw new ASDUParsingException("Message too small for parsing CP16Time2a");
-
-            for (int i = 0; i < 2; i++)
-                encodedValue[i] = msg[startIndex + i];
+            throw new ASDUParsingException("报文长度不足以解析 CP16Time2a");
         }
 
-        public CP16Time2a(int elapsedTimeInMs)
+        msg.Slice(startIndex, 2).CopyTo(_encodedValue);
+    }
+
+    /// <summary>以经过毫秒数构造（超出 16 位范围按低 16 位截断）。</summary>
+    public CP16Time2a(int elapsedTimeInMs) => ElapsedTimeInMs = elapsedTimeInMs;
+
+    /// <summary>构造 0 ms 时间间隔。</summary>
+    public CP16Time2a()
+    {
+    }
+
+    /// <summary>复制构造。</summary>
+    public CP16Time2a(CP16Time2a original)
+    {
+        original._encodedValue.CopyTo(_encodedValue, 0);
+    }
+
+    /// <inheritdoc/>
+    public override bool Equals(object obj) => obj is CP16Time2a other && GetHashCode() == other.GetHashCode();
+
+    /// <inheritdoc/>
+    public override int GetHashCode() => new System.Numerics.BigInteger(_encodedValue).GetHashCode();
+
+    /// <summary>经过时间（毫秒，0…65535），小端 2 字节。</summary>
+    public int ElapsedTimeInMs
+    {
+        get => _encodedValue[0] | (_encodedValue[1] << 8);
+        set
         {
-            ElapsedTimeInMs = elapsedTimeInMs;
-        }
-
-        public CP16Time2a()
-        {
-            for (int i = 0; i < 2; i++)
-                encodedValue[i] = 0;
-        }
-
-        public CP16Time2a(CP16Time2a original)
-        {
-            for (int i = 0; i < 2; i++)
-                encodedValue[i] = original.encodedValue[i];
-        }
-
-        public override bool Equals(object obj)
-        {
-            if (obj == null)
-                return false;
-
-            if (!(obj is CP16Time2a))
-                return false;
-
-            return (GetHashCode() == obj.GetHashCode());
-        }
-
-        public override int GetHashCode()
-        {
-            return new System.Numerics.BigInteger(encodedValue).GetHashCode();
-        }
-
-        public int ElapsedTimeInMs
-        {
-            get
-            {
-                return (encodedValue[0] + (encodedValue[1] * 0x100));
-            }
-
-            set
-            {
-                encodedValue[0] = (byte)(value % 0x100);
-                encodedValue[1] = (byte)(value / 0x100);
-            }
-        }
-
-        public byte[] GetEncodedValue()
-        {
-            return encodedValue;
-        }
-
-        /// <summary>
-        /// Returns the encoded value as a ReadOnlySpan for zero-allocation encoding.
-        /// </summary>
-        public ReadOnlySpan<byte> AsSpan() => encodedValue.AsSpan();
-
-        /// <summary>
-        /// Writes the 2-byte CP16Time2a encoding into <paramref name="destination"/>
-        /// without intermediate allocation. Throws if the destination is too small.
-        /// </summary>
-        public void WriteTo(Span<byte> destination)
-        {
-            encodedValue.AsSpan().CopyTo(destination);
-        }
-
-        public override string ToString()
-        {
-            return ElapsedTimeInMs.ToString();
+            _encodedValue[0] = (byte)value;
+            _encodedValue[1] = (byte)(value >> 8);
         }
     }
-}
 
+    /// <summary>内部编码数组引用（勿修改）。</summary>
+    public byte[] GetEncodedValue() => _encodedValue;
+
+    /// <summary>零分配编码切片。</summary>
+    public ReadOnlySpan<byte> AsSpan() => _encodedValue.AsSpan();
+
+    /// <summary>将 2 字节编码写入目标缓冲。</summary>
+    public void WriteTo(Span<byte> destination) => _encodedValue.AsSpan().CopyTo(destination);
+
+    /// <inheritdoc/>
+    public override string ToString() => ElapsedTimeInMs.ToString();
+}

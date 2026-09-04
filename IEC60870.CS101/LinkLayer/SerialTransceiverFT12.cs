@@ -1,14 +1,6 @@
-/*
- *  SerialTransceiverFT12.cs
- *
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+//------------------------------------------------------------------------------
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
 using System;
 using System.IO;
@@ -17,8 +9,8 @@ using System.Threading;
 using System.Threading.Tasks;
 
 
-namespace IEC60870.CS101.LinkLayer
-{
+namespace IEC60870.CS101;
+
     /// <summary>
     /// 串口 FT1.2 收发器（异步）。基于 <see cref="SerialPort.BaseStream"/> 的异步读写，
     /// 通过 <see cref="FT12Framer"/> 完成帧定界。实现 <see cref="ISerialLinkTransport"/>。
@@ -65,10 +57,14 @@ namespace IEC60870.CS101.LinkLayer
             get
             {
                 if (_port != null)
-                    return _port.BaudRate;
-                else
-                    return 10000000;
+            {
+                return _port.BaudRate;
             }
+            else
+            {
+                return 10000000;
+            }
+        }
         }
 
         public void SetTimeouts(int messageTimeout, int characterTimeout)
@@ -79,13 +75,15 @@ namespace IEC60870.CS101.LinkLayer
 
         public async ValueTask<int> ReadFrameAsync(Memory<byte> buffer, CancellationToken ct)
         {
-            int n = await FT12Framer.ReadFrameAsync(_source, buffer, _linkLayerParameters,
+            var n = await FT12Framer.ReadFrameAsync(_source, buffer, _linkLayerParameters,
                 _messageTimeout, _characterTimeout, _debugLog, ct).ConfigureAwait(false);
 
             if (n > 0)
-                _debugLog("RECV " + BitConverter.ToString(buffer.Span.Slice(0, n).ToArray()));
+        {
+            _debugLog("RECV " + BitConverter.ToString(buffer.Span.Slice(0, n).ToArray()));
+        }
 
-            return n;
+        return n;
         }
 
         public async ValueTask WriteAsync(ReadOnlyMemory<byte> data, CancellationToken ct)
@@ -115,13 +113,16 @@ namespace IEC60870.CS101.LinkLayer
         {
             if (_portDenied != null)
             {
-                try { _portDenied(this, EventArgs.Empty); } catch { }
+                try
+            {
+                _portDenied(this, EventArgs.Empty);
             }
+            catch { }
         }
+    }
 
-        public void Dispose()
+    public void Dispose()
         {
             // 不在此关闭 _serialStream：串口由 CS101Master/ServerBase 拥有；TCP 隧道由各自传输层管理。
         }
     }
-}

@@ -1,207 +1,135 @@
+//------------------------------------------------------------------------------
+//  IEC60870.Core.NET — CP24Time2a 七进制时间值（3 字节：毫秒+分钟）
+//
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
+namespace IEC60870.Core;
 
-/*
- *  CP24Time2a.cs
- *
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
-
-using System;
-
-namespace IEC60870.Core.Time
+/// <summary>
+/// CP24Time2a：3 字节二进制时间值（IEC 60870-5-4 §5.14）。
+/// 字节 0-1 为小端毫秒计数（0…59999），字节 2 低 6 位为分钟（0…59），
+/// bit7 = IV（无效），bit6 = SU（被替代）。
+/// </summary>
+public class CP24Time2a
 {
-    public class CP24Time2a
+    private readonly byte[] _encodedValue = new byte[3];
+
+    private const int MsPerMinute = 60000;
+    private const int MsPerSecond = 1000;
+    private const ushort LowBitsMask = 0xFFFF;   // 字节 0-1 拼合后的毫秒域
+    private const byte MaskMinute = 0x3F;        // 分钟占 bit0-5
+    private const byte MaskSubstitued = 0x40;    // SU
+    private const byte MaskInvalid = 0x80;       // IV
+
+    /// <summary>从报文切片解析 3 字节编码。</summary>
+    /// <exception cref="ASDUParsingException">剩余长度不足 3 字节时抛出。</exception>
+    public CP24Time2a(ReadOnlySpan<byte> msg, int startIndex)
     {
-        private byte[] encodedValue = new byte[3];
-
-        public CP24Time2a(byte[] msg, int startIndex)
+        if (msg.Length < startIndex + 3)
         {
-            if (msg.Length < startIndex + 3)
-                throw new ASDUParsingException("Message too small for parsing CP24Time2a");
-
-            for (int i = 0; i < 3; i++)
-                encodedValue[i] = msg[startIndex + i];
+            throw new ASDUParsingException("报文长度不足以解析 CP24Time2a");
         }
 
-        public CP24Time2a(int minute, int second, int millisecond)
-        {
-            Millisecond = millisecond;
-            Second = second;
-            Minute = minute;
-        }
-
-        public CP24Time2a()
-        {
-            for (int i = 0; i < 3; i++)
-                encodedValue[i] = 0;
-        }
-
-        public CP24Time2a(CP24Time2a original)
-        {
-            for (int i = 0; i < 3; i++)
-                encodedValue[i] = original.encodedValue[i];
-        }
-
-        public override bool Equals(object obj)
-        {
-            if (obj == null)
-                return false;
-
-            if (!(obj is CP24Time2a))
-                return false;
-
-            return (GetHashCode() == obj.GetHashCode());
-        }
-
-        public override int GetHashCode()
-        {
-            return new System.Numerics.BigInteger(encodedValue).GetHashCode();
-        }
-
-        /// <summary>
-        /// Gets the total milliseconds of the elapsed time
-        /// </summary>
-        /// <returns>The milliseconds.</returns>
-        public int GetMilliseconds()
-        {
-
-            int millies = Minute * (60000) + Second * 1000 + Millisecond;
-
-            return millies;
-        }
-
-        /// <summary>
-        /// Gets or sets the millisecond part of the time value
-        /// </summary>
-        /// <value>The millisecond.</value>
-        public int Millisecond
-        {
-            get
-            {
-                return (encodedValue[0] + (encodedValue[1] * 0x100)) % 1000;
-            }
-
-            set
-            {
-                int millies = (Second * 1000) + value;
-
-                encodedValue[0] = (byte)(millies & 0xff);
-                encodedValue[1] = (byte)((millies / 0x100) & 0xff);
-            }
-        }
-
-        /// <summary>
-        /// Gets or sets the second (range 0 to 59)
-        /// </summary>
-        /// <value>The second.</value>
-        public int Second
-        {
-            get
-            {
-                return (encodedValue[0] + (encodedValue[1] * 0x100)) / 1000;
-            }
-
-            set
-            {
-                int millies = encodedValue[0] + (encodedValue[1] * 0x100);
-
-                int msPart = millies % 1000;
-
-                millies = (value * 1000) + msPart;
-
-                encodedValue[0] = (byte)(millies & 0xff);
-                encodedValue[1] = (byte)((millies / 0x100) & 0xff);
-            }
-        }
-
-        /// <summary>
-        /// Gets or sets the minute (range 0 to 59)
-        /// </summary>
-        /// <value>The minute.</value>
-        public int Minute
-        {
-            get
-            {
-                return (encodedValue[2] & 0x3f);
-            }
-
-            set
-            {
-                encodedValue[2] = (byte)((encodedValue[2] & 0xc0) | (value & 0x3f));
-            }
-        }
-
-        /// <summary>
-        /// Gets a value indicating whether this <see cref="IEC60870.Core.CP24Time2a"/> is invalid.
-        /// </summary>
-        /// <value><c>true</c> if invalid; otherwise, <c>false</c>.</value>
-        public bool Invalid
-        {
-            get
-            {
-                return ((encodedValue[2] & 0x80) == 0x80);
-            }
-
-            set
-            {
-                if (value)
-                    encodedValue[2] = (byte)(encodedValue[2] | 0x80);
-                else
-                    encodedValue[2] = (byte)(encodedValue[2] & 0x7f);
-            }
-        }
-
-        /// <summary>
-        /// Gets a value indicating whether this <see cref="IEC60870.Core.CP24Time2a"/> was substitued by an intermediate station
-        /// </summary>
-        /// <value><c>true</c> if substitued; otherwise, <c>false</c>.</value>
-        public bool Substitued
-        {
-            get
-            {
-                return ((encodedValue[2] & 0x40) == 0x40);
-            }
-
-            set
-            {
-                if (value)
-                    encodedValue[2] = (byte)(encodedValue[2] | 0x40);
-                else
-                    encodedValue[2] = (byte)(encodedValue[2] & 0xbf);
-            }
-        }
-
-        public byte[] GetEncodedValue()
-        {
-            return encodedValue;
-        }
-
-        /// <summary>
-        /// Returns the encoded value as a ReadOnlySpan for zero-allocation encoding.
-        /// </summary>
-        public ReadOnlySpan<byte> AsSpan() => encodedValue.AsSpan();
-
-        /// <summary>
-        /// Writes the 3-byte CP24Time2a encoding into <paramref name="destination"/>
-        /// without intermediate allocation. Throws if the destination is too small.
-        /// </summary>
-        public void WriteTo(Span<byte> destination)
-        {
-            encodedValue.AsSpan().CopyTo(destination);
-        }
-
-
-        public override string ToString()
-        {
-            return string.Format("[CP24Time2a: Millisecond={0}, Second={1}, Minute={2}, Invalid={3}, Substitued={4}]", Millisecond, Second, Minute, Invalid, Substitued);
-        }
-
+        msg.Slice(startIndex, 3).CopyTo(_encodedValue);
     }
-}
 
+    /// <summary>以分、秒、毫秒构造。</summary>
+    public CP24Time2a(int minute, int second, int millisecond)
+    {
+        Millisecond = millisecond;
+        Second = second;
+        Minute = minute;
+    }
+
+    /// <summary>构造全零时间值。</summary>
+    public CP24Time2a()
+    {
+    }
+
+    /// <summary>复制构造。</summary>
+    public CP24Time2a(CP24Time2a original)
+    {
+        original._encodedValue.CopyTo(_encodedValue, 0);
+    }
+
+    // ── 内部毫秒域（字节 0-1 小端）读写辅助 ─────────────────────
+    private int RawMs
+    {
+        get => _encodedValue[0] | (_encodedValue[1] << 8);
+        set
+        {
+            _encodedValue[0] = (byte)value;
+            _encodedValue[1] = (byte)(value >> 8);
+        }
+    }
+
+    /// <inheritdoc/>
+    public override bool Equals(object obj) => obj is CP24Time2a other && GetHashCode() == other.GetHashCode();
+
+    /// <inheritdoc/>
+    public override int GetHashCode() => new System.Numerics.BigInteger(_encodedValue).GetHashCode();
+
+    /// <summary>自分钟起点累计的总毫秒数。</summary>
+    public int GetMilliseconds() => Minute * MsPerMinute + Second * MsPerSecond + Millisecond;
+
+    /// <summary>毫秒部分（0…999，即总毫秒对 1000 取余）。</summary>
+    public int Millisecond
+    {
+        get => RawMs % MsPerSecond;
+        set => RawMs = Second * MsPerSecond + value;
+    }
+
+    /// <summary>秒（0…59）。</summary>
+    public int Second
+    {
+        get => RawMs / MsPerSecond;
+        set => RawMs = value * MsPerSecond + RawMs % MsPerSecond;
+    }
+
+    /// <summary>分钟（0…59）。</summary>
+    public int Minute
+    {
+        get => _encodedValue[2] & MaskMinute;
+        set => _encodedValue[2] = (byte)((_encodedValue[2] & ~MaskMinute) | (value & MaskMinute));
+    }
+
+    /// <summary>无效标志（IV，bit7 of byte2）。</summary>
+    public bool Invalid
+    {
+        get => (_encodedValue[2] & MaskInvalid) != 0;
+        set => SetFlag(MaskInvalid, value);
+    }
+
+    /// <summary>替代标志（SU，bit6 of byte2；时间值被中间站替代时置位）。</summary>
+    public bool Substitued
+    {
+        get => (_encodedValue[2] & MaskSubstitued) != 0;
+        set => SetFlag(MaskSubstitued, value);
+    }
+
+    private void SetFlag(byte mask, bool on)
+    {
+        if (on)
+        {
+            _encodedValue[2] |= mask;
+        }
+        else
+        {
+            _encodedValue[2] &= (byte)~mask;
+        }
+    }
+
+    /// <summary>内部编码数组引用（勿修改），供兼容路径使用。</summary>
+    public byte[] GetEncodedValue() => _encodedValue;
+
+    /// <summary>零分配编码切片。</summary>
+    public ReadOnlySpan<byte> AsSpan() => _encodedValue.AsSpan();
+
+    /// <summary>将 3 字节编码写入目标缓冲。</summary>
+    public void WriteTo(Span<byte> destination) => _encodedValue.AsSpan().CopyTo(destination);
+
+    /// <inheritdoc/>
+    public override string ToString()
+        => $"[CP24Time2a: ms={Millisecond}, s={Second}, min={Minute}, IV={Invalid}, SU={Substitued}]";
+}

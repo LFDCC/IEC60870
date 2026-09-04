@@ -1,20 +1,12 @@
 
 
-/*
- *  SecondaryLinkLayer.cs
- *
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+//------------------------------------------------------------------------------
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
 using IEC60870.Core;
-namespace IEC60870.CS101.LinkLayer
-{
+namespace IEC60870.CS101;
+
 
     internal interface IServerApplicationLayer
     {
@@ -41,6 +33,4 @@ namespace IEC60870.CS101.LinkLayer
 
         public abstract void RunStateMachine();
     }
-
-}
 

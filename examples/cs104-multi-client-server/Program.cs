@@ -12,9 +12,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using IEC60870.Core;
 using IEC60870.CS104;
-using IEC60870.Core.InformationObjects;
-using IEC60870.Core.Quality;
-using IEC60870.Core.Time;
 
 
 
@@ -97,7 +94,7 @@ namespace cs104_multi_client_server
 
         private static void HandleAsdu(Iec104Session session, in AsduView view)
         {
-            byte[] raw = view.Raw.ToArray();
+            var raw = view.Raw.ToArray();
             ASDU asdu = new ASDU(_server.Parameters, raw, 0, raw.Length);
 
             if (asdu.TypeId == TypeID.C_IC_NA_1)
@@ -112,8 +109,14 @@ namespace cs104_multi_client_server
 
                 _ = Task.Run(async () =>
                 {
-                    try { await session.SendAsync(BuildActCon(asdu, _server.Parameters)); }
-                    catch (Exception ex) { Console.WriteLine("Command response error: " + ex.Message); }
+                    try
+                    {
+                        await session.SendAsync(BuildActCon(asdu, _server.Parameters));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("Command response error: " + ex.Message);
+                    }
                 });
             }
             else if (asdu.TypeId == TypeID.C_CS_NA_1)
@@ -123,8 +126,14 @@ namespace cs104_multi_client_server
 
                 _ = Task.Run(async () =>
                 {
-                    try { await session.SendAsync(BuildActCon(asdu, _server.Parameters)); }
-                    catch (Exception ex) { Console.WriteLine("Command response error: " + ex.Message); }
+                    try
+                    {
+                        await session.SendAsync(BuildActCon(asdu, _server.Parameters));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("Command response error: " + ex.Message);
+                    }
                 });
             }
             else
@@ -138,7 +147,7 @@ namespace cs104_multi_client_server
 
         public static async Task Main(string[] args)
         {
-            bool running = true;
+            var running = true;
 
             Console.CancelKeyPress += (sender, e) =>
             {
@@ -163,14 +172,16 @@ namespace cs104_multi_client_server
 
             Console.WriteLine("Server started on port 2404 (" + server.SessionCount + " active). Press Ctrl+C to stop.");
 
-            int waitTime = 1000;
+            var waitTime = 1000;
 
             while (running)
             {
                 await Task.Delay(100);
 
                 if (waitTime > 0)
+                {
                     waitTime -= 100;
+                }
                 else
                 {
                     ASDU newAsdu = new ASDU(server.Parameters, CauseOfTransmission.PERIODIC, false, false, 2, 1, false);
@@ -182,6 +193,7 @@ namespace cs104_multi_client_server
             }
 
             Console.WriteLine("Stop server");
+            server.Dispose();
         }
     }
 }

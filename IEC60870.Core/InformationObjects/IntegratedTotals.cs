@@ -1,228 +1,181 @@
-/*
- *  IntegratedTotals.cs
- *
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+//------------------------------------------------------------------------------
+//  IEC60870.Core.NET — 累计量（M_IT_NA_1 / M_IT_TA_1 / M_IT_TB_1）
+//
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
 using System;
-using IEC60870.Core.Time;
 
+namespace IEC60870.Core;
 
-
-namespace IEC60870.Core.InformationObjects
+/// <summary>
+/// 累计量信息体（M_IT_NA_1）。编码为 BinaryCounterReading（BCR，5 字节）。
+/// </summary>
+public class IntegratedTotals : InformationObject
 {
-    /// <summary>
-    /// Integrated totals information object (M_IT_NA_1)
-    /// </summary>
-    public class IntegratedTotals : InformationObject
+    private BinaryCounterReading _bcr;
+
+    /// <summary>二进制计数器读数。</summary>
+    public BinaryCounterReading BCR => _bcr;
+
+    public override TypeID Type => TypeID.M_IT_NA_1;
+
+    public override bool SupportsSequence => true;
+
+    public IntegratedTotals(int ioa, BinaryCounterReading bcr)
+        : base(ioa)
     {
-
-        override public TypeID Type
-        {
-            get
-            {
-                return TypeID.M_IT_NA_1;
-            }
-        }
-
-        override public bool SupportsSequence
-        {
-            get
-            {
-                return true;
-            }
-        }
-
-        private BinaryCounterReading bcr;
-
-        public BinaryCounterReading BCR
-        {
-            get
-            {
-                return bcr;
-            }
-        }
-
-        public IntegratedTotals(int ioa, BinaryCounterReading bcr)
-            : base(ioa)
-        {
-            this.bcr = bcr;
-        }
-
-        public IntegratedTotals(IntegratedTotals original)
-            : base(original.ObjectAddress)
-        {
-            bcr = new BinaryCounterReading(original.bcr);
-        }
-
-        internal IntegratedTotals(ApplicationLayerParameters parameters, byte[] msg, int startIndex, bool isSquence)
-            : base(parameters, msg, startIndex, isSquence)
-        {
-            if (!isSquence)
-                startIndex += parameters.SizeOfIOA; /* skip IOA */
-
-            if ((msg.Length - startIndex) < GetEncodedSize())
-                throw new ASDUParsingException("Message too small");
-
-            bcr = new BinaryCounterReading(msg, startIndex);
-        }
-
-        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
-        {
-            base.Encode(frame, parameters, isSequence);
-
-            frame.AppendBytes(bcr.AsSpan());
-        }
+        _bcr = bcr;
     }
 
-    /// <summary>
-    /// Integrated totals information object with CP24Time2a time tag (M_IT_TA_1)
-    /// </summary>
-    public class IntegratedTotalsWithCP24Time2a : IntegratedTotals
+    public IntegratedTotals(IntegratedTotals original)
+        : base(original.ObjectAddress)
     {
-
-        override public TypeID Type
-        {
-            get
-            {
-                return TypeID.M_IT_TA_1;
-            }
-        }
-
-        override public bool SupportsSequence
-        {
-            get
-            {
-                return true;
-            }
-        }
-
-        private CP24Time2a timestamp;
-
-        public CP24Time2a Timestamp
-        {
-            get
-            {
-                return timestamp;
-            }
-        }
-
-        public IntegratedTotalsWithCP24Time2a(int ioa, BinaryCounterReading bcr, CP24Time2a timestamp)
-            : base(ioa, bcr)
-        {
-            this.timestamp = timestamp;
-        }
-
-        public IntegratedTotalsWithCP24Time2a(IntegratedTotalsWithCP24Time2a original)
-            : base(original)
-        {
-            timestamp = new CP24Time2a(timestamp);
-        }
-
-        public IntegratedTotalsWithCP24Time2a(IntegratedTotals original)
-            : base(original)
-        {
-            timestamp = new CP24Time2a();
-        }
-
-        internal IntegratedTotalsWithCP24Time2a(ApplicationLayerParameters parameters, byte[] msg, int startIndex, bool isSequence)
-            : base(parameters, msg, startIndex, isSequence)
-        {
-            if (!isSequence)
-                startIndex += parameters.SizeOfIOA; /* skip IOA */
-
-            if ((msg.Length - startIndex) < GetEncodedSize())
-                throw new ASDUParsingException("Message too small");
-
-            startIndex += 5; /* BCR */
-
-            timestamp = new CP24Time2a(msg, startIndex);
-        }
-
-        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
-        {
-            base.Encode(frame, parameters, isSequence);
-
-            frame.AppendBytes(timestamp.AsSpan());
-        }
+        _bcr = new BinaryCounterReading(original._bcr);
     }
 
-    /// <summary>
-    /// Integrated totals information object with CP56Time2a time tag (M_IT_TB_1)
-    /// </summary>
-    public class IntegratedTotalsWithCP56Time2a : IntegratedTotals
+    internal IntegratedTotals(ApplicationLayerParameters parameters, ReadOnlySpan<byte> msg, int startIndex, bool isSequence)
+        : base(parameters, msg, startIndex, isSequence)
     {
-
-        override public TypeID Type
+        if (!isSequence)
         {
-            get
-            {
-                return TypeID.M_IT_TB_1;
-            }
+            startIndex += parameters.SizeOfIOA; /* 跳过信息体地址 */
         }
 
-        override public bool SupportsSequence
+        if ((msg.Length - startIndex) < GetEncodedSize())
         {
-            get
-            {
-                return true;
-            }
+            throw new ASDUParsingException("Message too small");
         }
 
-        private CP56Time2a timestamp;
+        _bcr = new BinaryCounterReading(msg, startIndex);
+    }
 
-        public CP56Time2a Timestamp
-        {
-            get
-            {
-                return timestamp;
-            }
-        }
+    internal override bool HasAsduWriterBody => true;
 
-        public IntegratedTotalsWithCP56Time2a(int ioa, BinaryCounterReading bcr, CP56Time2a timestamp)
-            : base(ioa, bcr)
-        {
-            this.timestamp = timestamp;
-        }
+    protected internal override void EncodeBody(ref AsduWriter w, ApplicationLayerParameters parameters, bool isSequence)
+    {
+        base.EncodeBody(ref w, parameters, isSequence);
 
-        public IntegratedTotalsWithCP56Time2a(IntegratedTotalsWithCP56Time2a original)
-            : base(original)
-        {
-            timestamp = new CP56Time2a(original.timestamp);
-        }
-
-        public IntegratedTotalsWithCP56Time2a(IntegratedTotals original)
-            : base(original)
-        {
-            timestamp = new CP56Time2a(DateTime.Now);
-        }
-
-        public IntegratedTotalsWithCP56Time2a(ApplicationLayerParameters parameters, byte[] msg, int startIndex, bool isSequence)
-            : base(parameters, msg, startIndex, isSequence)
-        {
-            if (!isSequence)
-                startIndex += parameters.SizeOfIOA; /* skip IOA */
-
-            if ((msg.Length - startIndex) < GetEncodedSize())
-                throw new ASDUParsingException("Message too small");
-
-            startIndex += 5; /* BCR */
-
-            timestamp = new CP56Time2a(msg, startIndex);
-        }
-
-        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
-        {
-            base.Encode(frame, parameters, isSequence);
-
-            frame.AppendBytes(timestamp.AsSpan());
-        }
+        w.WriteBytes(_bcr.AsSpan());
     }
 }
 
+/// <summary>
+/// 带 CP24Time2a 时标的累计量信息体（M_IT_TA_1）。
+/// </summary>
+public class IntegratedTotalsWithCP24Time2a : IntegratedTotals
+{
+    private CP24Time2a _timestamp;
+
+    /// <summary>CP24Time2a 时标。</summary>
+    public CP24Time2a Timestamp => _timestamp;
+
+    public override TypeID Type => TypeID.M_IT_TA_1;
+
+    public override bool SupportsSequence => true;
+
+    public IntegratedTotalsWithCP24Time2a(int ioa, BinaryCounterReading bcr, CP24Time2a timestamp)
+        : base(ioa, bcr)
+    {
+        _timestamp = timestamp;
+    }
+
+    public IntegratedTotalsWithCP24Time2a(IntegratedTotalsWithCP24Time2a original)
+        : base(original)
+    {
+        _timestamp = new CP24Time2a(original._timestamp);
+    }
+
+    public IntegratedTotalsWithCP24Time2a(IntegratedTotals original)
+        : base(original)
+    {
+        _timestamp = new CP24Time2a();
+    }
+
+    internal IntegratedTotalsWithCP24Time2a(ApplicationLayerParameters parameters, ReadOnlySpan<byte> msg, int startIndex, bool isSequence)
+        : base(parameters, msg, startIndex, isSequence)
+    {
+        if (!isSequence)
+        {
+            startIndex += parameters.SizeOfIOA; /* 跳过信息体地址 */
+        }
+
+        if ((msg.Length - startIndex) < GetEncodedSize())
+        {
+            throw new ASDUParsingException("Message too small");
+        }
+
+        startIndex += 5; /* 跳过 BCR */
+
+        _timestamp = new CP24Time2a(msg, startIndex);
+    }
+
+    internal override bool HasAsduWriterBody => true;
+
+    protected internal override void EncodeBody(ref AsduWriter w, ApplicationLayerParameters parameters, bool isSequence)
+    {
+        base.EncodeBody(ref w, parameters, isSequence);
+
+        w.WriteBytes(_timestamp.AsSpan());
+    }
+}
+
+/// <summary>
+/// 带 CP56Time2a 时标的累计量信息体（M_IT_TB_1）。
+/// </summary>
+public class IntegratedTotalsWithCP56Time2a : IntegratedTotals
+{
+    private CP56Time2a _timestamp;
+
+    /// <summary>CP56Time2a 时标。</summary>
+    public CP56Time2a Timestamp => _timestamp;
+
+    public override TypeID Type => TypeID.M_IT_TB_1;
+
+    public override bool SupportsSequence => true;
+
+    public IntegratedTotalsWithCP56Time2a(int ioa, BinaryCounterReading bcr, CP56Time2a timestamp)
+        : base(ioa, bcr)
+    {
+        _timestamp = timestamp;
+    }
+
+    public IntegratedTotalsWithCP56Time2a(IntegratedTotalsWithCP56Time2a original)
+        : base(original)
+    {
+        _timestamp = new CP56Time2a(original._timestamp);
+    }
+
+    public IntegratedTotalsWithCP56Time2a(IntegratedTotals original)
+        : base(original)
+    {
+        _timestamp = new CP56Time2a(DateTime.Now);
+    }
+
+    internal IntegratedTotalsWithCP56Time2a(ApplicationLayerParameters parameters, ReadOnlySpan<byte> msg, int startIndex, bool isSequence)
+        : base(parameters, msg, startIndex, isSequence)
+    {
+        if (!isSequence)
+        {
+            startIndex += parameters.SizeOfIOA; /* 跳过信息体地址 */
+        }
+
+        if ((msg.Length - startIndex) < GetEncodedSize())
+        {
+            throw new ASDUParsingException("Message too small");
+        }
+
+        startIndex += 5; /* 跳过 BCR */
+
+        _timestamp = new CP56Time2a(msg, startIndex);
+    }
+
+    internal override bool HasAsduWriterBody => true;
+
+    protected internal override void EncodeBody(ref AsduWriter w, ApplicationLayerParameters parameters, bool isSequence)
+    {
+        base.EncodeBody(ref w, parameters, isSequence);
+
+        w.WriteBytes(_timestamp.AsSpan());
+    }
+}

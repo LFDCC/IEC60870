@@ -4,11 +4,8 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using IEC60870.Core.InformationObjects;
 using IEC60870.Core;
 using IEC60870.CS104;
-using IEC60870.Core.Quality;
-using IEC60870.Core.Time;
 
 
 
@@ -33,7 +30,7 @@ namespace cs104_server3
         {
             get
             {
-                return this.value;
+                return value;
             }
             set
             {
@@ -45,7 +42,9 @@ namespace cs104_server3
             : base(parameters, msg, startIndex, isSequence)
         {
             if (!isSequence)
+            {
                 startIndex += parameters.SizeOfIOA; /* skip IOA */
+            }
 
             value = msg[startIndex++];
             value += ((int)msg[startIndex++] * 0x100);
@@ -175,7 +174,7 @@ namespace cs104_server3
 
         private static void HandleAsdu(Iec104Session session, in AsduView view)
         {
-            byte[] raw = view.Raw.ToArray();
+            var raw = view.Raw.ToArray();
             ASDU asdu = new ASDU(_server.Parameters, raw, 0, raw.Length);
 
             if (asdu.TypeId == TypeID.C_IC_NA_1)
@@ -190,8 +189,14 @@ namespace cs104_server3
 
                 _ = Task.Run(async () =>
                 {
-                    try { await session.SendAsync(BuildActCon(asdu, _server.Parameters)); }
-                    catch (Exception ex) { Console.WriteLine("Command response error: " + ex.Message); }
+                    try
+                    {
+                        await session.SendAsync(BuildActCon(asdu, _server.Parameters));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("Command response error: " + ex.Message);
+                    }
                 });
             }
             else if (asdu.TypeId == TypeID.C_CS_NA_1)
@@ -201,8 +206,14 @@ namespace cs104_server3
 
                 _ = Task.Run(async () =>
                 {
-                    try { await session.SendAsync(BuildActCon(asdu, _server.Parameters)); }
-                    catch (Exception ex) { Console.WriteLine("Command response error: " + ex.Message); }
+                    try
+                    {
+                        await session.SendAsync(BuildActCon(asdu, _server.Parameters));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("Command response error: " + ex.Message);
+                    }
                 });
             }
             else
@@ -216,7 +227,7 @@ namespace cs104_server3
 
         public static async Task Main(string[] args)
         {
-            bool running = true;
+            var running = true;
 
             Console.CancelKeyPress += (sender, e) =>
             {
@@ -242,7 +253,7 @@ namespace cs104_server3
 
             Console.WriteLine("Server started on port 2404. Press Ctrl+C to stop.");
 
-            int waitTime = 1000;
+            var waitTime = 1000;
 
             while (running)
             {
@@ -264,6 +275,7 @@ namespace cs104_server3
             }
             Console.ReadKey();
             Console.WriteLine("Stop server");
+            server.Dispose();
         }
     }
 }

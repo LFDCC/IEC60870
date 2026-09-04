@@ -1,543 +1,408 @@
-/*
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+//------------------------------------------------------------------------------
+//  IEC60870.Core.NET — 设定值命令（C_SE_* 与 C_BO_*）
+//
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
 using System;
-using IEC60870.Core.Time;
+using System.Buffers.Binary;
 
+namespace IEC60870.Core;
 
-
-namespace IEC60870.Core.InformationObjects
+/// <summary>
+/// 归一化设定值命令（C_SE_NA_1）。编码：2 字节归一化值 + 1 字节 QOS。
+/// </summary>
+public class SetpointCommandNormalized : InformationObject
 {
+    private ScaledValue _scaledValue;
+    private SetpointCommandQualifier _qos;
 
-    public class SetpointCommandNormalized : InformationObject
+    /// <summary>原始短整型设定值。</summary>
+    public short RawValue
     {
-
-        override public TypeID Type
-        {
-            get
-            {
-                return TypeID.C_SE_NA_1;
-            }
-        }
-
-        override public bool SupportsSequence
-        {
-            get
-            {
-                return false;
-            }
-        }
-
-        private ScaledValue scaledValue;
-
-        public short RawValue
-        {
-            get
-            {
-                return scaledValue.ShortValue;
-            }
-            set
-            {
-                scaledValue.ShortValue = value;
-            }
-        }
-
-        public float NormalizedValue
-        {
-            get
-            {
-                return scaledValue.GetNormalizedValue();
-            }
-            set
-            {
-                scaledValue.SetScaledFromNormalizedValue(value);
-            }
-        }
-
-        private SetpointCommandQualifier qos;
-
-        public SetpointCommandQualifier QOS
-        {
-            get
-            {
-                return qos;
-            }
-        }
-
-        public SetpointCommandNormalized(int objectAddress, float value, SetpointCommandQualifier qos)
-            : base(objectAddress)
-        {
-            scaledValue = new ScaledValue((int)((value * 32767.5) - 0.5));
-            this.qos = qos;
-        }
-
-        public SetpointCommandNormalized(int ObjectAddress, short value, SetpointCommandQualifier qos)
-            : base(ObjectAddress)
-        {
-            scaledValue = new ScaledValue(value);
-            this.qos = qos;
-        }
-
-        internal SetpointCommandNormalized(ApplicationLayerParameters parameters, byte[] msg, int startIndex)
-            : base(parameters, msg, startIndex, false)
-        {
-            startIndex += parameters.SizeOfIOA; /* skip IOA */
-
-            if ((msg.Length - startIndex) < GetEncodedSize())
-                throw new ASDUParsingException("Message too small");
-
-            scaledValue = new ScaledValue(msg, startIndex);
-            startIndex += 2;
-
-            qos = new SetpointCommandQualifier(msg[startIndex++]);
-        }
-
-        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
-        {
-            base.Encode(frame, parameters, isSequence);
-
-            frame.AppendBytes(scaledValue.AsSpan());
-
-            frame.SetNextByte(qos.GetEncodedValue());
-        }
+        get => _scaledValue.ShortValue;
+        set => _scaledValue.ShortValue = value;
     }
 
-    public class SetpointCommandNormalizedWithCP56Time2a : SetpointCommandNormalized
+    /// <summary>归一化浮点设定值（-1.0 … +1.0 附近）。</summary>
+    public float NormalizedValue
     {
-
-        override public TypeID Type
-        {
-            get
-            {
-                return TypeID.C_SE_TA_1;
-            }
-        }
-
-        override public bool SupportsSequence
-        {
-            get
-            {
-                return false;
-            }
-        }
-
-        private CP56Time2a timestamp;
-
-        public CP56Time2a Timestamp
-        {
-            get
-            {
-                return timestamp;
-            }
-        }
-
-        public SetpointCommandNormalizedWithCP56Time2a(int objectAddress, float value, SetpointCommandQualifier qos, CP56Time2a timestamp)
-            : base(objectAddress, value, qos)
-        {
-            this.timestamp = timestamp;
-        }
-
-        public SetpointCommandNormalizedWithCP56Time2a(int objectAddress, short value, SetpointCommandQualifier qos, CP56Time2a timestamp)
-            : base(objectAddress, value, qos)
-        {
-            this.timestamp = timestamp;
-        }
-
-        internal SetpointCommandNormalizedWithCP56Time2a(ApplicationLayerParameters parameters, byte[] msg, int startIndex)
-            : base(parameters, msg, startIndex)
-        {
-            startIndex += parameters.SizeOfIOA; /* skip IOA */
-
-            if ((msg.Length - startIndex) < GetEncodedSize())
-                throw new ASDUParsingException("Message too small");
-
-            startIndex += 3; /* normalized value + qualifier */
-
-            timestamp = new CP56Time2a(msg, startIndex);
-        }
-
-        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
-        {
-            base.Encode(frame, parameters, isSequence);
-
-            frame.AppendBytes(timestamp.AsSpan());
-        }
+        get => _scaledValue.GetNormalizedValue();
+        set => _scaledValue.SetScaledFromNormalizedValue(value);
     }
 
-    public class SetpointCommandScaled : InformationObject
+    /// <summary>设定值限定符。</summary>
+    public SetpointCommandQualifier QOS => _qos;
+
+    public override TypeID Type => TypeID.C_SE_NA_1;
+
+    public override bool SupportsSequence => false;
+
+    public SetpointCommandNormalized(int objectAddress, float value, SetpointCommandQualifier qos)
+        : base(objectAddress)
     {
-
-        override public TypeID Type
-        {
-            get
-            {
-                return TypeID.C_SE_NB_1;
-            }
-        }
-
-        override public bool SupportsSequence
-        {
-            get
-            {
-                return false;
-            }
-        }
-
-        private ScaledValue scaledValue;
-
-        public ScaledValue ScaledValue
-        {
-            get
-            {
-                return scaledValue;
-            }
-        }
-
-        private SetpointCommandQualifier qos;
-
-        public SetpointCommandQualifier QOS
-        {
-            get
-            {
-                return qos;
-            }
-        }
-
-        public SetpointCommandScaled(int objectAddress, ScaledValue value, SetpointCommandQualifier qos)
-            : base(objectAddress)
-        {
-            scaledValue = value;
-            this.qos = qos;
-        }
-
-        internal SetpointCommandScaled(ApplicationLayerParameters parameters, byte[] msg, int startIndex)
-            : base(parameters, msg, startIndex, false)
-        {
-            startIndex += parameters.SizeOfIOA; /* skip IOA */
-
-            if ((msg.Length - startIndex) < GetEncodedSize())
-                throw new ASDUParsingException("Message too small");
-
-            scaledValue = new ScaledValue(msg, startIndex);
-            startIndex += 2;
-
-            qos = new SetpointCommandQualifier(msg[startIndex++]);
-        }
-
-        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
-        {
-            base.Encode(frame, parameters, isSequence);
-
-            frame.AppendBytes(scaledValue.AsSpan());
-
-            frame.SetNextByte(qos.GetEncodedValue());
-        }
+        _scaledValue = new ScaledValue((int)((value * 32767.5) - 0.5));
+        _qos = qos;
     }
 
-    public class SetpointCommandScaledWithCP56Time2a : SetpointCommandScaled
+    public SetpointCommandNormalized(int objectAddress, short value, SetpointCommandQualifier qos)
+        : base(objectAddress)
     {
-
-        override public TypeID Type
-        {
-            get
-            {
-                return TypeID.C_SE_TB_1;
-            }
-        }
-
-        override public bool SupportsSequence
-        {
-            get
-            {
-                return false;
-            }
-        }
-
-        private CP56Time2a timestamp;
-
-        public CP56Time2a Timestamp
-        {
-            get
-            {
-                return timestamp;
-            }
-        }
-
-        public SetpointCommandScaledWithCP56Time2a(int objectAddress, ScaledValue value, SetpointCommandQualifier qos, CP56Time2a timestamp)
-            : base(objectAddress, value, qos)
-        {
-            this.timestamp = timestamp;
-        }
-
-        internal SetpointCommandScaledWithCP56Time2a(ApplicationLayerParameters parameters, byte[] msg, int startIndex)
-            : base(parameters, msg, startIndex)
-        {
-            startIndex += parameters.SizeOfIOA; /* skip IOA */
-
-            if ((msg.Length - startIndex) < GetEncodedSize())
-                throw new ASDUParsingException("Message too small");
-
-            startIndex += 3; /* scaled value + qualifier */
-
-            timestamp = new CP56Time2a(msg, startIndex);
-        }
-
-        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
-        {
-            base.Encode(frame, parameters, isSequence);
-
-            frame.AppendBytes(timestamp.AsSpan());
-        }
+        _scaledValue = new ScaledValue(value);
+        _qos = qos;
     }
 
-    public class SetpointCommandShort : InformationObject
+    internal SetpointCommandNormalized(ApplicationLayerParameters parameters, ReadOnlySpan<byte> msg, int startIndex)
+        : base(parameters, msg, startIndex, false)
     {
+        startIndex += parameters.SizeOfIOA; /* 跳过信息体地址 */
 
-        override public TypeID Type
+        if ((msg.Length - startIndex) < GetEncodedSize())
         {
-            get
-            {
-                return TypeID.C_SE_NC_1;
-            }
+            throw new ASDUParsingException("Message too small");
         }
 
-        override public bool SupportsSequence
-        {
-            get
-            {
-                return false;
-            }
-        }
-
-        private float value;
-
-        public float Value
-        {
-            get
-            {
-                return value;
-            }
-        }
-
-        private SetpointCommandQualifier qos;
-
-        public SetpointCommandQualifier QOS
-        {
-            get
-            {
-                return qos;
-            }
-        }
-
-        public SetpointCommandShort(int objectAddress, float value, SetpointCommandQualifier qos)
-            : base(objectAddress)
-        {
-            this.value = value;
-            this.qos = qos;
-        }
-
-        internal SetpointCommandShort(ApplicationLayerParameters parameters, byte[] msg, int startIndex)
-            : base(parameters, msg, startIndex, false)
-        {
-            startIndex += parameters.SizeOfIOA; /* skip IOA */
-
-            if ((msg.Length - startIndex) < GetEncodedSize())
-                throw new ASDUParsingException("Message too small");
-
-            /* parse float value */
-            value = System.BitConverter.ToSingle(msg, startIndex);
-            startIndex += 4;
-
-            qos = new SetpointCommandQualifier(msg[startIndex++]);
-        }
-
-        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
-        {
-            base.Encode(frame, parameters, isSequence);
-
-            frame.AppendBytes(System.BitConverter.GetBytes(value));
-
-            frame.SetNextByte(qos.GetEncodedValue());
-        }
+        _scaledValue = new ScaledValue(msg, startIndex);
+        _qos = new SetpointCommandQualifier(msg[startIndex + 2]);
     }
 
-    public class SetpointCommandShortWithCP56Time2a : SetpointCommandShort
+    internal override bool HasAsduWriterBody => true;
+
+    protected internal override void EncodeBody(ref AsduWriter w, ApplicationLayerParameters parameters, bool isSequence)
     {
+        base.EncodeBody(ref w, parameters, isSequence);
 
-        override public TypeID Type
-        {
-            get
-            {
-                return TypeID.C_SE_TC_1;
-            }
-        }
+        w.WriteBytes(_scaledValue.AsSpan());
+        w.WriteByte(_qos.GetEncodedValue());
+    }
+}
 
-        override public bool SupportsSequence
-        {
-            get
-            {
-                return false;
-            }
-        }
+/// <summary>
+/// 带 CP56Time2a 时标的归一化设定值命令（C_SE_TA_1）。
+/// </summary>
+public class SetpointCommandNormalizedWithCP56Time2a : SetpointCommandNormalized
+{
+    private CP56Time2a _timestamp;
 
-        private CP56Time2a timestamp;
+    /// <summary>CP56Time2a 时标。</summary>
+    public CP56Time2a Timestamp => _timestamp;
 
-        public CP56Time2a Timestamp
-        {
-            get
-            {
-                return timestamp;
-            }
-        }
+    public override TypeID Type => TypeID.C_SE_TA_1;
 
-        public SetpointCommandShortWithCP56Time2a(int objectAddress, float value, SetpointCommandQualifier qos, CP56Time2a timestamp)
-            : base(objectAddress, value, qos)
-        {
-            this.timestamp = timestamp;
-        }
+    public override bool SupportsSequence => false;
 
-        internal SetpointCommandShortWithCP56Time2a(ApplicationLayerParameters parameters, byte[] msg, int startIndex)
-            : base(parameters, msg, startIndex)
-        {
-            startIndex += parameters.SizeOfIOA;
-
-            if ((msg.Length - startIndex) < GetEncodedSize())
-                throw new ASDUParsingException("Message too small");
-
-            startIndex += 5; /* skip IOA + float + QOS*/
-
-            timestamp = new CP56Time2a(msg, startIndex);
-        }
-
-        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
-        {
-            base.Encode(frame, parameters, isSequence);
-
-            frame.AppendBytes(timestamp.AsSpan());
-        }
+    public SetpointCommandNormalizedWithCP56Time2a(int objectAddress, float value, SetpointCommandQualifier qos, CP56Time2a timestamp)
+        : base(objectAddress, value, qos)
+    {
+        _timestamp = timestamp;
     }
 
-
-    public class Bitstring32Command : InformationObject
+    public SetpointCommandNormalizedWithCP56Time2a(int objectAddress, short value, SetpointCommandQualifier qos, CP56Time2a timestamp)
+        : base(objectAddress, value, qos)
     {
-
-        override public TypeID Type
-        {
-            get
-            {
-                return TypeID.C_BO_NA_1;
-            }
-        }
-
-        override public bool SupportsSequence
-        {
-            get
-            {
-                return false;
-            }
-        }
-
-        private UInt32 value;
-
-        public UInt32 Value
-        {
-            get
-            {
-                return value;
-            }
-        }
-
-        public Bitstring32Command(int objectAddress, UInt32 bitstring)
-            : base(objectAddress)
-        {
-            value = bitstring;
-        }
-
-        internal Bitstring32Command(ApplicationLayerParameters parameters, byte[] msg, int startIndex)
-            : base(parameters, msg, startIndex, false)
-        {
-            startIndex += parameters.SizeOfIOA; /* skip IOA */
-
-            if ((msg.Length - startIndex) < GetEncodedSize())
-                throw new ASDUParsingException("Message too small");
-
-            value = msg[startIndex++];
-            value += ((uint)msg[startIndex++] * 0x100);
-            value += ((uint)msg[startIndex++] * 0x10000);
-            value += ((uint)msg[startIndex++] * 0x1000000);
-        }
-
-        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
-        {
-            base.Encode(frame, parameters, isSequence);
-
-            frame.SetNextByte((byte)(value % 256));
-            frame.SetNextByte((byte)((value / 0x100) % 256));
-            frame.SetNextByte((byte)((value / 0x10000) % 256));
-            frame.SetNextByte((byte)((value / 0x1000000) % 256));
-        }
+        _timestamp = timestamp;
     }
 
-    public class Bitstring32CommandWithCP56Time2a : Bitstring32Command
+    internal SetpointCommandNormalizedWithCP56Time2a(ApplicationLayerParameters parameters, ReadOnlySpan<byte> msg, int startIndex)
+        : base(parameters, msg, startIndex)
     {
+        startIndex += parameters.SizeOfIOA + 3; /* 跳过信息体地址 + 归一化值(2) + QOS(1) */
 
-        override public TypeID Type
+        if ((msg.Length - startIndex) < GetEncodedSize() - 3)
         {
-            get
-            {
-                return TypeID.C_BO_TA_1;
-            }
+            throw new ASDUParsingException("Message too small");
         }
 
-        override public bool SupportsSequence
+        _timestamp = new CP56Time2a(msg, startIndex);
+    }
+
+    internal override bool HasAsduWriterBody => true;
+
+    protected internal override void EncodeBody(ref AsduWriter w, ApplicationLayerParameters parameters, bool isSequence)
+    {
+        base.EncodeBody(ref w, parameters, isSequence);
+
+        w.WriteBytes(_timestamp.AsSpan());
+    }
+}
+
+/// <summary>
+/// 缩放值设定值命令（C_SE_NB_1）。编码：2 字节缩放值 + 1 字节 QOS。
+/// </summary>
+public class SetpointCommandScaled : InformationObject
+{
+    private ScaledValue _scaledValue;
+    private SetpointCommandQualifier _qos;
+
+    /// <summary>缩放值。</summary>
+    public ScaledValue ScaledValue => _scaledValue;
+
+    /// <summary>设定值限定符。</summary>
+    public SetpointCommandQualifier QOS => _qos;
+
+    public override TypeID Type => TypeID.C_SE_NB_1;
+
+    public override bool SupportsSequence => false;
+
+    public SetpointCommandScaled(int objectAddress, ScaledValue value, SetpointCommandQualifier qos)
+        : base(objectAddress)
+    {
+        _scaledValue = value;
+        _qos = qos;
+    }
+
+    internal SetpointCommandScaled(ApplicationLayerParameters parameters, ReadOnlySpan<byte> msg, int startIndex)
+        : base(parameters, msg, startIndex, false)
+    {
+        startIndex += parameters.SizeOfIOA; /* 跳过信息体地址 */
+
+        if ((msg.Length - startIndex) < GetEncodedSize())
         {
-            get
-            {
-                return false;
-            }
+            throw new ASDUParsingException("Message too small");
         }
 
-        private CP56Time2a timestamp;
+        _scaledValue = new ScaledValue(msg, startIndex);
+        _qos = new SetpointCommandQualifier(msg[startIndex + 2]);
+    }
 
-        public CP56Time2a Timestamp
+    internal override bool HasAsduWriterBody => true;
+
+    protected internal override void EncodeBody(ref AsduWriter w, ApplicationLayerParameters parameters, bool isSequence)
+    {
+        base.EncodeBody(ref w, parameters, isSequence);
+
+        w.WriteBytes(_scaledValue.AsSpan());
+        w.WriteByte(_qos.GetEncodedValue());
+    }
+}
+
+/// <summary>
+/// 带 CP56Time2a 时标的缩放值设定值命令（C_SE_TB_1）。
+/// </summary>
+public class SetpointCommandScaledWithCP56Time2a : SetpointCommandScaled
+{
+    private CP56Time2a _timestamp;
+
+    /// <summary>CP56Time2a 时标。</summary>
+    public CP56Time2a Timestamp => _timestamp;
+
+    public override TypeID Type => TypeID.C_SE_TB_1;
+
+    public override bool SupportsSequence => false;
+
+    public SetpointCommandScaledWithCP56Time2a(int objectAddress, ScaledValue value, SetpointCommandQualifier qos, CP56Time2a timestamp)
+        : base(objectAddress, value, qos)
+    {
+        _timestamp = timestamp;
+    }
+
+    internal SetpointCommandScaledWithCP56Time2a(ApplicationLayerParameters parameters, ReadOnlySpan<byte> msg, int startIndex)
+        : base(parameters, msg, startIndex)
+    {
+        startIndex += parameters.SizeOfIOA + 3; /* 跳过信息体地址 + 缩放值(2) + QOS(1) */
+
+        if ((msg.Length - startIndex) < GetEncodedSize() - 3)
         {
-            get
-            {
-                return timestamp;
-            }
+            throw new ASDUParsingException("Message too small");
         }
 
-        public Bitstring32CommandWithCP56Time2a(int objectAddress, UInt32 bitstring, CP56Time2a timestamp)
-            : base(objectAddress, bitstring)
+        _timestamp = new CP56Time2a(msg, startIndex);
+    }
+
+    internal override bool HasAsduWriterBody => true;
+
+    protected internal override void EncodeBody(ref AsduWriter w, ApplicationLayerParameters parameters, bool isSequence)
+    {
+        base.EncodeBody(ref w, parameters, isSequence);
+
+        w.WriteBytes(_timestamp.AsSpan());
+    }
+}
+
+/// <summary>
+/// 短浮点设定值命令（C_SE_NC_1）。编码：4 字节 IEEE 754 单精度 + 1 字节 QOS。
+/// </summary>
+public class SetpointCommandShort : InformationObject
+{
+    private float _value;
+    private SetpointCommandQualifier _qos;
+
+    /// <summary>浮点设定值。</summary>
+    public float Value => _value;
+
+    /// <summary>设定值限定符。</summary>
+    public SetpointCommandQualifier QOS => _qos;
+
+    public override TypeID Type => TypeID.C_SE_NC_1;
+
+    public override bool SupportsSequence => false;
+
+    public SetpointCommandShort(int objectAddress, float value, SetpointCommandQualifier qos)
+        : base(objectAddress)
+    {
+        _value = value;
+        _qos = qos;
+    }
+
+    internal SetpointCommandShort(ApplicationLayerParameters parameters, ReadOnlySpan<byte> msg, int startIndex)
+        : base(parameters, msg, startIndex, false)
+    {
+        startIndex += parameters.SizeOfIOA; /* 跳过信息体地址 */
+
+        if ((msg.Length - startIndex) < GetEncodedSize())
         {
-            this.timestamp = timestamp;
+            throw new ASDUParsingException("Message too small");
         }
 
-        internal Bitstring32CommandWithCP56Time2a(ApplicationLayerParameters parameters, byte[] msg, int startIndex)
-            : base(parameters, msg, startIndex)
+        _value = BinaryPrimitives.ReadSingleLittleEndian(msg.Slice(startIndex, 4));
+
+        _qos = new SetpointCommandQualifier(msg[startIndex + 4]);
+    }
+
+    internal override bool HasAsduWriterBody => true;
+
+    protected internal override void EncodeBody(ref AsduWriter w, ApplicationLayerParameters parameters, bool isSequence)
+    {
+        base.EncodeBody(ref w, parameters, isSequence);
+
+        // IEEE 754 单精度按小端 4 字节写入。
+        w.WriteIntLittleEndian(BitConverter.SingleToInt32Bits(_value), 4);
+
+        w.WriteByte(_qos.GetEncodedValue());
+    }
+}
+
+/// <summary>
+/// 带 CP56Time2a 时标的短浮点设定值命令（C_SE_TC_1）。
+/// </summary>
+public class SetpointCommandShortWithCP56Time2a : SetpointCommandShort
+{
+    private CP56Time2a _timestamp;
+
+    /// <summary>CP56Time2a 时标。</summary>
+    public CP56Time2a Timestamp => _timestamp;
+
+    public override TypeID Type => TypeID.C_SE_TC_1;
+
+    public override bool SupportsSequence => false;
+
+    public SetpointCommandShortWithCP56Time2a(int objectAddress, float value, SetpointCommandQualifier qos, CP56Time2a timestamp)
+        : base(objectAddress, value, qos)
+    {
+        _timestamp = timestamp;
+    }
+
+    internal SetpointCommandShortWithCP56Time2a(ApplicationLayerParameters parameters, ReadOnlySpan<byte> msg, int startIndex)
+        : base(parameters, msg, startIndex)
+    {
+        startIndex += parameters.SizeOfIOA + 5; /* 跳过信息体地址 + 浮点值(4) + QOS(1) */
+
+        if ((msg.Length - startIndex) < GetEncodedSize() - 5)
         {
-            startIndex += parameters.SizeOfIOA; /* skip IOA */
-
-            if ((msg.Length - startIndex) < GetEncodedSize())
-                throw new ASDUParsingException("Message too small");
-
-            startIndex += 4; /* bitstring */
-
-            timestamp = new CP56Time2a(msg, startIndex);
+            throw new ASDUParsingException("Message too small");
         }
 
-        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
-        {
-            base.Encode(frame, parameters, isSequence);
+        _timestamp = new CP56Time2a(msg, startIndex);
+    }
 
-            frame.AppendBytes(timestamp.AsSpan());
+    internal override bool HasAsduWriterBody => true;
+
+    protected internal override void EncodeBody(ref AsduWriter w, ApplicationLayerParameters parameters, bool isSequence)
+    {
+        base.EncodeBody(ref w, parameters, isSequence);
+
+        w.WriteBytes(_timestamp.AsSpan());
+    }
+}
+
+/// <summary>
+/// 位串命令（C_BO_NA_1）。编码：4 字节小端 UInt32。
+/// </summary>
+public class Bitstring32Command : InformationObject
+{
+    private UInt32 _value;
+
+    /// <summary>32 位位串值。</summary>
+    public UInt32 Value => _value;
+
+    public override TypeID Type => TypeID.C_BO_NA_1;
+
+    public override bool SupportsSequence => false;
+
+    public Bitstring32Command(int objectAddress, UInt32 bitstring)
+        : base(objectAddress)
+    {
+        _value = bitstring;
+    }
+
+    internal Bitstring32Command(ApplicationLayerParameters parameters, ReadOnlySpan<byte> msg, int startIndex)
+        : base(parameters, msg, startIndex, false)
+    {
+        startIndex += parameters.SizeOfIOA; /* 跳过信息体地址 */
+
+        if ((msg.Length - startIndex) < GetEncodedSize())
+        {
+            throw new ASDUParsingException("Message too small");
         }
+
+        _value = msg[startIndex]
+                 | ((uint)msg[startIndex + 1] << 8)
+                 | ((uint)msg[startIndex + 2] << 16)
+                 | ((uint)msg[startIndex + 3] << 24);
+    }
+
+    internal override bool HasAsduWriterBody => true;
+
+    protected internal override void EncodeBody(ref AsduWriter w, ApplicationLayerParameters parameters, bool isSequence)
+    {
+        base.EncodeBody(ref w, parameters, isSequence);
+
+        w.WriteByte((byte)_value);
+        w.WriteByte((byte)(_value >> 8));
+        w.WriteByte((byte)(_value >> 16));
+        w.WriteByte((byte)(_value >> 24));
+    }
+}
+
+/// <summary>
+/// 带 CP56Time2a 时标的位串命令（C_BO_TA_1）。
+/// </summary>
+public class Bitstring32CommandWithCP56Time2a : Bitstring32Command
+{
+    private CP56Time2a _timestamp;
+
+    /// <summary>CP56Time2a 时标。</summary>
+    public CP56Time2a Timestamp => _timestamp;
+
+    public override TypeID Type => TypeID.C_BO_TA_1;
+
+    public override bool SupportsSequence => false;
+
+    public Bitstring32CommandWithCP56Time2a(int objectAddress, UInt32 bitstring, CP56Time2a timestamp)
+        : base(objectAddress, bitstring)
+    {
+        _timestamp = timestamp;
+    }
+
+    internal Bitstring32CommandWithCP56Time2a(ApplicationLayerParameters parameters, ReadOnlySpan<byte> msg, int startIndex)
+        : base(parameters, msg, startIndex)
+    {
+        startIndex += parameters.SizeOfIOA + 4; /* 跳过信息体地址 + 位串(4) */
+
+        if ((msg.Length - startIndex) < GetEncodedSize() - 4)
+        {
+            throw new ASDUParsingException("Message too small");
+        }
+
+        _timestamp = new CP56Time2a(msg, startIndex);
+    }
+
+    internal override bool HasAsduWriterBody => true;
+
+    protected internal override void EncodeBody(ref AsduWriter w, ApplicationLayerParameters parameters, bool isSequence)
+    {
+        base.EncodeBody(ref w, parameters, isSequence);
+
+        w.WriteBytes(_timestamp.AsSpan());
     }
 }

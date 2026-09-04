@@ -16,7 +16,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using IEC60870.Core;
 using IEC60870.CS104;
-using IEC60870.Core.InformationObjects;
 
 namespace cs104_control_select_execute
 {
@@ -39,7 +38,7 @@ namespace cs104_control_select_execute
             var server = new Iec104Server(apci, al);
             server.AsduReceived += (Iec104Session session, in AsduView view) =>
             {
-                byte[] raw = view.Raw.ToArray();
+                var raw = view.Raw.ToArray();
                 ASDU asdu = new ASDU(al, raw, 0, raw.Length);
 
                 // 本演示从站只处理"激活(ACTIVATION)"的控制命令
@@ -47,7 +46,7 @@ namespace cs104_control_select_execute
                 {
                     var io = asdu.GetElement(0);
                     // IOA=9999 故意演示"否定确认"（预发被拒）
-                    bool negative = io.ObjectAddress == 9999;
+                    var negative = io.ObjectAddress == 9999;
 
                     Console.WriteLine($"  [从站] 收到控制命令 {asdu.TypeId} IOA={io.ObjectAddress} " +
                                       $"{(negative ? "→ 回复否定确认" : "→ 回复 ACT-CON")}");
@@ -55,8 +54,14 @@ namespace cs104_control_select_execute
                     ASDU con = BuildActCon(asdu, al, negative);
                     _ = Task.Run(async () =>
                     {
-                        try { await session.SendAsync(con); }
-                        catch (Exception ex) { Console.WriteLine("  从站回确认失败: " + ex.Message); }
+                        try
+                        {
+                            await session.SendAsync(con);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine("  从站回确认失败: " + ex.Message);
+                        }
                     });
                 }
             };
@@ -112,7 +117,7 @@ namespace cs104_control_select_execute
             Console.WriteLine("[主站] 已连接并激活数据传输\n");
 
             // ── 单命令 C_SC_NA_1：预发 → 预发结束 → 执行 → 执行完成 ──
-            int ioaSwitch = 5001;
+            var ioaSwitch = 5001;
             await RunControlSequence(
                 waiter, "单命令 C_SC_NA_1（合分闸）",
                 CauseOfTransmission.ACTIVATION, Ca,
@@ -120,7 +125,7 @@ namespace cs104_control_select_execute
                 executeCmd: new SingleCommand(ioaSwitch, command: true, selectCommand: false, qu: 0));
 
             // ── 设点命令 C_SE_NA_1：同样支持预发/执行（通用模式）──
-            int ioaSetpoint = 6001;
+            var ioaSetpoint = 6001;
             await RunControlSequence(
                 waiter, "归一化设点 C_SE_NA_1（设定值）",
                 CauseOfTransmission.ACTIVATION, Ca,
@@ -130,7 +135,7 @@ namespace cs104_control_select_execute
                     new SetpointCommandQualifier(select: false, ql: 0)));
 
             // ── 否定确认演示：预发即被拒 ──
-            int ioaReject = 9999;
+            var ioaReject = 9999;
             await RunControlSequence(
                 waiter, "否定确认演示（从站对 IOA=9999 拒绝）",
                 CauseOfTransmission.ACTIVATION, Ca,

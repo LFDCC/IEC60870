@@ -1,86 +1,67 @@
+//------------------------------------------------------------------------------
+//  IEC60870.Core.NET — 初始化结束信息对象（M_EI_NA_1）
+//
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
+using System;
 
-/*
- *  EndOfInitialization.cs
- *
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+namespace IEC60870.Core;
 
-namespace IEC60870.Core.InformationObjects
+/// <summary>
+/// 初始化结束信息对象（M_EI_NA_1）：单字节 COI（初始化原因）。
+/// </summary>
+public class EndOfInitialization : InformationObject
 {
-    /// <summary>
-    /// End of initialization information object (M_EI_NA_1)
-    /// </summary>
-    public class EndOfInitialization : InformationObject
+    private byte _coi;
+
+    /// <summary>初始化原因（COI，bit0-6 本地/远方，bit7 兼容级）。</summary>
+    public byte COI
     {
-        private byte coi;
-
-        /// <summary>
-        /// Cause of Initialization (COI)
-        /// </summary>
-        public byte COI
-        {
-            get
-            {
-                return coi;
-            }
-            set
-            {
-                coi = value;
-            }
-        }
-
-        override public TypeID Type
-        {
-            get
-            {
-                return TypeID.M_EI_NA_1;
-            }
-        }
-
-        override public bool SupportsSequence
-        {
-            get
-            {
-                return false;
-            }
-        }
-
-        public EndOfInitialization(byte coi)
-            : base(0)
-        {
-            this.coi = coi;
-        }
-
-        public EndOfInitialization(EndOfInitialization original)
-            : base(original.ObjectAddress)
-        {
-            coi = original.coi;
-        }
-
-        internal EndOfInitialization(ApplicationLayerParameters parameters, byte[] msg, int startIndex)
-            : base(parameters, msg, startIndex, false)
-        {
-            startIndex += parameters.SizeOfIOA; /* skip IOA */
-
-            if ((msg.Length - startIndex) < GetEncodedSize())
-                throw new ASDUParsingException("Message too small");
-
-            coi = msg[startIndex];
-        }
-
-        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
-        {
-            base.Encode(frame, parameters, isSequence);
-
-            frame.SetNextByte(coi);
-        }
+        get => _coi;
+        set => _coi = value;
     }
 
+    /// <inheritdoc/>
+    public override TypeID Type => TypeID.M_EI_NA_1;
+
+    /// <inheritdoc/>
+    public override bool SupportsSequence => false;
+
+    /// <summary>以初始化原因构造。</summary>
+    public EndOfInitialization(byte coi)
+        : base(0)
+    {
+        _coi = coi;
+    }
+
+    /// <summary>复制构造。</summary>
+    public EndOfInitialization(EndOfInitialization original)
+        : base(original.ObjectAddress)
+    {
+        _coi = original._coi;
+    }
+
+    internal EndOfInitialization(ApplicationLayerParameters parameters, ReadOnlySpan<byte> msg, int startIndex)
+        : base(parameters, msg, startIndex, false)
+    {
+        startIndex += parameters.SizeOfIOA; // 跳过 IOA
+
+        if ((msg.Length - startIndex) < GetEncodedSize())
+        {
+            throw new ASDUParsingException("报文长度不足以解析信息对象");
+        }
+
+        _coi = msg[startIndex];
+    }
+
+    internal override bool HasAsduWriterBody => true;
+
+    /// <inheritdoc/>
+    protected internal override void EncodeBody(ref AsduWriter w, ApplicationLayerParameters parameters, bool isSequence)
+    {
+        base.EncodeBody(ref w, parameters, isSequence);
+
+        w.WriteByte(_coi);
+    }
 }

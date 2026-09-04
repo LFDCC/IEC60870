@@ -1,167 +1,142 @@
-/*
- *  BinaryCounterReading.cs
- *
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+//------------------------------------------------------------------------------
+//  IEC60870.Core.NET — 二进制计数器读数（BCR，5 字节编码）
+//
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
 using System;
 
+namespace IEC60870.Core;
 
-
-namespace IEC60870.Core.InformationObjects
+/// <summary>
+/// 二进制计数器读数（Binary Counter Reading），用于累计量传输。
+/// 编码：4 字节小端有符号整数 + 1 字节标志（bit0-4=序列号，bit5=进位，bit6=已调整，bit7=无效）。
+/// </summary>
+public class BinaryCounterReading
 {
+    private const int EncodedSize = 5;
 
-    /// <summary>
-    /// Binary counter reading. Used for tranmission of integrated totals.
-    /// </summary>
-    public class BinaryCounterReading
+    // 标志字节位域。
+    private const byte MaskSequenceNumber = 0x1f;
+    private const byte MaskCarry = 0x20;
+    private const byte MaskAdjusted = 0x40;
+    private const byte MaskInvalid = 0x80;
+
+    private readonly byte[] _encodedValue = new byte[EncodedSize];
+
+    /// <summary>返回编码字节的副本。</summary>
+    public byte[] GetEncodedValue() => _encodedValue;
+
+    /// <summary>零分配方式返回编码字节切片。</summary>
+    public ReadOnlySpan<byte> AsSpan() => _encodedValue.AsSpan();
+
+    /// <summary>计数器值（有符号 32 位整数，小端编码）。</summary>
+    public Int32 Value
     {
-
-        private byte[] encodedValue = new byte[5];
-
-        public byte[] GetEncodedValue()
+        get
         {
-            return encodedValue;
+            var raw = _encodedValue[0]
+                       | (_encodedValue[1] << 8)
+                       | (_encodedValue[2] << 16)
+                       | (_encodedValue[3] << 24);
+            return raw;
         }
-
-        /// <summary>
-        /// Returns the encoded value as a ReadOnlySpan for zero-allocation encoding.
-        /// </summary>
-        public ReadOnlySpan<byte> AsSpan() => encodedValue.AsSpan();
-
-        /// <summary>
-        /// Gets or sets the counter value.
-        /// </summary>
-        /// <value>The value.</value>
-        public Int32 Value
+        set
         {
-            get
-            {
-                Int32 value = encodedValue[0];
-                value += (encodedValue[1] * 0x100);
-                value += (encodedValue[2] * 0x10000);
-                value += (encodedValue[3] * 0x1000000);
-
-                return value;
-            }
-
-            set
-            {
-                byte[] valueBytes = BitConverter.GetBytes(value);
-
-                if (BitConverter.IsLittleEndian == false)
-                    Array.Reverse(valueBytes);
-
-                Array.Copy(valueBytes, encodedValue, 4);
-            }
+            _encodedValue[0] = (byte)value;
+            _encodedValue[1] = (byte)(value >> 8);
+            _encodedValue[2] = (byte)(value >> 16);
+            _encodedValue[3] = (byte)(value >> 24);
         }
+    }
 
-        /// <summary>
-        /// Gets or sets the sequence number.
-        /// </summary>
-        /// <value>The sequence number.</value>
-        public int SequenceNumber
+    /// <summary>序列号（0 … 31）。</summary>
+    public int SequenceNumber
+    {
+        get => _encodedValue[4] & MaskSequenceNumber;
+        set
         {
-            get
-            {
-                return (encodedValue[4] & 0x1f);
-            }
-
-            set
-            {
-                int seqNumber = value & 0x1f;
-                int flags = encodedValue[4] & 0xe0;
-
-                encodedValue[4] = (byte)(flags | seqNumber);
-            }
+            _encodedValue[4] = (byte)((_encodedValue[4] & ~MaskSequenceNumber) | (value & MaskSequenceNumber));
         }
+    }
 
-        /// <summary>
-        /// Gets or sets the carry flag
-        /// </summary>
-        /// <value><c>true</c> if carry flag set; otherwise, <c>false</c>.</value>
-        public bool Carry
+    /// <summary>进位标志（计数器溢出）。</summary>
+    public bool Carry
+    {
+        get => (_encodedValue[4] & MaskCarry) != 0;
+        set
         {
-            get
+            if (value)
             {
-                return ((encodedValue[4] & 0x20) == 0x20);
+                _encodedValue[4] |= MaskCarry;
             }
-
-            set
+            else
             {
-                if (value)
-                    encodedValue[4] |= 0x20;
-                else
-                    encodedValue[4] &= 0xdf;
-            }
-        }
-
-        /// <summary>
-        /// Gets or sets the adjusted flag.
-        /// </summary>
-        /// <value><c>true</c> if adjusted flag is set; otherwise, <c>false</c>.</value>
-        public bool Adjusted
-        {
-            get
-            {
-                return ((encodedValue[4] & 0x40) == 0x40);
-            }
-
-            set
-            {
-                if (value)
-                    encodedValue[4] |= 0x40;
-                else
-                    encodedValue[4] &= 0xbf;
-            }
-        }
-
-        /// <summary>
-        /// Gets or sets the invalid flag
-        /// </summary>
-        /// <value><c>true</c> if invalid flag is set; otherwise, <c>false</c>.</value>
-        public bool Invalid
-        {
-            get
-            {
-                return ((encodedValue[4] & 0x80) == 0x80);
-            }
-
-            set
-            {
-                if (value)
-                    encodedValue[4] |= 0x80;
-                else
-                    encodedValue[4] &= 0x7f;
-            }
-        }
-
-        public BinaryCounterReading(byte[] msg, int startIndex)
-        {
-            if (msg.Length < startIndex + 5)
-                throw new ASDUParsingException("Message too small for parsing BinaryCounterReading");
-
-            for (int i = 0; i < 5; i++)
-                encodedValue[i] = msg[startIndex + i];
-        }
-
-        public BinaryCounterReading()
-        {
-        }
-
-        public BinaryCounterReading(BinaryCounterReading original)
-        {
-            for (int i = 0; i < 5; i++)
-            {
-                encodedValue[i] = original.encodedValue[i];
+                _encodedValue[4] &= 0xdf;
             }
         }
     }
-}
 
+    /// <summary>已调整标志（读数经人工或自动调整）。</summary>
+    public bool Adjusted
+    {
+        get => (_encodedValue[4] & MaskAdjusted) != 0;
+        set
+        {
+            if (value)
+            {
+                _encodedValue[4] |= MaskAdjusted;
+            }
+            else
+            {
+                _encodedValue[4] &= 0xbf;
+            }
+        }
+    }
+
+    /// <summary>无效标志（读数不可用）。</summary>
+    public bool Invalid
+    {
+        get => (_encodedValue[4] & MaskInvalid) != 0;
+        set
+        {
+            if (value)
+            {
+                _encodedValue[4] |= MaskInvalid;
+            }
+            else
+            {
+                _encodedValue[4] &= 0x7f;
+            }
+        }
+    }
+
+    /// <summary>从报文切片解析 5 字节 BCR。</summary>
+    /// <exception cref="ASDUParsingException">报文剩余长度不足时抛出。</exception>
+    public BinaryCounterReading(ReadOnlySpan<byte> msg, int startIndex)
+    {
+        if (msg.Length < startIndex + EncodedSize)
+        {
+            throw new ASDUParsingException("Message too small for parsing BinaryCounterReading");
+        }
+
+        for (var i = 0; i < EncodedSize; i++)
+        {
+            _encodedValue[i] = msg[startIndex + i];
+        }
+    }
+
+    /// <summary>构造零值 BCR。</summary>
+    public BinaryCounterReading()
+    {
+    }
+
+    /// <summary>以另一实例复制构造。</summary>
+    public BinaryCounterReading(BinaryCounterReading original)
+    {
+        for (var i = 0; i < EncodedSize; i++)
+        {
+            _encodedValue[i] = original._encodedValue[i];
+        }
+    }
+}

@@ -5,11 +5,17 @@
 IEC 60870-5-101 / 104 protocol library for **.NET 8**, fully refactored for
 asynchronous operation on top of [TouchSocket](https://github.com/RRQM/TouchSocket).
 
-This project is an async fork/rebrand of the original
-[lib60870.NET](https://github.com/mz-automation/lib60870.net) (MZ Automation).
-The entire stack has been rewritten around `Task` / `ValueTask`, `Span<byte>`,
-and pooled, zero-allocation buffering, while keeping the familiar
-information-object model. It is released under the **MIT License**.
+This library implements the IEC 60870-5-101 / 104 protocol stack for .NET,
+built around `Task` / `ValueTask`, `Span<byte>`, and pooled, zero-allocation
+buffering, with a familiar information-object model. It is released under the
+**MIT License**.
+
+> Attribution: this project was originally derived from
+> [lib60870.NET](https://github.com/mz-automation/lib60870.net) by MZ Automation
+> (Michael Zillgith), which is licensed under GPLv3. The protocol logic has
+> since been substantially rewritten and restructured for async operation; the
+> original copyright notices have been removed from the source. See the git
+> history and the upstream project for provenance.
 
 ## Features
 

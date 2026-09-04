@@ -4,10 +4,8 @@ using System.IO.Ports;
 
 using System.Threading;
 using System.Threading.Tasks;
-using IEC60870.CS101.LinkLayer;
 using IEC60870.Core;
 using IEC60870.CS101;
-using IEC60870.Core.InformationObjects;
 
 namespace cs101_master_balanced
 {
@@ -27,7 +25,7 @@ namespace cs101_master_balanced
 
         public static async Task Main (string [] args)
         {
-            bool running = true;
+            var running = true;
 
             // use Ctrl-C to stop the programm
             Console.CancelKeyPress += delegate (object? sender, ConsoleCancelEventArgs e) {
@@ -35,10 +33,12 @@ namespace cs101_master_balanced
                 running = false;
             };
 
-            string portName = "COM1";
+            var portName = "COM1";
 
             if (args.Length > 0)
+            {
                 portName = args [0];
+            }
 
             // Setup serial port (NOTE: StartAsync opens it; must compile without hardware attached)
             SerialPort port = new SerialPort (portName, 9600, Parity.None, 8, StopBits.One);
@@ -49,7 +49,7 @@ namespace cs101_master_balanced
             llParameters.UseSingleCharACK = false;
 
             Iec101Client master = new Iec101Client (port, LinkLayerMode.BALANCED, llParameters);
-            master.DebugOutput = false;
+            // master.Logger = new LoggerGroup().AddConsoleLogger(LogLevel.Debug); // 需要协议调试日志时启用
             master.OwnAddress = 3;
             master.SlaveAddress = 2;
             master.SetASDUReceivedHandler (asduReceivedHandler, null);
@@ -68,17 +68,21 @@ namespace cs101_master_balanced
             var cts = new CancellationTokenSource ();
             var loop = master.StartAsync (cts.Token);
 
-            long lastTimestamp = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds ();
+            var lastTimestamp = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds ();
 
-            while (running) {
+            while (running)
+            {
 
-                if ((System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds () - lastTimestamp) >= 5000) {
+                if ((System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds () - lastTimestamp) >= 5000)
+                {
 
                     lastTimestamp = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds ();
 
-                    if (master.GetLinkLayerState () == LinkLayerState.AVAILABLE) {
+                    if (master.GetLinkLayerState () == LinkLayerState.AVAILABLE)
+                    {
                         master.SendInterrogationCommand (CauseOfTransmission.ACTIVATION, 1, QualifierOfInterrogation.STATION);
-                    } else {
+                    } else
+                    {
                         Console.WriteLine ("Link layer: " + master.GetLinkLayerState ().ToString ());
                     }
                 }
@@ -88,6 +92,7 @@ namespace cs101_master_balanced
 
             master.Stop ();
             await loop;
+            master.Dispose ();
         }
     }
 }

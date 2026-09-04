@@ -6,38 +6,18 @@
     <Copyright>Copyright 2026 LFDCC</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageId>LFDCC.IEC60870.CS101</PackageId>
-    <Version>4.0.9</Version>
+    <Version>5.2.0</Version>
     <RootNamespace>IEC60870.CS101</RootNamespace>
     <AssemblyName>IEC60870.CS101</AssemblyName>
     <TargetFramework>net6.0</TargetFramework>
     <Nullable>disable</Nullable>
     <LangVersion>latest</LangVersion>
-    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <Description>IEC 60870-5-101 protocol library (balanced/unbalanced link layer, serial and TCP transport, client/server) built on IEC60870.Core.</Description>
     <PackageOutputPath>nupkg</PackageOutputPath>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
   </PropertyGroup>
 
-  <ItemGroup>
-    <Compile Include="ClientBase.cs" />
-    <Compile Include="DebugLogger.cs" />
-    <Compile Include="Iec101Client.cs" />
-    <Compile Include="Iec101Server.cs" />
-    <Compile Include="ServerBase.cs" />
-    <Compile Include="File/FileServices.cs" />
-    <Compile Include="LinkLayer/FT12Framer.cs" />
-    <Compile Include="LinkLayer/ISerialLinkTransport.cs" />
-    <Compile Include="LinkLayer/LinkLayer.cs" />
-    <Compile Include="LinkLayer/PrimaryLinkLayer.cs" />
-    <Compile Include="LinkLayer/PrimaryLinkLayerBalanced.cs" />
-    <Compile Include="LinkLayer/PrimaryLinkLayerUnbalanced.cs" />
-    <Compile Include="LinkLayer/SecondaryLinkLayer.cs" />
-    <Compile Include="LinkLayer/SecondaryLinkLayerBalanced.cs" />
-    <Compile Include="LinkLayer/SecondaryLinkLayerUnbalanced.cs" />
-    <Compile Include="LinkLayer/SerialTransceiverFT12.cs" />
-    <Compile Include="LinkLayer/TcpClientLinkTransport.cs" />
-    <Compile Include="LinkLayer/TcpServerLinkTransport.cs" />
-  </ItemGroup>
+  <!-- 源码按 SDK 默认通配编译（**/*.cs）：LinkLayer/ 链路层、File/ 文件服务、根/ 站点组件，新增文件无需维护清单 -->
   <ItemGroup>
     <ProjectReference Include="..\IEC60870.Core\IEC60870.Core.csproj" />
   </ItemGroup>

@@ -13,9 +13,6 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using IEC60870.Core;
-using IEC60870.Core.InformationObjects;
-using IEC60870.Core.Quality;
-using IEC60870.Core.Time;
 using IEC60870.CS104;
 using NUnit.Framework;
 
@@ -46,18 +43,9 @@ namespace IEC60870.CS104.Tests
         private static async Task SendDummyAsync(ApduConnection conn, ApplicationLayerParameters al,
             CancellationToken ct = default)
         {
-            var w = new PooledApduWriter();
-            try
-            {
-                var asdu = new ASDU(al, CauseOfTransmission.SPONTANEOUS, false, false, 0, 1, false);
-                asdu.AddInformationObject(new SinglePointInformation(1, true, new QualityDescriptor()));
-                asdu.Encode(w, al);
-                await conn.SendAsduAsync(w, ct).ConfigureAwait(false);
-            }
-            finally
-            {
-                w.Dispose();
-            }
+            var asdu = new ASDU(al, CauseOfTransmission.SPONTANEOUS, false, false, 0, 1, false);
+            asdu.AddInformationObject(new SinglePointInformation(1, true, new QualityDescriptor()));
+            await conn.SendAsduAsync(asdu, ct).ConfigureAwait(false);
         }
 
         [Test]
@@ -68,11 +56,13 @@ namespace IEC60870.CS104.Tests
             var apci = new APCIParameters { K = 4 };
             var al = new ApplicationLayerParameters();
             var sink = new ImmediateSink();
-            using var conn = new ApduConnection(apci, al, sink, isServerSide: false);
+            using var conn = new ApduConnection(apci, al, sink);
 
             var tasks = new List<Task>();
-            for (int i = 0; i < apci.K + 4; i++)
+            for (var i = 0; i < apci.K + 4; i++)
+            {
                 tasks.Add(SendDummyAsync(conn, al));
+            }
 
             // 等待首批 K 个进入“在途”缓冲、其余进入背压等待
             await Task.Delay(100).ConfigureAwait(false);
@@ -83,7 +73,9 @@ namespace IEC60870.CS104.Tests
             var all = Task.WhenAll(tasks);
             var completed = await Task.WhenAny(all, Task.Delay(5000)).ConfigureAwait(false);
             if (completed != all)
+            {
                 Assert.Fail("存在发送者被 k 窗口背压永久孤立（代码评审 #4 回归）");
+            }
 
             await all.ConfigureAwait(false);
         }
@@ -94,11 +86,11 @@ namespace IEC60870.CS104.Tests
             // K=2：两个发送各占一个 k 槽并阻塞在 sink；第三个因窗口满被背压。
             // 取消第二个（已持有 k 槽）的调用方 token → 其 sink 等待抛 OCE。
             // 修复前该 k 槽会永久泄漏（调用方取消路径未被归还）→ 第三个发送永远背压死锁；
-            // 修复后槽被归还（catch(Exception){_kWindowSem.Release();throw}）→ 第三个发送继续。
+            // 修复后槽被归还（catch(Exception){ReleaseSlots(1);throw}）→ 第三个发送继续。
             var apci = new APCIParameters { K = 2 };
             var al = new ApplicationLayerParameters();
             var gate = new GateSink();
-            using var conn = new ApduConnection(apci, al, gate, isServerSide: false);
+            using var conn = new ApduConnection(apci, al, gate);
 
             // 占用两个 k 槽（均在途、未确认），阻塞在 sink
             var s1 = SendDummyAsync(conn, al);                 // 槽 0
@@ -148,7 +140,7 @@ namespace IEC60870.CS104.Tests
             var apci = new APCIParameters { K = 1 };
             var al = new ApplicationLayerParameters();
             var sink = new ImmediateSink();
-            using var conn = new ApduConnection(apci, al, sink, isServerSide: false);
+            using var conn = new ApduConnection(apci, al, sink);
 
             // 第 1 个发送占满窗口（K=1）
             await SendDummyAsync(conn, al).ConfigureAwait(false);
@@ -189,10 +181,10 @@ namespace IEC60870.CS104.Tests
             var apci = new APCIParameters();
             var al = new ApplicationLayerParameters();
             var sink = new ImmediateSink();
-            using var conn = new ApduConnection(apci, al, sink, isServerSide: true);
+            using var conn = new ApduConnection(apci, al, sink);
 
             // 头部不全的 ASDU（仅 1 字节），应被拒绝且不向用户回调派发（代码评审 #14）
-            bool ok = conn.OnIFrame(0, 0, new byte[] { 1 });
+            var ok = conn.OnIFrame(0, 0, new byte[] { 1 });
             Assert.IsFalse(ok, "过短 ASDU 应视为协议错误返回 false");
         }
 
@@ -226,10 +218,10 @@ namespace IEC60870.CS104.Tests
             var execCmd = new StepCommand(ioa, StepCommandValue.HIGHER, select: false, 0);
 
             // 发送侧关联键（GetSelectBit）必须区分预发与执行
-            Assert.IsTrue(ControlWaiter.GetSelectBit(selectCmd), "C_RC 预发(select) 应返回 true");
-            Assert.IsFalse(ControlWaiter.GetSelectBit(execCmd), "C_RC 执行(execute) 应返回 false");
+            Assert.IsTrue(ControlConfirmMatcher.GetSelectBit(selectCmd), "C_RC 预发(select) 应返回 true");
+            Assert.IsFalse(ControlConfirmMatcher.GetSelectBit(execCmd), "C_RC 执行(execute) 应返回 false");
             Assert.AreNotEqual(
-                ControlWaiter.GetSelectBit(selectCmd), ControlWaiter.GetSelectBit(execCmd),
+                ControlConfirmMatcher.GetSelectBit(selectCmd), ControlConfirmMatcher.GetSelectBit(execCmd),
                 "预发/执行关联键必须不同，否则会被错误合并");
 
             // 接收侧 ReadSelectBit 读线字节 bit7；StepCommand.Select 读 RCO(dcq) 的 bit7，
@@ -248,9 +240,9 @@ namespace IEC60870.CS104.Tests
             var selectCmd = new StepCommandWithCP56Time2a(ioa, StepCommandValue.LOWER, select: true, 0, ts);
             var execCmd = new StepCommandWithCP56Time2a(ioa, StepCommandValue.LOWER, select: false, 0, ts);
 
-            Assert.IsTrue(ControlWaiter.GetSelectBit(selectCmd), "C_RC_TA_1 预发应返回 true");
-            Assert.IsFalse(ControlWaiter.GetSelectBit(execCmd), "C_RC_TA_1 执行应返回 false");
-            Assert.AreNotEqual(ControlWaiter.GetSelectBit(selectCmd), ControlWaiter.GetSelectBit(execCmd),
+            Assert.IsTrue(ControlConfirmMatcher.GetSelectBit(selectCmd), "C_RC_TA_1 预发应返回 true");
+            Assert.IsFalse(ControlConfirmMatcher.GetSelectBit(execCmd), "C_RC_TA_1 执行应返回 false");
+            Assert.AreNotEqual(ControlConfirmMatcher.GetSelectBit(selectCmd), ControlConfirmMatcher.GetSelectBit(execCmd),
                 "C_RC_TA_1 预发/执行关联键必须不同");
         }
 
@@ -280,37 +272,43 @@ namespace IEC60870.CS104.Tests
             // 修复前 GetEncodedSize 误为 1 → spaceLeft 误算 → AsByteArray 返回 null。
             // 修复后必须返回非空，且编码长度 = ASDU头 + SizeOfIOA + 8（含 7 字节时间戳）。
             var al = new ApplicationLayerParameters();
-            int headerSize = 2 + al.SizeOfCOT + al.SizeOfCA;
-            int expectedLen = headerSize + al.SizeOfIOA + 8;
+            var headerSize = 2 + al.SizeOfCOT + al.SizeOfCA;
+            var expectedLen = headerSize + al.SizeOfIOA + 8;
             var ts = new CP56Time2a(new DateTime(2026, 7, 23, 12, 34, 56));
-            byte[] tsBytes = ts.GetEncodedValue();
+            var tsBytes = ts.GetEncodedValue();
 
             // C_SC_TA_1
             var sc = new ASDU(al, CauseOfTransmission.ACTIVATION, false, false, 0, 1, false);
             sc.AddInformationObject(new SingleCommandWithCP56Time2a(100, true, false, 0, ts));
-            byte[] encSc = sc.AsByteArray();
+            var encSc = sc.AsByteArray();
             Assert.IsNotNull(encSc, "C_SC_TA_1 AsByteArray 不应返回 null（GetEncodedSize 修复前会返回 null）");
             Assert.AreEqual(expectedLen, encSc.Length, "C_SC_TA_1 编码长度应含 7 字节时间戳");
-            for (int i = 0; i < 7; i++)
+            for (var i = 0; i < 7; i++)
+            {
                 Assert.AreEqual(tsBytes[i], encSc[encSc.Length - 7 + i], "C_SC_TA_1 末 7 字节应为时间戳编码");
+            }
 
             // C_DC_TA_1
             var dc = new ASDU(al, CauseOfTransmission.ACTIVATION, false, false, 0, 1, false);
             dc.AddInformationObject(new DoubleCommandWithCP56Time2a(101, DoubleCommand.ON, false, 0, ts));
-            byte[] encDc = dc.AsByteArray();
+            var encDc = dc.AsByteArray();
             Assert.IsNotNull(encDc, "C_DC_TA_1 AsByteArray 不应返回 null");
             Assert.AreEqual(expectedLen, encDc.Length, "C_DC_TA_1 编码长度应含 7 字节时间戳");
-            for (int i = 0; i < 7; i++)
+            for (var i = 0; i < 7; i++)
+            {
                 Assert.AreEqual(tsBytes[i], encDc[encDc.Length - 7 + i], "C_DC_TA_1 末 7 字节应为时间戳编码");
+            }
 
             // C_RC_TA_1
             var rc = new ASDU(al, CauseOfTransmission.ACTIVATION, false, false, 0, 1, false);
             rc.AddInformationObject(new StepCommandWithCP56Time2a(102, StepCommandValue.HIGHER, false, 0, ts));
-            byte[] encRc = rc.AsByteArray();
+            var encRc = rc.AsByteArray();
             Assert.IsNotNull(encRc, "C_RC_TA_1 AsByteArray 不应返回 null");
             Assert.AreEqual(expectedLen, encRc.Length, "C_RC_TA_1 编码长度应含 7 字节时间戳");
-            for (int i = 0; i < 7; i++)
+            for (var i = 0; i < 7; i++)
+            {
                 Assert.AreEqual(tsBytes[i], encRc[encRc.Length - 7 + i], "C_RC_TA_1 末 7 字节应为时间戳编码");
+            }
         }
 
         // ── 问题3：M_EP_TA_1 元素尺寸不一致（GetElement/ComputeExpectedPayloadSize 旧值 3，正确值 6）──
@@ -324,7 +322,7 @@ namespace IEC60870.CS104.Tests
             // 2 元素序列，payload 仅 9 字节（= 旧错误 expected=SizeOfIOA+2*3=9，但正确应为 SizeOfIOA+2*6=15）。
             // 修复前：9 < 9 为 false → 接受（bug）。修复后：9 < 15 → 抛 ASDUParsingException。
             var al = new ApplicationLayerParameters();
-            byte[] msg = new byte[15]; // header(6) + payload(9)
+            var msg = new byte[15]; // header(6) + payload(9)
             msg[0] = (byte)TypeID.M_EP_TA_1; // 17
             msg[1] = 0x82; // SQ | count 2
             msg[2] = 1;    // COT = SPONTANEOUS
@@ -344,16 +342,31 @@ namespace IEC60870.CS104.Tests
             // 修复前 elementSize=3 → GetElement(1) 偏移=SizeOfIOA+3=6，读到 elem0 的 CP24 字节(0)。
             // 修复后 elementSize=6 → 偏移=SizeOfIOA+6=9，正确读到 elem1 的 0xBB。
             var al = new ApplicationLayerParameters();
-            byte[] msg = new byte[21]; // header(6) + payload(15)
+            var msg = new byte[21]; // header(6) + payload(15)
             msg[0] = (byte)TypeID.M_EP_TA_1;
             msg[1] = 0x82; // SQ | count 2
-            msg[2] = 1; msg[3] = 0; msg[4] = 1; msg[5] = 0;
+            msg[2] = 1;
+            msg[3] = 0;
+            msg[4] = 1;
+            msg[5] = 0;
             // IOA=1
-            msg[6] = 1; msg[7] = 0; msg[8] = 0;
+            msg[6] = 1;
+            msg[7] = 0;
+            msg[8] = 0;
             // elem0: SingleEvent=0xAA, CP16=0,0, CP24=0,0,0
-            msg[9] = 0xAA; msg[10] = 0; msg[11] = 0; msg[12] = 0; msg[13] = 0; msg[14] = 0;
+            msg[9] = 0xAA;
+            msg[10] = 0;
+            msg[11] = 0;
+            msg[12] = 0;
+            msg[13] = 0;
+            msg[14] = 0;
             // elem1: SingleEvent=0xBB, CP16=0,0, CP24=0,0,0
-            msg[15] = 0xBB; msg[16] = 0; msg[17] = 0; msg[18] = 0; msg[19] = 0; msg[20] = 0;
+            msg[15] = 0xBB;
+            msg[16] = 0;
+            msg[17] = 0;
+            msg[18] = 0;
+            msg[19] = 0;
+            msg[20] = 0;
 
             var asdu = new ASDU(al, msg, 0, msg.Length);
             Assert.AreEqual(2, asdu.NumberOfElements);
@@ -388,11 +401,13 @@ namespace IEC60870.CS104.Tests
             // TypeID=200（非标准，落入 ComputeExpectedPayloadSize default → -1 跳过构造期校验），
             // VSQ=1（单元素非序列），便于单独考验 GetElement(IPrivateIOFactory) 的越界校验。
             var al = new ApplicationLayerParameters();
-            byte[] msg = new byte[6 + payloadLen];
+            var msg = new byte[6 + payloadLen];
             msg[0] = 200;            // 未知 TypeID
             msg[1] = 1;              // VSQ = 1（非序列）
-            msg[2] = 1; msg[3] = 0;  // COT + OA
-            msg[4] = 1; msg[5] = 0;  // CA
+            msg[2] = 1;
+            msg[3] = 0;  // COT + OA
+            msg[4] = 1;
+            msg[5] = 0;  // CA
             return new ASDU(al, msg, 0, msg.Length);
         }
 

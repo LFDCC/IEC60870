@@ -64,9 +64,6 @@
 
 using System;
 using IEC60870.Core;
-using IEC60870.Core.InformationObjects;
-using IEC60870.Core.Quality;
-using IEC60870.Core.Time;
 
 namespace cs104_xuji_private_ioa
 {
@@ -158,9 +155,14 @@ namespace cs104_xuji_private_ioa
             : base(ioa)
         {
             if (faultData == null || faultData.Length % 4 != 0)
+            {
                 throw new ArgumentException("faultData length must be a multiple of 4", nameof(faultData));
+            }
+
             if (faultData.Length / 4 > MaxFaultCount)
+            {
                 throw new ArgumentException($"max {MaxFaultCount} fault values (got {faultData.Length / 4})", nameof(faultData));
+            }
 
             Event = singleEvent ?? new SingleEvent();
             ElapsedTime = elapsedTime ?? new CP16Time2a();
@@ -174,7 +176,10 @@ namespace cs104_xuji_private_ioa
         private XujiType166Object(ApplicationLayerParameters parameters, byte[] msg, int startIndex, bool isSequence)
             : base(parameters, msg, startIndex, isSequence)
         {
-            if (!isSequence) startIndex += parameters.SizeOfIOA; /* 跳过 IOA */
+            if (!isSequence)
+            {
+                startIndex += parameters.SizeOfIOA; /* 跳过 IOA */
+            }
 
             Event = new SingleEvent(msg[startIndex++]);
             ElapsedTime = new CP16Time2a(msg, startIndex);
@@ -182,7 +187,11 @@ namespace cs104_xuji_private_ioa
             Timestamp = new CP56Time2a(msg, startIndex);
             startIndex += 7;
             FaultCount = msg[startIndex++];
-            if (FaultCount > MaxFaultCount) FaultCount = MaxFaultCount;   // 防御性截断
+            if (FaultCount > MaxFaultCount)
+            {
+                FaultCount = MaxFaultCount;   // 防御性截断
+            }
+
             FaultData = new byte[FaultCount * 4];
             Array.Copy(msg, startIndex, FaultData, 0, FaultData.Length);
         }
@@ -193,8 +202,11 @@ namespace cs104_xuji_private_ioa
         public float[] GetFaultValues()
         {
             var arr = new float[FaultCount];
-            for (int i = 0; i < FaultCount; i++)
+            for (var i = 0; i < FaultCount; i++)
+            {
                 arr[i] = BitConverter.ToSingle(FaultData, i * 4);
+            }
+
             return arr;
         }
 
@@ -215,7 +227,10 @@ namespace cs104_xuji_private_ioa
             frame.AppendBytes(ElapsedTime.AsSpan());
             frame.AppendBytes(Timestamp.AsSpan());
             frame.SetNextByte(FaultCount);
-            for (int i = 0; i < FaultData.Length; i++) frame.SetNextByte(FaultData[i]);
+            for (var i = 0; i < FaultData.Length; i++)
+            {
+                frame.SetNextByte(FaultData[i]);
+            }
         }
     }
 
@@ -280,9 +295,14 @@ namespace cs104_xuji_private_ioa
             : base(ioa)
         {
             if (faultData == null || faultData.Length % 4 != 0)
+            {
                 throw new ArgumentException("faultData length must be a multiple of 4", nameof(faultData));
+            }
+
             if (faultData.Length / 4 > MaxFaultCount)
+            {
                 throw new ArgumentException($"max {MaxFaultCount} fault values (got {faultData.Length / 4})", nameof(faultData));
+            }
 
             SPE = spe ?? new StartEvent();
             QDP = qdp ?? new QualityDescriptorP();
@@ -295,7 +315,10 @@ namespace cs104_xuji_private_ioa
         private XujiType168Object(ApplicationLayerParameters parameters, byte[] msg, int startIndex, bool isSequence)
             : base(parameters, msg, startIndex, isSequence)
         {
-            if (!isSequence) startIndex += parameters.SizeOfIOA;
+            if (!isSequence)
+            {
+                startIndex += parameters.SizeOfIOA;
+            }
 
             SPE = new StartEvent(msg[startIndex++]);
             QDP = new QualityDescriptorP(msg[startIndex++]);
@@ -304,7 +327,11 @@ namespace cs104_xuji_private_ioa
             Timestamp = new CP56Time2a(msg, startIndex);
             startIndex += 7;
             FaultCount = msg[startIndex++];
-            if (FaultCount > MaxFaultCount) FaultCount = MaxFaultCount;
+            if (FaultCount > MaxFaultCount)
+            {
+                FaultCount = MaxFaultCount;
+            }
+
             FaultData = new byte[FaultCount * 4];
             Array.Copy(msg, startIndex, FaultData, 0, FaultData.Length);
         }
@@ -312,8 +339,11 @@ namespace cs104_xuji_private_ioa
         public float[] GetFaultValues()
         {
             var arr = new float[FaultCount];
-            for (int i = 0; i < FaultCount; i++)
+            for (var i = 0; i < FaultCount; i++)
+            {
                 arr[i] = BitConverter.ToSingle(FaultData, i * 4);
+            }
+
             return arr;
         }
 
@@ -333,7 +363,10 @@ namespace cs104_xuji_private_ioa
             frame.AppendBytes(ElapsedTime.AsSpan());
             frame.AppendBytes(Timestamp.AsSpan());
             frame.SetNextByte(FaultCount);
-            for (int i = 0; i < FaultData.Length; i++) frame.SetNextByte(FaultData[i]);
+            for (var i = 0; i < FaultData.Length; i++)
+            {
+                frame.SetNextByte(FaultData[i]);
+            }
         }
     }
 
@@ -360,9 +393,13 @@ namespace cs104_xuji_private_ioa
         /// </summary>
         public static byte[] EncodeFaultValues(float[] values)
         {
-            if (values == null) throw new ArgumentNullException(nameof(values));
+            if (values == null)
+            {
+                throw new ArgumentNullException(nameof(values));
+            }
+
             var bytes = new byte[values.Length * 4];
-            for (int i = 0; i < values.Length; i++)
+            for (var i = 0; i < values.Length; i++)
             {
                 var b = BitConverter.GetBytes(values[i]);
                 Array.Copy(b, 0, bytes, i * 4, 4);

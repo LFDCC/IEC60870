@@ -4,11 +4,8 @@ using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
-using IEC60870.CS101.File;
-using IEC60870.Core.File;
 using IEC60870.Core;
 using IEC60870.CS101;
-using IEC60870.CS101.LinkLayer;
 
 
 
@@ -39,19 +36,30 @@ namespace cs104_client_file_upload
     {
         public static async Task Main(string[] args)
         {
-            string hostname = "127.0.0.1";
+            var hostname = "127.0.0.1";
             string? filename = null;
-            int fileCa = 1;
-            int fileIoa = 30001;
+            var fileCa = 1;
+            var fileIoa = 30001;
 
             if (args.Length >= 1)
+            {
                 hostname = args[0];
+            }
+
             if (args.Length >= 2)
+            {
                 filename = args[1];
+            }
+
             if (args.Length >= 3)
+            {
                 Int32.TryParse(args[2], out fileCa);
+            }
+
             if (args.Length >= 4)
+            {
                 Int32.TryParse(args[3], out fileIoa);
+            }
 
             Console.WriteLine("Using IEC60870.Core.NET version " + typeof(ASDU).Assembly.GetName().Version.ToString());
 
@@ -74,10 +82,12 @@ namespace cs104_client_file_upload
             }
             else
             {
-                byte[] fileData = new byte[1025];
+                var fileData = new byte[1025];
 
-                for (int i = 0; i < 1025; i++)
+                for (var i = 0; i < 1025; i++)
+                {
                     fileData[i] = (byte)(i + 1);
+                }
 
                 file.AddSection(fileData);
             }
@@ -88,6 +98,7 @@ namespace cs104_client_file_upload
             await Task.Run(() => file.WaitUntilTransferIsComplete()).ConfigureAwait(false);
 
             master.Stop();
+            master.Dispose();
 
             Console.WriteLine("Press any key to terminate...");
             Console.ReadKey();

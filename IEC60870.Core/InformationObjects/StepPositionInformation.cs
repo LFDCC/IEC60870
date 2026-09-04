@@ -1,298 +1,225 @@
-/*
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+//------------------------------------------------------------------------------
+//  IEC60870.Core.NET — 步位置信息（M_ST_NA_1 / M_ST_TA_1 / M_ST_TB_1）
+//
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
 using System;
-using IEC60870.Core.Time;
-using IEC60870.Core.Quality;
 
+namespace IEC60870.Core;
 
-
-namespace IEC60870.Core.InformationObjects
+/// <summary>
+/// 步位置信息（M_ST_NA_1）。VTI 字节编码：bit0-6=位置值（-64 … +63，补码风格），
+/// bit7=瞬变标志位（T）。
+/// </summary>
+public class StepPositionInformation : InformationObject
 {
-    /// <summary>
-    /// Step position information object (M_ST_NA_1)
-    /// </summary>
-    public class StepPositionInformation : InformationObject
+    // VTI 位域。
+    private const byte MaskTransient = 0x80;
+    private const byte MaskValue = 0x7f;
+    private const int ValueMax = 63;
+    private const int ValueMin = -64;
+
+    private int _value;
+    private bool _isTransient;
+    private QualityDescriptor _quality;
+
+    public override TypeID Type => TypeID.M_ST_NA_1;
+
+    public override bool SupportsSequence => true;
+
+    /// <summary>步位置（-64 … +63）。超出范围将被钳位。</summary>
+    public int Value
     {
-
-        override public TypeID Type
-        {
-            get
-            {
-                return TypeID.M_ST_NA_1;
-            }
-        }
-
-        override public bool SupportsSequence
-        {
-            get
-            {
-                return true;
-            }
-        }
-
-        private int value;
-
-        /// <summary>
-        /// Step position (range -64 ... +63)
-        /// </summary>
-        /// <value>The value.</value>
-        public int Value
-        {
-            get
-            {
-                return value;
-            }
-            set
-            {
-                if (value > 63)
-                    this.value = 63;
-                else if (value < -64)
-                    this.value = -64;
-                else
-                    this.value = value;
-            }
-        }
-
-        private bool isTransient;
-
-        /// <summary>
-        /// Gets a value indicating whether this <see cref="IEC60870.Core.InformationObjects.StepPositionInformation"/> is in transient state.
-        /// </summary>
-        /// <value><c>true</c> if transient; otherwise, <c>false</c>.</value>
-        public bool Transient
-        {
-            get
-            {
-                return isTransient;
-            }
-            set
-            {
-                isTransient = value;
-            }
-        }
-
-        private QualityDescriptor quality;
-
-        public QualityDescriptor Quality
-        {
-            get
-            {
-                return quality;
-            }
-        }
-
-        public StepPositionInformation(int ioa, int value, bool isTransient, QualityDescriptor quality)
-            : base(ioa)
-        {
-            if ((value < -64) || (value > 63))
-                throw new ArgumentOutOfRangeException("value has to be in range -64 .. 63");
-
-            Value = value;
-            Transient = isTransient;
-            this.quality = quality;
-        }
-
-        public StepPositionInformation(StepPositionInformation original)
-            : base(original.ObjectAddress)
-        {
-            Value = original.Value;
-            Transient = original.Transient;
-            quality = new QualityDescriptor(original.quality);
-        }
-
-        internal StepPositionInformation(ApplicationLayerParameters parameters, byte[] msg, int startIndex, bool isSequence)
-            : base(parameters, msg, startIndex, isSequence)
-        {
-            if (!isSequence)
-                startIndex += parameters.SizeOfIOA; /* skip IOA */
-
-            if ((msg.Length - startIndex) < GetEncodedSize())
-                throw new ASDUParsingException("Message too small");
-
-            /* parse VTI (value with transient state indication) */
-            byte vti = msg[startIndex++];
-
-            isTransient = ((vti & 0x80) == 0x80);
-
-            value = (vti & 0x7f);
-
-            if (value > 63)
-                value = value - 128;
-
-            quality = new QualityDescriptor(msg[startIndex++]);
-        }
-
-        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
-        {
-            base.Encode(frame, parameters, isSequence);
-
-            byte vti;
-
-            if (value < 0)
-                vti = (byte)(value + 128);
-            else
-                vti = (byte)value;
-
-            if (isTransient)
-                vti += 0x80;
-
-            frame.SetNextByte(vti);
-
-            frame.SetNextByte(quality.EncodedValue);
-        }
-
+        get => _value;
+        set => _value = value > ValueMax ? ValueMax : (value < ValueMin ? ValueMin : value);
     }
 
-    /// <summary>
-    /// Step position information object with CP24Time2a time tag (M_ST_TA_1)
-    /// </summary>
-    public class StepPositionWithCP24Time2a : StepPositionInformation
+    /// <summary>瞬变标志：步位置正在过渡中。</summary>
+    public bool Transient
     {
-
-        override public TypeID Type
-        {
-            get
-            {
-                return TypeID.M_ST_TA_1;
-            }
-        }
-
-        override public bool SupportsSequence
-        {
-            get
-            {
-                return false;
-            }
-        }
-
-        private CP24Time2a timestamp;
-
-        public CP24Time2a Timestamp
-        {
-            get
-            {
-                return timestamp;
-            }
-            set
-            {
-                timestamp = value;
-            }
-        }
-
-        public StepPositionWithCP24Time2a(int ioa, int value, bool isTransient, QualityDescriptor quality, CP24Time2a timestamp)
-            : base(ioa, value, isTransient, quality)
-        {
-            Timestamp = timestamp;
-        }
-
-        public StepPositionWithCP24Time2a(StepPositionWithCP24Time2a original)
-            : base(original)
-        {
-            timestamp = new CP24Time2a(original.timestamp);
-        }
-
-        internal StepPositionWithCP24Time2a(ApplicationLayerParameters parameters, byte[] msg, int startIndex, bool isSequence)
-            : base(parameters, msg, startIndex, isSequence)
-        {
-            if (!isSequence)
-                startIndex += parameters.SizeOfIOA; /* skip IOA */
-
-            if ((msg.Length - startIndex) < GetEncodedSize())
-                throw new ASDUParsingException("Message too small");
-
-            startIndex += 2; /* VTI + quality*/
-
-            /* parse CP24Time2a (time stamp) */
-            timestamp = new CP24Time2a(msg, startIndex);
-        }
-
-        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
-        {
-            base.Encode(frame, parameters, isSequence);
-
-            frame.AppendBytes(timestamp.AsSpan());
-        }
-
+        get => _isTransient;
+        set => _isTransient = value;
     }
 
-    /// <summary>
-    /// Step position information object with CP56Time2a time tag (M_ST_TB_1)
-    /// </summary>
-    public class StepPositionWithCP56Time2a : StepPositionInformation
+    /// <summary>质量描述符。</summary>
+    public QualityDescriptor Quality => _quality;
+
+    public StepPositionInformation(int ioa, int value, bool isTransient, QualityDescriptor quality)
+        : base(ioa)
     {
-
-        override public TypeID Type
+        if (value < ValueMin || value > ValueMax)
         {
-            get
-            {
-                return TypeID.M_ST_TB_1;
-            }
+            throw new ArgumentOutOfRangeException(nameof(value), "value has to be in range -64 .. 63");
         }
 
-        override public bool SupportsSequence
-        {
-            get
-            {
-                return false;
-            }
-        }
-
-        private CP56Time2a timestamp;
-
-        public CP56Time2a Timestamp
-        {
-            get
-            {
-                return timestamp;
-            }
-            set
-            {
-                timestamp = value;
-            }
-        }
-
-        public StepPositionWithCP56Time2a(int ioa, int value, bool isTransient, QualityDescriptor quality, CP56Time2a timestamp)
-            : base(ioa, value, isTransient, quality)
-        {
-            Timestamp = timestamp;
-        }
-
-        public StepPositionWithCP56Time2a(StepPositionWithCP56Time2a original)
-            : base(original)
-        {
-            timestamp = new CP56Time2a(original.timestamp);
-        }
-
-        internal StepPositionWithCP56Time2a(ApplicationLayerParameters parameters, byte[] msg, int startIndex, bool isSequence)
-            : base(parameters, msg, startIndex, isSequence)
-        {
-            if (!isSequence)
-                startIndex += parameters.SizeOfIOA; /* skip IOA */
-
-            if ((msg.Length - startIndex) < GetEncodedSize())
-                throw new ASDUParsingException("Message too small");
-
-            startIndex += 2; /* skip VTI + quality*/
-
-            /* parse CP24Time2a (time stamp) */
-            timestamp = new CP56Time2a(msg, startIndex);
-        }
-
-        public override void Encode(Frame frame, ApplicationLayerParameters parameters, bool isSequence)
-        {
-            base.Encode(frame, parameters, isSequence);
-
-            frame.AppendBytes(timestamp.AsSpan());
-        }
+        _value = value;
+        _isTransient = isTransient;
+        _quality = quality;
     }
 
+    public StepPositionInformation(StepPositionInformation original)
+        : base(original.ObjectAddress)
+    {
+        _value = original._value;
+        _isTransient = original._isTransient;
+        _quality = new QualityDescriptor(original._quality);
+    }
+
+    internal StepPositionInformation(ApplicationLayerParameters parameters, ReadOnlySpan<byte> msg, int startIndex, bool isSequence)
+        : base(parameters, msg, startIndex, isSequence)
+    {
+        if (!isSequence)
+        {
+            startIndex += parameters.SizeOfIOA; /* 跳过信息体地址 */
+        }
+
+        if ((msg.Length - startIndex) < GetEncodedSize())
+        {
+            throw new ASDUParsingException("Message too small");
+        }
+
+        var vti = msg[startIndex++];
+
+        _isTransient = (vti & MaskTransient) != 0;
+
+        var raw = vti & MaskValue;
+
+        _value = raw > ValueMax ? raw - 128 : raw;
+
+        _quality = new QualityDescriptor(msg[startIndex]);
+    }
+
+    internal override bool HasAsduWriterBody => true;
+
+    protected internal override void EncodeBody(ref AsduWriter w, ApplicationLayerParameters parameters, bool isSequence)
+    {
+        base.EncodeBody(ref w, parameters, isSequence);
+
+        var vti = (byte)(_value < 0 ? _value + 128 : _value);
+
+        if (_isTransient)
+        {
+            vti |= MaskTransient;
+        }
+
+        w.WriteByte(vti);
+        w.WriteByte(_quality.EncodedValue);
+    }
 }
 
+/// <summary>
+/// 带 CP24Time2a 时标的步位置信息（M_ST_TA_1）。
+/// </summary>
+public class StepPositionWithCP24Time2a : StepPositionInformation
+{
+    private CP24Time2a _timestamp;
+
+    /// <summary>CP24Time2a 时标。</summary>
+    public CP24Time2a Timestamp
+    {
+        get => _timestamp;
+        set => _timestamp = value;
+    }
+
+    public override TypeID Type => TypeID.M_ST_TA_1;
+
+    public override bool SupportsSequence => false;
+
+    public StepPositionWithCP24Time2a(int ioa, int value, bool isTransient, QualityDescriptor quality, CP24Time2a timestamp)
+        : base(ioa, value, isTransient, quality)
+    {
+        _timestamp = timestamp;
+    }
+
+    public StepPositionWithCP24Time2a(StepPositionWithCP24Time2a original)
+        : base(original)
+    {
+        _timestamp = new CP24Time2a(original._timestamp);
+    }
+
+    internal StepPositionWithCP24Time2a(ApplicationLayerParameters parameters, ReadOnlySpan<byte> msg, int startIndex, bool isSequence)
+        : base(parameters, msg, startIndex, isSequence)
+    {
+        if (!isSequence)
+        {
+            startIndex += parameters.SizeOfIOA; /* 跳过信息体地址 */
+        }
+
+        if ((msg.Length - startIndex) < GetEncodedSize())
+        {
+            throw new ASDUParsingException("Message too small");
+        }
+
+        startIndex += 2; /* 跳过 VTI + QDS */
+
+        _timestamp = new CP24Time2a(msg, startIndex);
+    }
+
+    internal override bool HasAsduWriterBody => true;
+
+    protected internal override void EncodeBody(ref AsduWriter w, ApplicationLayerParameters parameters, bool isSequence)
+    {
+        base.EncodeBody(ref w, parameters, isSequence);
+
+        w.WriteBytes(_timestamp.AsSpan());
+    }
+}
+
+/// <summary>
+/// 带 CP56Time2a 时标的步位置信息（M_ST_TB_1）。
+/// </summary>
+public class StepPositionWithCP56Time2a : StepPositionInformation
+{
+    private CP56Time2a _timestamp;
+
+    /// <summary>CP56Time2a 时标。</summary>
+    public CP56Time2a Timestamp
+    {
+        get => _timestamp;
+        set => _timestamp = value;
+    }
+
+    public override TypeID Type => TypeID.M_ST_TB_1;
+
+    public override bool SupportsSequence => false;
+
+    public StepPositionWithCP56Time2a(int ioa, int value, bool isTransient, QualityDescriptor quality, CP56Time2a timestamp)
+        : base(ioa, value, isTransient, quality)
+    {
+        _timestamp = timestamp;
+    }
+
+    public StepPositionWithCP56Time2a(StepPositionWithCP56Time2a original)
+        : base(original)
+    {
+        _timestamp = new CP56Time2a(original._timestamp);
+    }
+
+    internal StepPositionWithCP56Time2a(ApplicationLayerParameters parameters, ReadOnlySpan<byte> msg, int startIndex, bool isSequence)
+        : base(parameters, msg, startIndex, isSequence)
+    {
+        if (!isSequence)
+        {
+            startIndex += parameters.SizeOfIOA; /* 跳过信息体地址 */
+        }
+
+        if ((msg.Length - startIndex) < GetEncodedSize())
+        {
+            throw new ASDUParsingException("Message too small");
+        }
+
+        startIndex += 2; /* 跳过 VTI + QDS */
+
+        _timestamp = new CP56Time2a(msg, startIndex);
+    }
+
+    internal override bool HasAsduWriterBody => true;
+
+    protected internal override void EncodeBody(ref AsduWriter w, ApplicationLayerParameters parameters, bool isSequence)
+    {
+        base.EncodeBody(ref w, parameters, isSequence);
+
+        w.WriteBytes(_timestamp.AsSpan());
+    }
+}

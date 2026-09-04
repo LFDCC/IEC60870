@@ -10,8 +10,8 @@ format_cs_files() {
 #########Clean directory#########################
 clean_build_directories()
 {
-  echo "Removing ./vs, bin/, obj/ folders, any .git directories or files, and doxydoc.NET folder..."
-  find "$FOLDER_NAME" -type d \( -name "vs" -o -name "bin" -o -name "obj" -o -name "doxydoc.NET" -o -name ".git" \) -exec rm -rf {} +
+  echo "Removing ./vs, bin/, obj/ folders and any .git directories or files..."
+  find "$FOLDER_NAME" -type d \( -name "vs" -o -name "bin" -o -name "obj" -o -name ".git" \) -exec rm -rf {} +
   find "$FOLDER_NAME" -type f -name ".git" -exec rm -f {} +
   echo "Cleanup completed!"
 }
@@ -19,12 +19,7 @@ clean_build_directories()
 #########Prepare release#############################
 # Function to prepare folder
 prepare_folder() {
-	#Create doxigen
-	rm -rf doxydoc.NET
-	#doxygen  doxygen/Doxyfile
-
-	#Create user guide
-	asciidoctor  user_guide_dotnet.adoc
+	echo "Nothing to prepare."
 }
 
 ##########Create release folder#####################
@@ -47,8 +42,6 @@ create_release_folder()
 	cp -rf LICENSE $FOLDER_NAME
 	cp -rf IEC60870.sln $FOLDER_NAME
 	cp -rf readme.md $FOLDER_NAME
-	cp -rf user_guide_dotnet.adoc $FOLDER_NAME
-	cp -rf doxygen $FOLDER_NAME
 }
 
 ################ Function to create a tar.gz archive############################

@@ -1,26 +1,20 @@
-/*
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+//------------------------------------------------------------------------------
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
 using IEC60870.Core;
 
 
-namespace IEC60870.CS101.LinkLayer
-{
+namespace IEC60870.CS101;
+
     internal interface IPrimaryLinkLayerUnbalanced
     {
         void ResetCU(int slaveAddress);
 
         /// <summary>
-        /// Determines whether this channel (slave connecrtion) is ready to transmit a new application layer message
+        /// 判断该通道（从站连接）当前能否发送新的应用层报文
         /// </summary>
         /// <returns><c>true</c> if this instance is channel available; otherwise, <c>false</c>.</returns>
         /// <param name="slaveAddress">link layer address of the slave</param>
@@ -38,30 +32,30 @@ namespace IEC60870.CS101.LinkLayer
 
     internal class PrimaryLinkLayerUnbalanced : PrimaryLinkLayer, IPrimaryLinkLayerUnbalanced
     {
-        private LinkLayerEngine linkLayer;
-        private Action<string> DebugLog;
+        private LinkLayerEngine _linkLayer;
+        private Action<string> _debugLog;
 
-        private List<SlaveConnection> slaveConnections;
+        private List<SlaveConnection> _slaveConnections;
 
         /// <summary>
-        /// The current active slave connection.
+        /// 当前活动的从站连接。
         /// </summary>
-        private SlaveConnection currentSlave = null;
+        private SlaveConnection _currentSlave = null;
 
-        private BufferFrame nextBroadcastMessage = null;
+        private BufferFrame _nextBroadcastMessage = null;
 
-        private IClientLinkLayerCallbacks callbacks = null;
+        private IClientLinkLayerCallbacks _callbacks = null;
 
-        private LinkLayerStateChanged stateChanged = null;
-        private object stateChangedParameter = null;
+        private LinkLayerStateChanged _stateChanged = null;
+        private object _stateChangedParameter = null;
 
         // can this class implement ClientBase interface?
         private class SlaveConnection
         {
 
-            private Action<string> DebugLog = null;
+            private Action<string> _debugLog = null;
 
-            public int address;
+            public int _address;
             public PrimaryLinkLayerState primaryState = PrimaryLinkLayerState.IDLE;
             public long lastSendTime = 0;
             public long originalSendTime = 0;
@@ -69,15 +63,15 @@ namespace IEC60870.CS101.LinkLayer
             public bool waitingForResponse = false;
             public LinkLayerState linkLayerState = LinkLayerState.IDLE;
 
-            PrimaryLinkLayerUnbalanced linkLayerUnbalanced;
+            PrimaryLinkLayerUnbalanced _linkLayerUnbalanced;
 
-            private bool sendLinkLayerTestFunction = false;
+            private bool _sendLinkLayerTestFunction = false;
 
-            // don't send new application layer messages to avoid data flow congestion
-            private bool dontSendMessages = false;
+            // 暂停发送新的应用层报文，避免数据流拥塞
+            private bool _dontSendMessages = false;
 
             public BufferFrame nextMessage = null;
-            private BufferFrame lastSentASDU = null;
+            private BufferFrame _lastSentASDU = null;
 
             public bool requireConfirmation = false;
 
@@ -85,7 +79,7 @@ namespace IEC60870.CS101.LinkLayer
             public bool requestClass2Data = false;
             public bool requestClass1Data = false;
 
-            private LinkLayerEngine linkLayer;
+            private LinkLayerEngine _linkLayer;
 
             private void SetState(LinkLayerState newState)
             {
@@ -94,38 +88,44 @@ namespace IEC60870.CS101.LinkLayer
 
                     linkLayerState = newState;
 
-                    if (linkLayerUnbalanced.stateChanged != null)
-                        linkLayerUnbalanced.stateChanged(linkLayerUnbalanced.stateChangedParameter,
-                            address, newState);
+                    if (_linkLayerUnbalanced._stateChanged != null)
+                {
+                    _linkLayerUnbalanced._stateChanged(_linkLayerUnbalanced._stateChangedParameter,
+                            _address, newState);
                 }
+            }
             }
 
             public SlaveConnection(int address, LinkLayerEngine linkLayer, Action<string> debugLog, PrimaryLinkLayerUnbalanced linkLayerUnbalanced)
             {
-                this.address = address;
-                this.linkLayer = linkLayer;
-                DebugLog = debugLog;
-                this.linkLayerUnbalanced = linkLayerUnbalanced;
+                _address = address;
+                _linkLayer = linkLayer;
+                _debugLog = debugLog;
+                _linkLayerUnbalanced = linkLayerUnbalanced;
             }
 
             public bool IsMessageWaitingToSend()
             {
                 if (requestClass1Data || requestClass2Data || (nextMessage != null))
-                    return true;
-                else
-                    return false;
+            {
+                return true;
             }
+            else
+            {
+                return false;
+            }
+        }
 
             internal void HandleMessage(FunctionCodeSecondary fcs, bool acd, bool dfc,
                                int addr, byte[] msg, int userDataStart, int userDataLength)
             {
-                PrimaryLinkLayerState newState = primaryState;
+                var newState = primaryState;
 
                 if (dfc)
                 {
 
                     //stop sending ASDUs; only send Status of link requests
-                    dontSendMessages = true;
+                    _dontSendMessages = true;
 
                     switch (primaryState)
                     {
@@ -148,8 +148,8 @@ namespace IEC60870.CS101.LinkLayer
                 }
                 else
                 {
-                    // unblock transmission of application layer messages
-                    dontSendMessages = false;
+                    // 恢复应用层报文的发送
+                    _dontSendMessages = false;
                 }
 
                 switch (fcs)
@@ -157,7 +157,7 @@ namespace IEC60870.CS101.LinkLayer
 
                     case FunctionCodeSecondary.ACK:
 
-                        DebugLog("[SLAVE " + address + "] PLL - received ACK");
+                        _debugLog("[SLAVE " + _address + "] PLL - received ACK");
 
                         if (primaryState == PrimaryLinkLayerState.EXECUTE_RESET_REMOTE_LINK)
                         {
@@ -168,17 +168,19 @@ namespace IEC60870.CS101.LinkLayer
                         else if (primaryState == PrimaryLinkLayerState.EXECUTE_SERVICE_SEND_CONFIRM)
                         {
 
-                            if (sendLinkLayerTestFunction)
-                                sendLinkLayerTestFunction = false;
+                            if (_sendLinkLayerTestFunction)
+                        {
+                            _sendLinkLayerTestFunction = false;
+                        }
 
-                            SetState(LinkLayerState.AVAILABLE);
+                        SetState(LinkLayerState.AVAILABLE);
 
                             newState = PrimaryLinkLayerState.LINK_LAYERS_AVAILABLE;
                         }
                         else if (primaryState == PrimaryLinkLayerState.EXECUTE_SERVICE_REQUEST_RESPOND)
                         {
 
-                            /* single char ACK is interpreted as RESP NO DATA */
+                            /* 单字符 ACK 按 RESP_NO_DATA 处理 */
                             requestClass1Data = false;
                             requestClass2Data = false;
 
@@ -192,7 +194,7 @@ namespace IEC60870.CS101.LinkLayer
 
                     case FunctionCodeSecondary.NACK:
 
-                        DebugLog("[SLAVE " + address + "] PLL - received NACK");
+                        _debugLog("[SLAVE " + _address + "] PLL - received NACK");
 
                         if (primaryState == PrimaryLinkLayerState.EXECUTE_SERVICE_SEND_CONFIRM)
                         {
@@ -207,14 +209,14 @@ namespace IEC60870.CS101.LinkLayer
 
                     case FunctionCodeSecondary.STATUS_OF_LINK_OR_ACCESS_DEMAND:
 
-                        DebugLog("[SLAVE " + address + "] PLL - received STATUS OF LINK");
+                        _debugLog("[SLAVE " + _address + "] PLL - received STATUS OF LINK");
 
                         if (primaryState == PrimaryLinkLayerState.EXECUTE_REQUEST_STATUS_OF_LINK)
                         {
 
-                            DebugLog("[SLAVE " + address + "] PLL - SEND RESET REMOTE LINK");
+                            _debugLog("[SLAVE " + _address + "] PLL - SEND RESET REMOTE LINK");
 
-                            linkLayer.SendFixedFramePrimary(FunctionCodePrimary.RESET_REMOTE_LINK, address, false, false);
+                            _linkLayer.SendFixedFramePrimary(FunctionCodePrimary.RESET_REMOTE_LINK, _address, false, false);
 
                             nextFcb = true;
                             lastSendTime = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -224,7 +226,7 @@ namespace IEC60870.CS101.LinkLayer
                             SetState(LinkLayerState.BUSY);
                         }
                         else
-                        { /* illegal message */
+                        { /* 非法报文 */
                             newState = PrimaryLinkLayerState.IDLE;
 
                             SetState(LinkLayerState.ERROR);
@@ -236,11 +238,11 @@ namespace IEC60870.CS101.LinkLayer
 
                     case FunctionCodeSecondary.RESP_USER_DATA:
 
-                        DebugLog("[SLAVE " + address + "] PLL - received USER DATA");
+                        _debugLog("[SLAVE " + _address + "] PLL - received USER DATA");
 
                         if (primaryState == PrimaryLinkLayerState.EXECUTE_SERVICE_REQUEST_RESPOND)
                         {
-                            linkLayerUnbalanced.callbacks.UserData(address, msg, userDataStart, userDataLength);
+                            _linkLayerUnbalanced._callbacks.UserData(_address, msg, userDataStart, userDataLength);
 
                             requestClass1Data = false;
                             requestClass2Data = false;
@@ -250,7 +252,7 @@ namespace IEC60870.CS101.LinkLayer
                             SetState(LinkLayerState.AVAILABLE);
                         }
                         else
-                        { /* illegal message */
+                        { /* 非法报文 */
                             newState = PrimaryLinkLayerState.IDLE;
 
                             SetState(LinkLayerState.ERROR);
@@ -262,7 +264,7 @@ namespace IEC60870.CS101.LinkLayer
 
                     case FunctionCodeSecondary.RESP_NACK_NO_DATA:
 
-                        DebugLog("[SLAVE " + address + "] PLL - received RESP NO DATA");
+                        _debugLog("[SLAVE " + _address + "] PLL - received RESP NO DATA");
 
                         if (primaryState == PrimaryLinkLayerState.EXECUTE_SERVICE_REQUEST_RESPOND)
                         {
@@ -274,7 +276,7 @@ namespace IEC60870.CS101.LinkLayer
                             SetState(LinkLayerState.AVAILABLE);
                         }
                         else
-                        { /* illegal message */
+                        { /* 非法报文 */
                             newState = PrimaryLinkLayerState.IDLE;
 
                             SetState(LinkLayerState.ERROR);
@@ -287,7 +289,7 @@ namespace IEC60870.CS101.LinkLayer
                     case FunctionCodeSecondary.LINK_SERVICE_NOT_FUNCTIONING:
                     case FunctionCodeSecondary.LINK_SERVICE_NOT_IMPLEMENTED:
 
-                        DebugLog("[SLAVE " + address + "] PLL - link layer service not functioning/not implemented in secondary station ");
+                        _debugLog("[SLAVE " + _address + "] PLL - link layer service not functioning/not implemented in secondary station ");
 
                         if (primaryState == PrimaryLinkLayerState.EXECUTE_SERVICE_SEND_CONFIRM)
                         {
@@ -301,37 +303,41 @@ namespace IEC60870.CS101.LinkLayer
                         break;
 
                     default:
-                        DebugLog("[SLAVE " + address + "] UNEXPECTED SECONDARY LINK LAYER MESSAGE");
+                        _debugLog("[SLAVE " + _address + "] UNEXPECTED SECONDARY LINK LAYER MESSAGE");
                         break;
                 }
 
                 if (acd)
                 {
-                    if (linkLayerUnbalanced.callbacks != null)
-                        linkLayerUnbalanced.callbacks.AccessDemand(address);
+                    if (_linkLayerUnbalanced._callbacks != null)
+                {
+                    _linkLayerUnbalanced._callbacks.AccessDemand(_address);
                 }
+            }
 
-                DebugLog("[SLAVE " + address + "] PLL RECV - old state: " + primaryState.ToString() + " new state: " + newState.ToString());
+                _debugLog("[SLAVE " + _address + "] PLL RECV - old state: " + primaryState.ToString() + " new state: " + newState.ToString());
 
                 primaryState = newState;
             }
 
             public void RunStateMachine()
             {
-                PrimaryLinkLayerState newState = primaryState;
+                var newState = primaryState;
 
-                long currentTime = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var currentTime = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
                 switch (primaryState)
                 {
                     case PrimaryLinkLayerState.TIMEOUT:
 
                         if (lastSendTime > currentTime)
+                    {
 
-                            /* last sent time not plausible! */
-                            lastSendTime = currentTime;
+                        /* 上次发送时间不合理！ */
+                        lastSendTime = currentTime;
+                    }
 
-                        if (currentTime > (lastSendTime + linkLayer.linkLayerParameters.TimeoutLinkState))
+                    if (currentTime > (lastSendTime + _linkLayer.linkLayerParameters.TimeoutLinkState))
                         {
                             newState = PrimaryLinkLayerState.IDLE;
                         }
@@ -341,11 +347,11 @@ namespace IEC60870.CS101.LinkLayer
                     case PrimaryLinkLayerState.IDLE:
 
                         originalSendTime = 0;
-                        sendLinkLayerTestFunction = false;
+                        _sendLinkLayerTestFunction = false;
 
-                        DebugLog("[SLAVE " + address + "] PLL - SEND FC 09 - REQUEST LINK STATUS\n");
+                        _debugLog("[SLAVE " + _address + "] PLL - SEND FC 09 - REQUEST LINK STATUS\n");
 
-                        linkLayer.SendFixedFramePrimary(FunctionCodePrimary.REQUEST_LINK_STATUS, address, false, false);
+                        _linkLayer.SendFixedFramePrimary(FunctionCodePrimary.REQUEST_LINK_STATUS, _address, false, false);
 
                         lastSendTime = currentTime;
                         waitingForResponse = true;
@@ -358,11 +364,13 @@ namespace IEC60870.CS101.LinkLayer
                         if (waitingForResponse)
                         {
                             if (lastSendTime > currentTime)
+                        {
 
-                                /* last sent time not plausible! */
-                                lastSendTime = currentTime;
+                            /* 上次发送时间不合理！ */
+                            lastSendTime = currentTime;
+                        }
 
-                            if (currentTime > (lastSendTime + linkLayer.TimeoutForACK))
+                        if (currentTime > (lastSendTime + _linkLayer.TimeoutForACK))
                             {
                                 waitingForResponse = false;
                                 lastSendTime = currentTime;
@@ -373,9 +381,9 @@ namespace IEC60870.CS101.LinkLayer
                         else
                         {
 
-                            DebugLog("[SLAVE " + address + "] PLL - SEND RESET REMOTE LINK");
+                            _debugLog("[SLAVE " + _address + "] PLL - SEND RESET REMOTE LINK");
 
-                            linkLayer.SendFixedFramePrimary(FunctionCodePrimary.RESET_REMOTE_LINK, address, false, false);
+                            _linkLayer.SendFixedFramePrimary(FunctionCodePrimary.RESET_REMOTE_LINK, _address, false, false);
 
                             lastSendTime = currentTime;
                             waitingForResponse = true;
@@ -390,11 +398,13 @@ namespace IEC60870.CS101.LinkLayer
                         if (waitingForResponse)
                         {
                             if (lastSendTime > currentTime)
+                        {
 
-                                /* last sent time not plausible! */
-                                lastSendTime = currentTime;
+                            /* 上次发送时间不合理！ */
+                            lastSendTime = currentTime;
+                        }
 
-                            if (currentTime > (lastSendTime + linkLayer.TimeoutForACK))
+                        if (currentTime > (lastSendTime + _linkLayer.TimeoutForACK))
                             {
                                 waitingForResponse = false;
                                 lastSendTime = currentTime;
@@ -414,11 +424,11 @@ namespace IEC60870.CS101.LinkLayer
 
                     case PrimaryLinkLayerState.LINK_LAYERS_AVAILABLE:
 
-                        if (sendLinkLayerTestFunction)
+                        if (_sendLinkLayerTestFunction)
                         {
-                            DebugLog("[SLAVE " + address + "] PLL - SEND TEST LINK");
+                            _debugLog("[SLAVE " + _address + "] PLL - SEND TEST LINK");
 
-                            linkLayer.SendFixedFramePrimary(FunctionCodePrimary.TEST_FUNCTION_FOR_LINK, address, nextFcb, true);
+                            _linkLayer.SendFixedFramePrimary(FunctionCodePrimary.TEST_FUNCTION_FOR_LINK, _address, nextFcb, true);
 
                             nextFcb = !nextFcb;
                             lastSendTime = currentTime;
@@ -432,17 +442,17 @@ namespace IEC60870.CS101.LinkLayer
 
                             if (requestClass1Data)
                             {
-                                DebugLog("[SLAVE " + address + "] PLL - SEND FC 10 - REQ UD 1");
+                                _debugLog("[SLAVE " + _address + "] PLL - SEND FC 10 - REQ UD 1");
 
-                                linkLayer.SendFixedFramePrimary(FunctionCodePrimary.REQUEST_USER_DATA_CLASS_1, address, nextFcb, true);
+                                _linkLayer.SendFixedFramePrimary(FunctionCodePrimary.REQUEST_USER_DATA_CLASS_1, _address, nextFcb, true);
 
                                 requestClass1Data = false;
                             }
                             else
                             {
-                                DebugLog("[SLAVE " + address + "] PLL - SEND FC 11 - REQ UD 2");
+                                _debugLog("[SLAVE " + _address + "] PLL - SEND FC 11 - REQ UD 2");
 
-                                linkLayer.SendFixedFramePrimary(FunctionCodePrimary.REQUEST_USER_DATA_CLASS_2, address, nextFcb, true);
+                                _linkLayer.SendFixedFramePrimary(FunctionCodePrimary.REQUEST_USER_DATA_CLASS_2, _address, nextFcb, true);
 
                                 requestClass2Data = false;
                             }
@@ -456,19 +466,19 @@ namespace IEC60870.CS101.LinkLayer
                         else
                         {
 
-                            if (dontSendMessages == false)
+                            if (_dontSendMessages == false)
                             {
 
-                                BufferFrame asdu = nextMessage;
+                                var asdu = nextMessage;
 
                                 if (asdu != null)
                                 {
 
-                                    DebugLog("[SLAVE " + address + "] PLL - SEND FC 03 - USER DATA CONFIRMED");
+                                    _debugLog("[SLAVE " + _address + "] PLL - SEND FC 03 - USER DATA CONFIRMED");
 
-                                    linkLayer.SendVariableLengthFramePrimary(FunctionCodePrimary.USER_DATA_CONFIRMED, address, nextFcb, true, asdu);
+                                    _linkLayer.SendVariableLengthFramePrimary(FunctionCodePrimary.USER_DATA_CONFIRMED, _address, nextFcb, true, asdu);
 
-                                    lastSentASDU = nextMessage;
+                                    _lastSentASDU = nextMessage;
                                     nextMessage = null;
 
                                     nextFcb = !nextFcb;
@@ -486,16 +496,18 @@ namespace IEC60870.CS101.LinkLayer
                     case PrimaryLinkLayerState.EXECUTE_SERVICE_SEND_CONFIRM:
 
                         if (lastSendTime > currentTime)
+                    {
 
-                            /* last sent time not plausible! */
-                            lastSendTime = currentTime;
+                        /* 上次发送时间不合理！ */
+                        lastSendTime = currentTime;
+                    }
 
-                        if (currentTime > (lastSendTime + linkLayer.TimeoutForACK))
+                    if (currentTime > (lastSendTime + _linkLayer.TimeoutForACK))
                         {
 
-                            if (currentTime > (originalSendTime + linkLayer.TimeoutRepeat))
+                            if (currentTime > (originalSendTime + _linkLayer.TimeoutRepeat))
                             {
-                                DebugLog("[SLAVE " + address + "] TIMEOUT SC: ASDU not confirmed after repeated transmission");
+                                _debugLog("[SLAVE " + _address + "] TIMEOUT SC: ASDU not confirmed after repeated transmission");
 
                                 waitingForResponse = false;
                                 lastSendTime = currentTime;
@@ -505,22 +517,22 @@ namespace IEC60870.CS101.LinkLayer
                             }
                             else
                             {
-                                DebugLog("[SLAVE " + address + "] TIMEOUT SC: 1 ASDU not confirmed");
+                                _debugLog("[SLAVE " + _address + "] TIMEOUT SC: 1 ASDU not confirmed");
 
-                                if (sendLinkLayerTestFunction)
+                                if (_sendLinkLayerTestFunction)
                                 {
 
-                                    DebugLog("[SLAVE " + address + "] PLL - SEND FC 02 - RESET REMOTE LINK [REPEAT]");
+                                    _debugLog("[SLAVE " + _address + "] PLL - SEND FC 02 - RESET REMOTE LINK [REPEAT]");
 
-                                    linkLayer.SendFixedFramePrimary(FunctionCodePrimary.TEST_FUNCTION_FOR_LINK, address, !nextFcb, true);
+                                    _linkLayer.SendFixedFramePrimary(FunctionCodePrimary.TEST_FUNCTION_FOR_LINK, _address, !nextFcb, true);
 
                                 }
                                 else
                                 {
 
-                                    DebugLog("[SLAVE " + address + "] PLL - SEND FC 03 - USER DATA CONFIRMED [REPEAT]");
+                                    _debugLog("[SLAVE " + _address + "] PLL - SEND FC 03 - USER DATA CONFIRMED [REPEAT]");
 
-                                    linkLayer.SendVariableLengthFramePrimary(FunctionCodePrimary.USER_DATA_CONFIRMED, address, !nextFcb, true, lastSentASDU);
+                                    _linkLayer.SendVariableLengthFramePrimary(FunctionCodePrimary.USER_DATA_CONFIRMED, _address, !nextFcb, true, _lastSentASDU);
 
                                 }
 
@@ -533,16 +545,18 @@ namespace IEC60870.CS101.LinkLayer
                     case PrimaryLinkLayerState.EXECUTE_SERVICE_REQUEST_RESPOND:
 
                         if (lastSendTime > currentTime)
+                    {
 
-                            /* last sent time not plausible! */
-                            lastSendTime = currentTime;
+                        /* 上次发送时间不合理！ */
+                        lastSendTime = currentTime;
+                    }
 
-                        if (currentTime > (lastSendTime + linkLayer.TimeoutForACK))
+                    if (currentTime > (lastSendTime + _linkLayer.TimeoutForACK))
                         {
 
-                            if (currentTime > (originalSendTime + linkLayer.TimeoutRepeat))
+                            if (currentTime > (originalSendTime + _linkLayer.TimeoutRepeat))
                             {
-                                DebugLog("[SLAVE " + address + "] TIMEOUT: ASDU not confirmed after repeated transmission");
+                                _debugLog("[SLAVE " + _address + "] TIMEOUT: ASDU not confirmed after repeated transmission");
                                 newState = PrimaryLinkLayerState.IDLE;
                                 requestClass1Data = false;
                                 requestClass2Data = false;
@@ -551,20 +565,20 @@ namespace IEC60870.CS101.LinkLayer
                             }
                             else
                             {
-                                DebugLog("[SLAVE " + address + "] TIMEOUT: ASDU not confirmed");
+                                _debugLog("[SLAVE " + _address + "] TIMEOUT: ASDU not confirmed");
 
                                 if (requestClass1Data)
                                 {
-                                    DebugLog("[SLAVE " + address + "] PLL - SEND FC 10 - REQ UD 1 [REPEAT]");
+                                    _debugLog("[SLAVE " + _address + "] PLL - SEND FC 10 - REQ UD 1 [REPEAT]");
 
-                                    linkLayer.SendFixedFramePrimary(FunctionCodePrimary.REQUEST_USER_DATA_CLASS_1, address, !nextFcb, true);
+                                    _linkLayer.SendFixedFramePrimary(FunctionCodePrimary.REQUEST_USER_DATA_CLASS_1, _address, !nextFcb, true);
                                 }
                                 else if (requestClass2Data)
                                 {
 
-                                    DebugLog("[SLAVE " + address + "] PLL - SEND FC 11 - REQ UD 2 [REPEAT]");
+                                    _debugLog("[SLAVE " + _address + "] PLL - SEND FC 11 - REQ UD 2 [REPEAT]");
 
-                                    linkLayer.SendFixedFramePrimary(FunctionCodePrimary.REQUEST_USER_DATA_CLASS_2, address, !nextFcb, true);
+                                    _linkLayer.SendFixedFramePrimary(FunctionCodePrimary.REQUEST_USER_DATA_CLASS_2, _address, !nextFcb, true);
                                 }
 
                                 lastSendTime = currentTime;
@@ -580,9 +594,11 @@ namespace IEC60870.CS101.LinkLayer
                 }
 
                 if (primaryState != newState)
-                    DebugLog("[SLAVE " + address + "] PLL - old state: " + primaryState.ToString() + " new state: " + newState.ToString());
+            {
+                _debugLog("[SLAVE " + _address + "] PLL - old state: " + primaryState.ToString() + " new state: " + newState.ToString());
+            }
 
-                primaryState = newState;
+            primaryState = newState;
 
             }
         }
@@ -594,28 +610,32 @@ namespace IEC60870.CS101.LinkLayer
 
         public void ResetCU(int slaveAddress)
         {
-            SlaveConnection slave = GetSlaveConnection(slaveAddress);
+            var slave = GetSlaveConnection(slaveAddress);
 
             if (slave != null)
-                slave.resetCu = true;
+        {
+            slave.resetCu = true;
         }
+    }
 
         public bool IsChannelAvailable(int slaveAddress)
         {
-            SlaveConnection slave = GetSlaveConnection(slaveAddress);
+            var slave = GetSlaveConnection(slaveAddress);
 
             if (slave != null)
             {
                 if (slave.IsMessageWaitingToSend() == false)
-                    return true;
+            {
+                return true;
             }
+        }
 
             return false;
         }
 
         public void RequestClass1Data(int slaveAddress)
         {
-            SlaveConnection slave = GetSlaveConnection(slaveAddress);
+            var slave = GetSlaveConnection(slaveAddress);
 
             if (slave != null)
             {
@@ -625,26 +645,32 @@ namespace IEC60870.CS101.LinkLayer
 
         public void RequestClass2Data(int slaveAddress)
         {
-            SlaveConnection slave = GetSlaveConnection(slaveAddress);
+            var slave = GetSlaveConnection(slaveAddress);
 
             if (slave != null)
             {
                 if (slave.IsMessageWaitingToSend())
-                    throw new LinkLayerBusyException("Message pending");
-                else
-                    slave.requestClass2Data = true;
+            {
+                throw new LinkLayerBusyException("Message pending");
             }
+            else
+            {
+                slave.requestClass2Data = true;
+            }
+        }
         }
 
         public void SendConfirmed(int slaveAddress, BufferFrame message)
         {
-            SlaveConnection slave = GetSlaveConnection(slaveAddress);
+            var slave = GetSlaveConnection(slaveAddress);
 
             if (slave != null)
             {
                 if (slave.nextMessage != null)
-                    throw new LinkLayerBusyException("Message pending");
-                else
+            {
+                throw new LinkLayerBusyException("Message pending");
+            }
+            else
                 {
                     slave.nextMessage = message.Clone();
                     slave.requireConfirmation = true;
@@ -654,22 +680,28 @@ namespace IEC60870.CS101.LinkLayer
 
         public void SendNoReply(int slaveAddress, BufferFrame message)
         {
-            if (slaveAddress == linkLayer.GetBroadcastAddress())
+            if (slaveAddress == _linkLayer.GetBroadcastAddress())
             {
-                if (nextBroadcastMessage != null)
-                    throw new LinkLayerBusyException("Broadcast message pending");
-                else
-                    nextBroadcastMessage = message;
+                if (_nextBroadcastMessage != null)
+            {
+                throw new LinkLayerBusyException("Broadcast message pending");
             }
             else
             {
-                SlaveConnection slave = GetSlaveConnection(slaveAddress);
+                _nextBroadcastMessage = message;
+            }
+        }
+            else
+            {
+                var slave = GetSlaveConnection(slaveAddress);
 
                 if (slave != null)
                 {
                     if (slave.IsMessageWaitingToSend())
-                        throw new LinkLayerBusyException("Message pending");
-                    else
+                {
+                    throw new LinkLayerBusyException("Message pending");
+                }
+                else
                     {
                         slave.nextMessage = message;
                         slave.requireConfirmation = false;
@@ -684,40 +716,48 @@ namespace IEC60870.CS101.LinkLayer
 
         public PrimaryLinkLayerUnbalanced(LinkLayerEngine linkLayer, IClientLinkLayerCallbacks callbacks, Action<string> debugLog)
         {
-            this.linkLayer = linkLayer;
-            this.callbacks = callbacks;
-            DebugLog = debugLog;
-            slaveConnections = new List<SlaveConnection>();
+            _linkLayer = linkLayer;
+            _callbacks = callbacks;
+            _debugLog = debugLog;
+            _slaveConnections = new List<SlaveConnection>();
         }
 
         private SlaveConnection GetSlaveConnection(int slaveAddres)
         {
-            foreach (SlaveConnection connection in slaveConnections)
+            foreach (var connection in _slaveConnections)
             {
-                if (connection.address == slaveAddres)
-                    return connection;
+                if (connection._address == slaveAddres)
+            {
+                return connection;
             }
+        }
 
             return null;
         }
 
         public void AddSlaveConnection(int slaveAddress)
         {
-            SlaveConnection slave = GetSlaveConnection(slaveAddress);
+            var slave = GetSlaveConnection(slaveAddress);
 
             if (slave == null)
-                slaveConnections.Add(new SlaveConnection(slaveAddress, linkLayer, DebugLog, this));
+        {
+            _slaveConnections.Add(new SlaveConnection(slaveAddress, _linkLayer, _debugLog, this));
         }
+    }
 
         public LinkLayerState GetStateOfSlave(int slaveAddress)
         {
-            SlaveConnection connection = GetSlaveConnection(slaveAddress);
+            var connection = GetSlaveConnection(slaveAddress);
 
             if (connection != null)
-                return connection.linkLayerState;
-            else
-                throw new ArgumentException("No slave with this address found");
+        {
+            return connection.linkLayerState;
         }
+        else
+        {
+            throw new ArgumentException("No slave with this address found");
+        }
+    }
 
         public override void HandleMessage(FunctionCodeSecondary fcs, bool acd, bool dfc,
                                      int address, byte[] msg, int userDataStart, int userDataLength)
@@ -725,11 +765,15 @@ namespace IEC60870.CS101.LinkLayer
             SlaveConnection slave = null;
 
             if (address == -1)
-                slave = currentSlave;
-            else
-                slave = GetSlaveConnection(address);
+        {
+            slave = _currentSlave;
+        }
+        else
+        {
+            slave = GetSlaveConnection(address);
+        }
 
-            if (slave != null)
+        if (slave != null)
             {
 
                 slave.HandleMessage(fcs, acd, dfc, address, msg, userDataStart, userDataLength);
@@ -737,33 +781,35 @@ namespace IEC60870.CS101.LinkLayer
             }
             else
             {
-                DebugLog("PLL RECV - response from unknown slave " + address + " !");
+                _debugLog("PLL RECV - response from unknown slave " + address + " !");
             }
         }
 
-        private int currentSlaveIndex = 0;
+        private int _currentSlaveIndex = 0;
 
         public override void RunStateMachine()
         {
-            // run all the link layer state machines for the registered slaves
+            // 驱动所有已注册从站的链路层状态机
 
-            if (slaveConnections.Count > 0)
+            if (_slaveConnections.Count > 0)
             {
 
-                if (currentSlave == null)
+                if (_currentSlave == null)
                 {
 
-                    /* schedule next slave connection */
-                    currentSlave = slaveConnections[currentSlaveIndex];
-                    currentSlaveIndex = (currentSlaveIndex + 1) % slaveConnections.Count;
+                    /* 调度下一次从站连接 */
+                    _currentSlave = _slaveConnections[_currentSlaveIndex];
+                    _currentSlaveIndex = (_currentSlaveIndex + 1) % _slaveConnections.Count;
 
                 }
 
-                currentSlave.RunStateMachine();
+                _currentSlave.RunStateMachine();
 
-                if (currentSlave.waitingForResponse == false)
-                    currentSlave = null;
+                if (_currentSlave.waitingForResponse == false)
+            {
+                _currentSlave = null;
             }
+        }
         }
 
         public override void SendLinkLayerTestFunction()
@@ -772,9 +818,7 @@ namespace IEC60870.CS101.LinkLayer
 
         public void SetLinkLayerStateChanged(LinkLayerStateChanged callback, object parameter)
         {
-            stateChanged = callback;
-            stateChangedParameter = parameter;
+            _stateChanged = callback;
+            _stateChangedParameter = parameter;
         }
     }
-}
-

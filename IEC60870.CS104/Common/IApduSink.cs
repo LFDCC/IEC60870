@@ -1,0 +1,27 @@
+//------------------------------------------------------------------------------
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+
+namespace IEC60870.CS104;
+
+    /// <summary>
+    /// APDU 字节发送汇（传输层抽象）。<see cref="ApduConnection"/> 通过它把编码好的
+    /// APDU 字节推给底层（TouchSocket 的 TcpClient / TcpSessionClient 等），
+    /// 与具体 socket 实现解耦。
+    /// </summary>
+    public interface IApduSink
+    {
+        /// <summary>
+        /// 异步发送一个完整 APDU。<paramref name="apdu"/> 的内存在方法返回（await 完成）后可被复用/归还。
+        /// 实现方应保证在返回前已将数据复制到自身缓冲，或已完成写出。
+        /// </summary>
+        ValueTask SendAsync(ReadOnlyMemory<byte> apdu, CancellationToken cancellationToken);
+
+        /// <summary>底层连接当前是否可用。</summary>
+        bool IsConnected { get; }
+    }

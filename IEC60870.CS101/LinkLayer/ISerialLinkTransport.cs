@@ -1,22 +1,14 @@
-/*
- *  ISerialLinkTransport.cs
- *
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+//------------------------------------------------------------------------------
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
 using System;
 using System.Threading;
 using System.Threading.Tasks;
 
 
-namespace IEC60870.CS101.LinkLayer
-{
+namespace IEC60870.CS101;
+
     /// <summary>
     /// 异步串行链路传输抽象。替代原同步 <see cref="SerialTransceiverFT12"/> 与基于原始 Socket 的
     /// TCP 虚拟串口。所有 I/O 均为 async/await，无工作线程阻塞。
@@ -44,4 +36,3 @@ namespace IEC60870.CS101.LinkLayer
         /// </summary>
         void SetTimeouts(int messageTimeout, int characterTimeout);
     }
-}

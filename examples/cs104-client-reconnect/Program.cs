@@ -21,7 +21,6 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using IEC60870.Core;
-using IEC60870.Core.InformationObjects;
 using IEC60870.CS104;
 
 namespace cs104_client_reconnect
@@ -55,7 +54,18 @@ namespace cs104_client_reconnect
             _client.AsduReceived += OnAsduReceived;
             _client.ConnectionEvent += OnConnectionEvent;
 
-            await ConnectAndResume();   // first connect
+            // First connect: may fail if the device is not up yet (very common at system
+            // startup). Do NOT let the exception kill Main -- enter the reconnect loop
+            // instead, which keeps retrying with back-off until the peer appears.
+            try
+            {
+                await ConnectAndResume();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[client] initial connect failed: {ex.Message}");
+                _ = Task.Run(ReconnectLoop);
+            }
 
             // Simulate an operator event: peer crashes, then comes back.
             _ = Task.Run(async () =>
@@ -84,7 +94,9 @@ namespace cs104_client_reconnect
             // Active shutdown: mark flag first so the drop is NOT treated as a reconnect trigger.
             _manualShutdown = true;
             await _client.DisconnectAsync();
+            await _client.DisposeAsync();
             await server.StopAsync();
+            server.Dispose();
             Console.WriteLine("bye.");
         }
 
@@ -111,16 +123,23 @@ namespace cs104_client_reconnect
         {
             lock (_reconnectGuard)
             {
-                if (_reconnecting) return;   // an earlier loop is still alive
+                if (_reconnecting)
+                {
+                    return;   // an earlier loop is still alive
+                }
+
                 _reconnecting = true;
             }
 
             try
             {
                 var delay = InitialDelay;
-                for (int attempt = 1; attempt <= MaxRetries; attempt++)
+                for (var attempt = 1; attempt <= MaxRetries; attempt++)
                 {
-                    if (_manualShutdown) return;
+                    if (_manualShutdown)
+                    {
+                        return;
+                    }
 
                     Console.WriteLine($"[reconnect] attempt {attempt} in {delay.TotalSeconds:0}s...");
                     await Task.Delay(delay, CancellationToken.None);
@@ -143,7 +162,10 @@ namespace cs104_client_reconnect
             }
             finally
             {
-                lock (_reconnectGuard) { _reconnecting = false; }
+                lock (_reconnectGuard)
+                {
+                    _reconnecting = false;
+                }
             }
         }
 

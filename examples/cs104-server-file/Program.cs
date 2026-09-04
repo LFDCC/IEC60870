@@ -3,12 +3,9 @@ using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
-using IEC60870.CS101.File;
 using IEC60870.CS101;
 using IEC60870.Core;
-using IEC60870.Core.File;
-using IEC60870.Core.InformationObjects;
-using IEC60870.Core.Quality;
+using TouchSocket.Core;
 
 
 
@@ -60,7 +57,7 @@ namespace cs104_server_file
             Array.Copy(data, 0, recvBuffer, recvdBytes, size);
             recvdBytes += size;
             Console.WriteLine("File segment - sectionName: {0} offset: {1} size: {2}", sectionName, offset, size);
-            for (int i = 0; i < size; i++)
+            for (var i = 0; i < size; i++)
             {
                 Console.Write(" " + data[i]);
             }
@@ -102,7 +99,9 @@ namespace cs104_server_file
             // CS101 slave file server listening on a TCP port.
             var slave = new Iec101Server(2404);
 
-            slave.DebugOutput = true;
+            var logger = new LoggerGroup();
+            logger.AddConsoleLogger(LogLevel.Debug);
+            slave.Logger = logger;
 
             slave.SetInterrogationHandler(InterrogationHandler, null);
 
@@ -135,10 +134,12 @@ namespace cs104_server_file
             // Register downloadable files with the auto-created FileServer.
             SimpleFile file = new SimpleFile(1, 30000, NameOfFile.TRANSPARENT_FILE);
 
-            byte[] fileData = new byte[1025];
+            var fileData = new byte[1025];
 
-            for (int i = 0; i < 1025; i++)
+            for (var i = 0; i < 1025; i++)
+            {
                 fileData[i] = (byte)(i + 1);
+            }
 
             file.AddSection(fileData);
 
@@ -167,6 +168,7 @@ namespace cs104_server_file
             }
 
             slave.Stop();
+            slave.Dispose();
             Console.WriteLine("Stop server");
         }
     }

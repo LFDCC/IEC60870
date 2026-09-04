@@ -1,23 +1,16 @@
-/*
- *  FT12Framer.cs
- *
- *  Copyright 2016-2025 LFDCC
- *
- *  This file is part of IEC60870.Core.NET
- *
- *  Licensed under the MIT License. See the LICENSE file for details.
- *
- *  See COPYING file for the complete license text.
- */
+//------------------------------------------------------------------------------
+//  Licensed under the MIT License. See the LICENSE file for details.
+//------------------------------------------------------------------------------
 
 using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using TouchSocket.Core;
 
 
-namespace IEC60870.CS101.LinkLayer
-{
+namespace IEC60870.CS101;
+
     /// <summary>
     /// 字节源抽象：FT1.2 帧解析器从它读取字节（带超时）。串口与 TCP 隧道各自实现。
     /// </summary>
@@ -47,7 +40,7 @@ namespace IEC60870.CS101.LinkLayer
                 cts.CancelAfter(timeoutMs);
                 try
                 {
-                    int n = await _stream.ReadAsync(_one, 0, 1, cts.Token).ConfigureAwait(false);
+                    var n = await _stream.ReadAsync(_one, 0, 1, cts.Token).ConfigureAwait(false);
                     if (n == 1)
                     {
                         buffer.Span[0] = _one[0];
@@ -71,15 +64,18 @@ namespace IEC60870.CS101.LinkLayer
 
             using var cts2 = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts2.CancelAfter(timeoutMs);
-            int total = 0;
+            var total = 0;
             try
             {
                 while (total < buffer.Length)
                 {
-                    int n = await _stream.ReadAsync(buffer.Slice(total), cts2.Token).ConfigureAwait(false);
+                    var n = await _stream.ReadAsync(buffer.Slice(total), cts2.Token).ConfigureAwait(false);
                     if (n <= 0)
-                        break;
-                    total += n;
+                {
+                    break;
+                }
+
+                total += n;
                 }
             }
             catch (OperationCanceledException)
@@ -102,7 +98,7 @@ namespace IEC60870.CS101.LinkLayer
     /// 自管理的异步字节队列（TCP 隧道用）。TouchSocket 收到字节后通过 <see cref="Write"/> 推入，
     /// FT1.2 帧解析器通过 <see cref="ReadAsync"/> 取走，支持超时与关闭。
     /// </summary>
-    internal sealed class AsyncByteQueue : IByteSource
+    internal sealed class AsyncByteQueue : IByteSource, IDisposable
     {
         private readonly byte[] _buf = new byte[16384];
         private int _head;
@@ -116,40 +112,73 @@ namespace IEC60870.CS101.LinkLayer
         public void Write(ReadOnlySpan<byte> data)
         {
             if (data.IsEmpty)
-                return;
+        {
+            return;
+        }
 
-            int accepted;
+        int accepted;
             lock (_lock)
             {
                 if (_closed)
-                    return;
-                accepted = 0;
-                foreach (byte b in data)
+            {
+                return;
+            }
+
+            var len = data.Length;
+                if (len > _buf.Length)
                 {
-                    if (_count == _buf.Length)
-                    {
-                        // 缓冲已满：丢弃最旧字节以接纳新字节（有界环形，避免静默覆盖未读数据导致帧损坏，代码评审 #11）。
-                        _head = (_head + 1) % _buf.Length;
-                        _count--;
-                    }
-                    _buf[_tail] = b;
-                    _tail = (_tail + 1) % _buf.Length;
-                    _count++;
-                    accepted++;
+                    // 数据块超过环形缓冲总容量：只保留最新部分（丢弃最旧字节）
+                    data = data.Slice(len - _buf.Length);
+                    len = _buf.Length;
                 }
+
+                accepted = len;
+                if (_count + len > _buf.Length)
+                {
+                    // 缓冲不足：丢弃最旧字节以腾出空间
+                    var drop = _count + len - _buf.Length;
+                    _head = (_head + drop) % _buf.Length;
+                    _count -= drop;
+                }
+
+                // 整块写入环形缓冲（处理回绕）
+                var first = Math.Min(len, _buf.Length - _tail);
+                data.Slice(0, first).CopyTo(new Span<byte>(_buf, _tail, first));
+                if (first < len)
+                {
+                    data.Slice(first).CopyTo(new Span<byte>(_buf, 0, len - first));
+                }
+                _tail = (_tail + len) % _buf.Length;
+                _count += len;
             }
             // 仅对实际写入的字节放行信号量，避免溢出丢弃时信号量计数虚高。
             if (accepted > 0)
             {
-                try { _signal.Release(accepted); } catch { /* disposed */ }
+                try
+            {
+                _signal.Release(accepted);
             }
+            catch { /* disposed */ }
         }
+    }
 
-        public void Close()
+    public void Close()
         {
             _closed = true;
             _closeCts.Cancel();
-            try { _signal.Release(); } catch { /* disposed */ }
+            try
+        {
+            _signal.Release();
+        }
+        catch { /* disposed */ }
+    }
+
+    /// <summary>关闭队列并释放内部信号量与 CTS（幂等，SafeDispose 语义）。</summary>
+    public void Dispose()
+        {
+            Close();
+            _closeCts.SafeDispose();
+            _signal.SafeDispose();
         }
 
         /// <summary>清空已缓冲但未消费的字节（连接切换/重连时丢弃上一会话的残留帧，避免帧损坏）。</summary>
@@ -185,13 +214,16 @@ namespace IEC60870.CS101.LinkLayer
 
             lock (_lock)
             {
-                int toCopy = Math.Min(buffer.Length, _count);
-                for (int i = 0; i < toCopy; i++)
+                var toCopy = Math.Min(buffer.Length, _count);
+                // 整块拷贝（处理回绕）
+                var first = Math.Min(toCopy, _buf.Length - _head);
+                new Span<byte>(_buf, _head, first).CopyTo(buffer.Span);
+                if (first < toCopy)
                 {
-                    buffer.Span[i] = _buf[_head];
-                    _head = (_head + 1) % _buf.Length;
-                    _count--;
+                    new Span<byte>(_buf, 0, toCopy - first).CopyTo(buffer.Span.Slice(first));
                 }
+                _head = (_head + toCopy) % _buf.Length;
+                _count -= toCopy;
                 return toCopy;
             }
         }
@@ -208,9 +240,11 @@ namespace IEC60870.CS101.LinkLayer
         {
             // 等待帧起始字符
             if (await src.ReadAsync(frame.Slice(0, 1), messageTimeout, ct).ConfigureAwait(false) != 1)
-                return 0;
+        {
+            return 0;
+        }
 
-            byte start = frame.Span[0];
+        var start = frame.Span[0];
 
             if (start == 0x68)
             {
@@ -221,7 +255,7 @@ namespace IEC60870.CS101.LinkLayer
                 }
 
                 int l = frame.Span[1];
-                int rest = l + 4; // 从索引 2 起还需读取的字节数
+                var rest = l + 4; // 从索引 2 起还需读取的字节数
 
                 if (await src.ReadAsync(frame.Slice(2, rest), characterTimeout, ct).ConfigureAwait(false) != rest)
                 {
@@ -233,7 +267,7 @@ namespace IEC60870.CS101.LinkLayer
             }
             else if (start == 0x10)
             {
-                int msgSize = 3 + ll.AddressLength;
+                var msgSize = 3 + ll.AddressLength;
 
                 if (await src.ReadAsync(frame.Slice(1, msgSize), characterTimeout, ct).ConfigureAwait(false) != msgSize)
                 {
@@ -254,4 +288,3 @@ namespace IEC60870.CS101.LinkLayer
             }
         }
     }
-}

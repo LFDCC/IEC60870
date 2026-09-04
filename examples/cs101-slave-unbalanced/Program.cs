@@ -6,11 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using IEC60870.CS101;
 using IEC60870.Core;
-using IEC60870.Core.InformationObjects;
-using IEC60870.Core.Quality;
-using IEC60870.CS101.LinkLayer;
-using IEC60870.CS101.File;
-using IEC60870.Core.File;
+using TouchSocket.Core;
 
 namespace cs101_slave_unbalanced {
 
@@ -21,7 +17,8 @@ namespace cs101_slave_unbalanced {
         private static bool myInterrogationHandler(object parameter, IClientConnection connection, ASDU asdu, byte qoi)
         {
             
-            if (asdu.Ca == slaveAddress) {
+            if (asdu.Ca == slaveAddress)
+            {
 
                 Console.WriteLine("Interrogation for group " + qoi);
 
@@ -55,7 +52,6 @@ namespace cs101_slave_unbalanced {
                 connection.SendASDU (newAsdu);
 
                 connection.SendACT_TERM (asdu);
-
             }
 
             return true;
@@ -63,7 +59,7 @@ namespace cs101_slave_unbalanced {
 
         public static async Task Main (string[] args)
         {
-            bool running = true;
+            var running = true;
 
             // use Ctrl-C to stop the programm
             Console.CancelKeyPress += delegate(object? sender, ConsoleCancelEventArgs e) {
@@ -71,13 +67,17 @@ namespace cs101_slave_unbalanced {
                 running = false;
             };
 
-            string portName = "COM2";
+            var portName = "COM2";
 
             if (args.Length > 0)
+            {
                 portName = args [0];
+            }
 
             if (args.Length > 1)
+            {
                 int.TryParse (args [1], out slaveAddress);
+            }
 
             SerialPort port = new SerialPort (portName, 9600, Parity.None, 8, StopBits.One);
 
@@ -86,7 +86,9 @@ namespace cs101_slave_unbalanced {
             llParameters.UseSingleCharACK = true;
 
             Iec101Server slave = new Iec101Server (port, llParameters);
-            slave.DebugOutput = true;
+            var logger = new LoggerGroup();
+            logger.AddConsoleLogger(LogLevel.Debug);
+            slave.Logger = logger;
             slave.LinkLayerAddress = slaveAddress;
 
             // for using the slave in balanced mode simple change the mode here:
@@ -100,15 +102,17 @@ namespace cs101_slave_unbalanced {
             asdu.AddInformationObject (new StepPositionInformation (301, 1, false, new QualityDescriptor()));
             slave.EnqueueUserDataClass1 (asdu);
 
-            long lastTimestamp = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds ();
+            var lastTimestamp = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds ();
             Int16 measuredValue = 0;
 
             TransparentFile file = new TransparentFile (1, 30000, NameOfFile.TRANSPARENT_FILE);
 
-            byte[] fileData = new byte[1025];
+            var fileData = new byte[1025];
 
-            for (int i = 0; i < 1025; i++)
+            for (var i = 0; i < 1025; i++)
+            {
                 fileData [i] = (byte)(i + 1);
+            }
 
             file.AddSection (fileData);
 
@@ -117,9 +121,11 @@ namespace cs101_slave_unbalanced {
             var cts = new CancellationTokenSource ();
             var loop = slave.StartAsync (cts.Token);
 
-            while (running) {
+            while (running)
+            {
 
-                if ((System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - lastTimestamp) >= 5000) {
+                if ((System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - lastTimestamp) >= 5000)
+                {
 
                     lastTimestamp = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds ();
 
@@ -130,19 +136,23 @@ namespace cs101_slave_unbalanced {
                     measuredValue++;
                 }
 
-                if (Console.KeyAvailable) {
+                if (Console.KeyAvailable)
+                {
 
                     ConsoleKeyInfo keyInfo = Console.ReadKey ();
 
-                    if (keyInfo.KeyChar == 't') {
+                    if (keyInfo.KeyChar == 't')
+                    {
                         slave.SendLinkLayerTestFunction ();
                     } 
-                    else {
+                    else
+                    {
                         Console.WriteLine ("Send spontaneous message");
 
-                        bool value = false;
+                        var value = false;
 
-                        if (keyInfo.KeyChar == 's') {
+                        if (keyInfo.KeyChar == 's')
+                        {
                             value = true;
                         }
 
@@ -158,6 +168,7 @@ namespace cs101_slave_unbalanced {
 
             slave.Stop ();
             await loop;
+            slave.Dispose ();
         }
     }
 }

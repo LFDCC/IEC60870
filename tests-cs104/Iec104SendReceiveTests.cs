@@ -12,11 +12,8 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using IEC60870.Core;
-using IEC60870.Core.InformationObjects;
-using IEC60870.Core.Time;
 using IEC60870.CS104;
 using NUnit.Framework;
-using IEC60870.Core.Quality;
 
 namespace IEC60870.CS104.Tests
 {
@@ -67,7 +64,10 @@ namespace IEC60870.CS104.Tests
             var delay = Task.Delay(TimeSpan.FromSeconds(seconds));
             var completed = await Task.WhenAny(task, delay);
             if (ReferenceEquals(completed, delay))
+            {
                 throw new TimeoutException($"Timed out after {seconds}s waiting for ASDU.");
+            }
+
             return await task;
         }
 
@@ -93,8 +93,16 @@ namespace IEC60870.CS104.Tests
         [OneTimeTearDown]
         public async Task OneTimeTearDown()
         {
-            try { await _client.DisconnectAsync(); } catch { /* ignore */ }
-            try { _server.Dispose(); } catch { /* ignore */ }
+            try
+            {
+                await _client.DisconnectAsync();
+            }
+            catch { /* ignore */ }
+            try
+            {
+                _server.Dispose();
+            }
+            catch { /* ignore */ }
         }
 
         // ── Connectivity sanity ────────────────────────────────────────
@@ -312,7 +320,10 @@ namespace IEC60870.CS104.Tests
             _client = new Iec104Client("127.0.0.1", Port);
             _client.ConnectionEvent += ev =>
             {
-                lock (_events) { _events.Add(ev); }
+                lock (_events)
+                {
+                    _events.Add(ev);
+                }
             };
             // Autostart = true -> 发送 STARTDT_ACT 并等待 STARTDT_CON，激活数据传输
             await _client.ConnectAsync();
@@ -321,8 +332,16 @@ namespace IEC60870.CS104.Tests
         [TearDown]
         public async Task TearDown()
         {
-            try { await _client.DisconnectAsync(); } catch { /* ignore */ }
-            try { _server.Dispose(); } catch { /* ignore */ }
+            try
+            {
+                await _client.DisconnectAsync();
+            }
+            catch { /* ignore */ }
+            try
+            {
+                _server.Dispose();
+            }
+            catch { /* ignore */ }
         }
 
         [Test]
@@ -335,7 +354,7 @@ namespace IEC60870.CS104.Tests
 
             // 等待客户端收到 ConnectionClosed（远端关闭 -> OnTcpClosed -> NotifyClosed）
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            bool gotClosed = false;
+            var gotClosed = false;
             while (sw.Elapsed < TimeSpan.FromSeconds(5))
             {
                 lock (_events)
@@ -378,7 +397,10 @@ namespace IEC60870.CS104.Tests
             _server = new Iec104Server();
             _server.ConnectionEvent += (session, ev) =>
             {
-                lock (_events) { _events.Add((session, ev)); }
+                lock (_events)
+                {
+                    _events.Add((session, ev));
+                }
             };
             await _server.StartAsync(Port);
 
@@ -389,8 +411,16 @@ namespace IEC60870.CS104.Tests
         [TearDown]
         public async Task TearDown()
         {
-            try { await _client.DisconnectAsync(); } catch { /* ignore */ }
-            try { _server.Dispose(); } catch { /* ignore */ }
+            try
+            {
+                await _client.DisconnectAsync();
+            }
+            catch { /* ignore */ }
+            try
+            {
+                _server.Dispose();
+            }
+            catch { /* ignore */ }
         }
 
         [Test]
@@ -404,7 +434,7 @@ namespace IEC60870.CS104.Tests
 
             // 等待服务端收到 ConnectionClosed（带来源会话）
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            bool gotClosed = false;
+            var gotClosed = false;
             Iec104Session closedSession = null;
             while (sw.Elapsed < System.TimeSpan.FromSeconds(5))
             {
@@ -420,7 +450,11 @@ namespace IEC60870.CS104.Tests
                         }
                     }
                 }
-                if (gotClosed) break;
+                if (gotClosed)
+                {
+                    break;
+                }
+
                 await Task.Delay(50);
             }
 
