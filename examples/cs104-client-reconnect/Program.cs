@@ -172,7 +172,7 @@ namespace cs104_client_reconnect
         private static void OnAsduReceived(in AsduView view)
         {
             // Zero-copy view is only valid inside this callback; materialize what we need.
-            Console.WriteLine($"[asdu] Type={view.TypeId} COT={view.Cot} CA={view.CommonAddress} " +
+            Console.WriteLine($"[asdu] Type={view.TypeId} COT={view.Cot} CA={view.Ca} " +
                               $"elements={view.NumberOfElements}");
         }
 

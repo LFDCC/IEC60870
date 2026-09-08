@@ -1,6 +1,18 @@
 IEC60870.NETAsync — Changelog
 =============================
 
+Changes to version 6.0.0 (breaking)
+-----------------------------------
+- API renames for consistency between the zero-copy view and the heap model:
+  `AsduView.CommonAddress` -> `AsduView.Ca` (matches `ASDU.Ca`),
+  `AsduView.OriginatorAddress` -> `AsduView.Oa` (matches `ASDU.Oa`),
+  `ApplicationLayerParameters.OA` -> `ApplicationLayerParameters.Oa`.
+- New `ASDU(AsduView view)` constructor overload: materializes the zero-copy view
+  into a heap ASDU (header fields assigned directly, information-object payload
+  copied once) so it can outlive the receive buffer. Same validation as the
+  byte[]-based constructor.
+- TouchSocket dependency updated 4.3.2 -> 4.3.6.
+
 Changes to version 4.0.9
 ------------------------
 - Raw protocol frame events: unified `RawFrameReceived` / `RawFrameSent` on IEC 104 client/server and IEC 101 client/server. Complete single frame (APDU for 104 incl. 0x68 APCI header; FT1.2 frame for 101 incl. start/control/checksum), delivered as a freshly-copied byte[] that is safe to keep/queue/log. Fires only when a subscriber is attached (zero overhead otherwise). IEC 104 receive side upgraded from raw TCP chunks to reassembled complete APDUs (ApduReader.Frame + ApduFramer.FrameParsedHandler). IEC 101 LinkLayerEngine bridges its existing RawMessageHandler hooks into modern events.

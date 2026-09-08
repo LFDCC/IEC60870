@@ -201,7 +201,7 @@ namespace cs104_waitasync_command
             int ElementCount, int Ca)
         {
             public static AsduSnapshot Capture(in AsduView a, ApplicationLayerParameters al)
-                => new AsduSnapshot(a.TypeId, a.Cot, a.NumberOfElements, a.CommonAddress);
+                => new AsduSnapshot(a.TypeId, a.Cot, a.NumberOfElements, a.Ca);
         }
 
         public static async Task Main(string[] args)

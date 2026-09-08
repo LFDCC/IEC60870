@@ -46,7 +46,7 @@ namespace IEC60870.CS104.Tests
         {
             TypeId = a.TypeId,
             Cot = a.Cot,
-            CommonAddress = a.CommonAddress,
+            CommonAddress = a.Ca,
             IsTest = a.IsTest,
             IsNegative = a.IsNegative,
             NumberOfElements = a.NumberOfElements,

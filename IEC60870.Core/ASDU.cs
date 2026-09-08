@@ -7,7 +7,7 @@
 namespace IEC60870.Core;
 
 /// <summary>
-/// 应用层消息（ASDU）。承载通用报文头信息（TI/VSQ/COT/OA/CA）与一组同类型信息对象，
+/// 应用层消息（ASDU）。承载通用报文头信息（TI/VSQ/COT/Oa/CA）与一组同类型信息对象，
 /// 既用于组包发送，也用于解析接收报文。
 /// </summary>
 public class ASDU
@@ -31,7 +31,7 @@ public class ASDU
 
     internal CauseOfTransmission _cot;
 
-    // 源发站地址（OA）
+    // 源发站地址（Oa）
     internal byte _oa;
 
     // 本报文是否为试验报文
@@ -67,7 +67,7 @@ public class ASDU
         set => _cot = value;
     }
 
-    /// <summary>源发站地址（OA）。</summary>
+    /// <summary>源发站地址（Oa）。</summary>
     public byte Oa => _oa;
 
     /// <summary>报文是否为试验报文。</summary>
@@ -98,7 +98,7 @@ public class ASDU
     /// <param name="cot">传送原因（COT）</param>
     /// <param name="isTest">是否为试验报文</param>
     /// <param name="isNegative">是否为否定确认</param>
-    /// <param name="oa">源发站地址（OA）</param>
+    /// <param name="oa">源发站地址（Oa）</param>
     /// <param name="ca">ASDU 公共地址（CA）</param>
     /// <param name="isSequence">信息体是否按序列组织</param>
     public ASDU(ApplicationLayerParameters parameters, CauseOfTransmission cot, bool isTest, bool isNegative, byte oa, int ca, bool isSequence)
@@ -171,6 +171,40 @@ public class ASDU
 
         _payload = new byte[payloadSize];
         Buffer.BlockCopy(msg, bufPos, _payload, 0, payloadSize);
+    }
+
+    /// <summary>
+    /// 由零拷贝视图 <see cref="AsduView"/> 物化为 ASDU 对象：头字段逐项直接赋值
+    /// （不经字节缓冲版构造的二次解析），信息体区域仅做一次拷贝后脱离接收缓冲区长期持有。
+    /// </summary>
+    /// <param name="view">叠加在接收缓冲区上的 ASDU 只读视图</param>
+    /// <exception cref="IEC60870.Core.ASDUParsingException">视图未覆盖完整 ASDU 头部，
+    /// 或信息体长度不足以容纳 VSQ 声明的信息对象数时抛出（与字节缓冲版构造的校验一致）</exception>
+    public ASDU(AsduView view)
+    {
+        if (!view.IsValid)
+        {
+            throw new ASDUParsingException("Message header too small");
+        }
+
+        _parameters = view.Parameters;
+        _typeId = view.TypeId;
+        _hasTypeId = true;
+        _vsq = view.Vsq;
+        _cot = view.Cot;
+        _isTest = view.IsTest;
+        _isNegative = view.IsNegative;
+        _oa = (byte)view.Oa;
+        _ca = view.Ca;
+
+        // 校验 payload 长度是否足以容纳 VSQ 声明的信息对象数（与字节缓冲版构造一致），
+        // 短 payload + 过大 VSQ 会让 GetElement(index) 算出越界偏移。
+        _payload = view.InformationObjects.ToArray();
+        var expected = AsduDecoder.ComputeExpectedPayloadSize(this);
+        if (expected >= 0 && _payload.Length < expected)
+        {
+            throw new ASDUParsingException("Payload too small for declared VSQ/TypeID (need " + expected + ", got " + _payload.Length + ")");
+        }
     }
 
     /// <summary>
@@ -254,7 +288,7 @@ public class ASDU
 
         if (_parameters.SizeOfCOT == 2)
         {
-            builder.Append(" OA: ").Append(_oa);
+            builder.Append(" Oa: ").Append(_oa);
         }
 
         if (_isTest)

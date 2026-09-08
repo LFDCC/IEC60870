@@ -11,14 +11,14 @@ namespace IEC60870.Core;
     /// <see cref="ASDU"/>，调用方只需负责发送（I 帧）。
     /// </summary>
     /// <remarks>
-    /// OA（源发地址）统一取自 <c>ApplicationLayerParameters.OA</c>，与原库语义一致。
+    /// Oa（源发地址）统一取自 <c>ApplicationLayerParameters.Oa</c>，与原库语义一致。
     /// </remarks>
     public class CommandBuilder
     {
         /// <summary>构造一个携带单个命令 InformationObject 的 ASDU。</summary>
         internal static ASDU Build(ApplicationLayerParameters al, CauseOfTransmission cot, int ca, InformationObject io)
         {
-            var asdu = new ASDU(al, cot, false, false, (byte)al.OA, ca, false);
+            var asdu = new ASDU(al, cot, false, false, (byte)al.Oa, ca, false);
             asdu.AddInformationObject(io);
             return asdu;
         }

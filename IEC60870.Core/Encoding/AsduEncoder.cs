@@ -80,7 +80,7 @@ internal static class AsduEncoder
         return true;
     }
 
-    /// <summary>把 TI/VSQ/COT/OA/CA 六个头部字段写入帧。</summary>
+    /// <summary>把 TI/VSQ/COT/Oa/CA 六个头部字段写入帧。</summary>
     private static void WriteHeader(Frame frame, ASDU asdu, ApplicationLayerParameters parameters)
     {
         frame.SetNextByte((byte)asdu._typeId);
@@ -145,7 +145,7 @@ internal static class AsduEncoder
     /// 无中间 Frame 分配、无逐字节虚调用）。为 CS104 发送热路径的编码出口。
     /// </summary>
     /// <remarks>
-    /// 单帧 APDU 预留整段后：头部（TypeId/VSQ/COT/OA/CA）直写，随后逐信息体调用
+    /// 单帧 APDU 预留整段后：头部（TypeId/VSQ/COT/Oa/CA）直写，随后逐信息体调用
     /// <see cref="InformationObject.EncodeBody(ref AsduWriter,ApplicationLayerParameters,bool)"/>
     /// （每 IO 一次虚调用，原为每字节一次）。对于仅 override
     /// <c>Encode(Frame,...)</c> 的用户自定义 IO（HasAsduWriterBody=false），

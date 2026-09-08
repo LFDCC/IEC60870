@@ -45,7 +45,7 @@ public class ApplicationLayerParameters
     }
 
     /// <summary>
-    /// 获取或设置传送原因 COT 的字节长度（参数 b，取值 1 或 2；为 2 时包含发起者地址 OA）。
+    /// 获取或设置传送原因 COT 的字节长度（参数 b，取值 1 或 2；为 2 时包含发起者地址 Oa）。
     /// </summary>
     public int SizeOfCOT
     {
@@ -54,10 +54,10 @@ public class ApplicationLayerParameters
     }
 
     /// <summary>
-    /// 获取或设置默认发起者地址 OA（Originator Address）。
+    /// 获取或设置默认发起者地址 Oa（Originator Address）。
     /// 仅在 <see cref="SizeOfCOT"/> 为 2 时参与编码。
     /// </summary>
-    public int OA
+    public int Oa
     {
         get => _originatorAddress;
         set => _originatorAddress = value;

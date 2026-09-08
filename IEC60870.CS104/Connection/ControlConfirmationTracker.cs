@@ -49,7 +49,7 @@ internal sealed class ControlConfirmationTracker
 
         var ioa = ControlConfirmMatcher.ReadIoa(view, al);
         var selectBit = ControlConfirmMatcher.ReadSelectBit(view, al);
-        var key = ControlConfirmMatcher.MakeKey(view.TypeId, view.CommonAddress, ioa, selectBit);
+        var key = ControlConfirmMatcher.MakeKey(view.TypeId, view.Ca, ioa, selectBit);
 
         TaskCompletionSource<ControlConfirmation> tcs;
         lock (_gate)
@@ -63,7 +63,7 @@ internal sealed class ControlConfirmationTracker
         }
 
         tcs.TrySetResult(new ControlConfirmation(
-            view.TypeId, view.CommonAddress, ioa,
+            view.TypeId, view.Ca, ioa,
             selectBit, view.IsNegative, view.IsTest));
         return true;
     }

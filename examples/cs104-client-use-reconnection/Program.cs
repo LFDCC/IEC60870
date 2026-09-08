@@ -47,7 +47,7 @@ namespace cs104_client_use_reconnection
             _client = new Iec104Client("127.0.0.1", 2404);
             _client.AsduReceived += (in AsduView view) =>
             {
-                Console.WriteLine($"[asdu] Type={view.TypeId} COT={view.Cot} CA={view.CommonAddress} " +
+                Console.WriteLine($"[asdu] Type={view.TypeId} COT={view.Cot} CA={view.Ca} " +
                                   $"elements={view.NumberOfElements}");
             };
             try

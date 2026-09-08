@@ -47,7 +47,7 @@ namespace cs104_client_raw
             // The normal decoded ASDU event still works alongside the raw event.
             client.AsduReceived += (in AsduView view) =>
             {
-                Console.WriteLine($"  [decoded] Type={view.TypeId} COT={view.Cot} CA={view.CommonAddress} N={view.NumberOfElements}");
+                Console.WriteLine($"  [decoded] Type={view.TypeId} COT={view.Cot} CA={view.Ca} N={view.NumberOfElements}");
             };
 
             Console.WriteLine("IEC 104: connecting to 127.0.0.1:2404 (autostart STARTDT)...");

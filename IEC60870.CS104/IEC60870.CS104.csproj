@@ -6,7 +6,7 @@
     <Copyright>Copyright 2026 LFDCC</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageId>LFDCC.IEC60870.CS104</PackageId>
-    <Version>5.2.1</Version>
+    <Version>6.0.0</Version>
     <RootNamespace>IEC60870.CS104</RootNamespace>
     <AssemblyName>IEC60870.CS104</AssemblyName>
     <TargetFramework>net6.0</TargetFramework>
@@ -29,7 +29,7 @@
     <InternalsVisibleTo Include="tests-cs104" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="TouchSocket" Version="4.3.2" />
+    <PackageReference Include="TouchSocket" Version="4.3.6" />
   </ItemGroup>
 
 </Project>

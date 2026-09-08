@@ -326,7 +326,7 @@ namespace IEC60870.CS104.Tests
             msg[0] = (byte)TypeID.M_EP_TA_1; // 17
             msg[1] = 0x82; // SQ | count 2
             msg[2] = 1;    // COT = SPONTANEOUS
-            msg[3] = 0;    // OA
+            msg[3] = 0;    // Oa
             msg[4] = 1;    // CA low
             msg[5] = 0;    // CA high
             // payload 9 字节（不足以容纳 2 个 6 字节元素）
@@ -405,7 +405,7 @@ namespace IEC60870.CS104.Tests
             msg[0] = 200;            // 未知 TypeID
             msg[1] = 1;              // VSQ = 1（非序列）
             msg[2] = 1;
-            msg[3] = 0;  // COT + OA
+            msg[3] = 0;  // COT + Oa
             msg[4] = 1;
             msg[5] = 0;  // CA
             return new ASDU(al, msg, 0, msg.Length);

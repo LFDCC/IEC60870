@@ -14,7 +14,7 @@ namespace IEC60870.Core;
     /// <remarks>
     /// ASDU 布局（字段宽度由 <see cref="ApplicationLayerParameters"/> 决定，均为小端）：
     /// <code>
-    /// TypeID(1) | VSQ(1) | COT(SizeOfCOT: 1 或 2, 含 OA) | CA(SizeOfCA) | 信息对象...
+    /// TypeID(1) | VSQ(1) | COT(SizeOfCOT: 1 或 2, 含 Oa) | CA(SizeOfCA) | 信息对象...
     /// COT 字节: bit7=test, bit6=negative, bits0-5=cause
     /// VSQ 字节: bit7=sequence, bits0-6=元素个数
     /// </code>
@@ -64,11 +64,11 @@ namespace IEC60870.Core;
         /// <summary>否定确认位（COT 字节 bit6）。</summary>
         public bool IsNegative => (_data[2] & 0x40) == 0x40;
 
-        /// <summary>源发地址 OA（仅当 SizeOfCOT == 2 时有效，否则为 0）。</summary>
-        public int OriginatorAddress => _p.SizeOfCOT == 2 ? _data[3] : 0;
+        /// <summary>源发地址 Oa（仅当 SizeOfCOT == 2 时有效，否则为 0）。</summary>
+        public int Oa => _p.SizeOfCOT == 2 ? _data[3] : 0;
 
-        /// <summary>公共地址 CA（小端，宽度由 SizeOfCA 决定）。</summary>
-        public int CommonAddress
+        /// <summary>公共地址 CA（小端，宽度由 SizeOfCA 决定）。与 <see cref="ASDU.Ca"/> 同名。</summary>
+        public int Ca
         {
             get
             {

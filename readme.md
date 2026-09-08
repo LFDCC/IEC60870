@@ -71,7 +71,7 @@ var client = new Iec104Client("127.0.0.1");
 
 client.AsduReceived += (in AsduView asdu) =>
 {
-    Console.WriteLine($"RX TypeID={(int)asdu.TypeId} COT={asdu.Cot} CA={asdu.CommonAddress}");
+    Console.WriteLine($"RX TypeID={(int)asdu.TypeId} COT={asdu.Cot} CA={asdu.Ca}");
     Console.WriteLine(asdu.Raw.ToArray().ToHex());   // built-in debug helper
 };
 
