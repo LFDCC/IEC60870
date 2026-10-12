@@ -1,6 +1,10 @@
 IEC60870.NETAsync — Changelog
 =============================
 
+Changes to version 6.0.1
+------------------------
+- TouchSocket dependency updated 4.3.6 -> 4.3.10 (CS101 and CS104; no API changes on our side).
+
 Changes to version 6.0.0 (breaking)
 -----------------------------------
 - API renames for consistency between the zero-copy view and the heap model:
