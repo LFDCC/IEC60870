@@ -72,21 +72,48 @@ internal static class ControlConfirmMatcher
         return ioa;
     }
 
-    /// <summary>从收到的 ACT-CON 读 Select 位：IOA 之后第一个限定词字节的 bit7。</summary>
+    /// <summary>
+    /// 控制命令「限定词字节」（含 Select 位）相对信息元素起点的偏移（不含 IOA）。
+    /// 返回 -1 表示该类型无 Select 位（如 C_BO_NA_1 / C_BO_TA_1）。
+    /// </summary>
     /// <remarks>
-    /// 直接读字节（零分配），与 <see cref="GetSelectBit(InformationObject)"/> 的位定义一致：
-    /// C_SC/DC/RC 的 SCO/DCQ、C_SE 的 QOS 均为信息元素首字节 bit7 = Select；
-    /// 无 Select 位的命令（如 C_BO_NA_1）按 false 处理。
+    /// 各命令类型的信息元素布局不同：
+    /// <list type="bullet">
+    /// <item>C_SC/DC/RC（SCO/DCQ/RCO 即限定词本身）：偏移 0；</item>
+    /// <item>C_SE_NA_1/NB_1（2 字节归一化/标度化值 + QOS）：偏移 2；</item>
+    /// <item>C_SE_NC_1（4 字节短浮点值 + QOS）：偏移 4；</item>
+    /// <item>带 CP56Time2a 的变体：时标追加在限定词之后，<b>不改变限定词偏移</b>；</item>
+    /// <item>C_BO_NA_1 / C_BO_TA_1：仅 32 位串，无 Select 位。</item>
+    /// </list>
+    /// 这是接收侧读取 Select 位的唯一事实源，必须与发送侧
+    /// <see cref="GetSelectBit(InformationObject)"/>（类型化读取）保持一致。
+    /// </remarks>
+    private static int SelectQualifierOffset(TypeID type) => type switch
+    {
+        TypeID.C_SC_NA_1 or TypeID.C_DC_NA_1 or TypeID.C_RC_NA_1 => 0,
+        TypeID.C_SC_TA_1 or TypeID.C_DC_TA_1 or TypeID.C_RC_TA_1 => 0,
+        TypeID.C_SE_NA_1 or TypeID.C_SE_NB_1 or TypeID.C_SE_TA_1 or TypeID.C_SE_TB_1 => 2,
+        TypeID.C_SE_NC_1 or TypeID.C_SE_TC_1 => 4,
+        TypeID.C_BO_NA_1 or TypeID.C_BO_TA_1 => -1,
+        _ => -1 // 非控制命令无 Select 位
+    };
+
+    /// <summary>从收到的 ACT-CON 读 Select 位（限定词字节 bit7），零分配。</summary>
+    /// <remarks>
+    /// 限定词在信息元素内的偏移随类型而异（见 <see cref="SelectQualifierOffset"/>）——
+    /// 早期实现固定用 <c>HeaderLength + SizeOfIOA</c>，对 C_SE_* 会误读值的低字节 bit7，
+    /// 导致设定值低位恰好置位时确认匹配失败而超时（已修复）。
     /// </remarks>
     internal static bool ReadSelectBit(in AsduView view, ApplicationLayerParameters al)
     {
-        if (view.TypeId == TypeID.C_BO_NA_1)
+        var rel = SelectQualifierOffset(view.TypeId);
+        if (rel < 0)
         {
             return false; // 无 Select 位
         }
 
         var raw = view.Raw;
-        var off = view.HeaderLength + al.SizeOfIOA; // 第一个信息元素的限定词字节
+        var off = view.HeaderLength + al.SizeOfIOA + rel;
         if (off < raw.Length)
         {
             return (raw[off] & 0x80) != 0;
@@ -97,8 +124,9 @@ internal static class ControlConfirmMatcher
 
     /// <summary>
     /// 读取控制命令的 Select 位（预发=true / 执行=false）。各命令类型 Select 位位置不同：
-    /// C_SC/DC/RC 在 IOA 后第 1 字节（SCO/DCQ/RCO），C_SE 在 QOS 字节，直接读类型化属性最稳妥。
-    /// 无 Select 位的命令（如 C_BO_NA_1）按执行（false）处理。
+    /// C_SC/DC/RC 在 IOA 后第 1 字节（SCO/DCQ/RCO）；C_SE_NA/NB 在 2 字节值之后的 QOS、
+    /// C_SE_NC 在 4 字节值之后的 QOS。类型化读取各自属性最稳妥，避免字节偏移假设。
+    /// 无 Select 位的命令（如 C_BO_NA_1 / C_BO_TA_1）按执行（false）处理。
     /// </summary>
     /// <remarks>
     /// <see cref="StepCommand"/>（C_RC_NA_1 / C_RC_TA_1）虽继承自 <see cref="DoubleCommand"/>、

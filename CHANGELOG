@@ -1,6 +1,33 @@
 IEC60870.NETAsync — Changelog
 =============================
 
+Changes to version 6.0.2
+------------------------
+- fix(CS104): `ControlConfirmMatcher.ReadSelectBit` mis-read the Select bit for
+  setpoint command confirmations. It always read the byte at `ASDU header + IOA`
+  (correct only for C_SC/C_DC/C_RC, whose SCO/DCQ/RCO immediately follows the IOA).
+  For C_SE_NA_1 / C_SE_NB_1 the 2-byte value precedes the QOS, and for C_SE_NC_1 a
+  4-byte float precedes it — so the receive side read the low byte of the *value*
+  instead of the QOS byte. When that byte's bit7 was set (e.g. normalized value
+  0.5f -> 0xFF), the ACTIVATION_CON was keyed as select=true while the sender's key
+  was select=false, the confirmation never matched, and the command timed out after
+  `CommandConfirmationTimeout`. C_BO_TA_1 (no Select bit) was also mis-read.
+  Fix: `SelectQualifierOffset(TypeID)` now returns the per-type qualifier offset
+  (2 for C_SE_NA/NB, 4 for C_SE_NC, -1 = no Select bit) for the zero-alloc fast
+  path, keeping it consistent with the typed `GetSelectBit(InformationObject)`.
+  Added regression tests covering all 14 control types × select/execute plus value
+  0.5f (they fail on the old behavior).
+- perf(CS104): T1/T2/T3 定时从「每连接一个 `System.Threading.Timer`」改为进程级共享
+  调度器 `SharedTimeoutScheduler`（单物理 Timer + 16 分片最小堆，按绝对到期时刻排序，
+  惰性删除/代位校验，类比 Netty `HashedWheelTimer`）。各连接仍持有独立
+  `APCIParameters`，由 `GetSuggestedDelayMs()` 给出各自的下一个检查时刻；`Iec104TimerScheduler`
+  退化为注册句柄，对外语义不变（致命一次 onFatal、OCE/取消静默停止、瞬态异常继续）。
+  10k 连接压测（16 核 Windows，cmd-interval 10ms 满载）：同 CPU 预算下吞吐 +12%
+  （99.4k → 111.5k ASDU/s，复跑一致），每 ASDU CPU 成本 −12%（139.1µs → 122.0µs），
+  命令 RTT p99 持平（23ms）；常规负载（cmd-interval 400ms）下 CPU −1.7%、p99 163→120ms、
+  服务端处理异常 59→2。此前满载期 10k 连接的定时器自调度占整机 ~8.6% CPU（640k tick/s）。
+  新增 10 个调度器功能测试（到期/重排/致命/取消/瞬态异常/200 连接异间隔/分片隔离等）。
+
 Changes to version 6.0.1
 ------------------------
 - TouchSocket dependency updated 4.3.6 -> 4.3.10 (CS101 and CS104; no API changes on our side).

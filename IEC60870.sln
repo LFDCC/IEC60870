@@ -63,6 +63,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "cs104-client-use-reconnecti
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "cs104-waitasync-command", "examples\cs104-waitasync-command\cs104-waitasync-command.csproj", "{09085C19-1043-4E59-A09B-22315D291534}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "cs104-stress-500", "examples\cs104-stress-500\cs104-stress-500.csproj", "{7F3A2B1C-4D5E-4F60-A7B8-9C0D1E2F3A4B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -421,6 +423,18 @@ Global
 		{09085C19-1043-4E59-A09B-22315D291534}.Release|x64.Build.0 = Release|Any CPU
 		{09085C19-1043-4E59-A09B-22315D291534}.Release|x86.ActiveCfg = Release|Any CPU
 		{09085C19-1043-4E59-A09B-22315D291534}.Release|x86.Build.0 = Release|Any CPU
+		{7F3A2B1C-4D5E-4F60-A7B8-9C0D1E2F3A4B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7F3A2B1C-4D5E-4F60-A7B8-9C0D1E2F3A4B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7F3A2B1C-4D5E-4F60-A7B8-9C0D1E2F3A4B}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{7F3A2B1C-4D5E-4F60-A7B8-9C0D1E2F3A4B}.Debug|x64.Build.0 = Debug|Any CPU
+		{7F3A2B1C-4D5E-4F60-A7B8-9C0D1E2F3A4B}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{7F3A2B1C-4D5E-4F60-A7B8-9C0D1E2F3A4B}.Debug|x86.Build.0 = Debug|Any CPU
+		{7F3A2B1C-4D5E-4F60-A7B8-9C0D1E2F3A4B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7F3A2B1C-4D5E-4F60-A7B8-9C0D1E2F3A4B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7F3A2B1C-4D5E-4F60-A7B8-9C0D1E2F3A4B}.Release|x64.ActiveCfg = Release|Any CPU
+		{7F3A2B1C-4D5E-4F60-A7B8-9C0D1E2F3A4B}.Release|x64.Build.0 = Release|Any CPU
+		{7F3A2B1C-4D5E-4F60-A7B8-9C0D1E2F3A4B}.Release|x86.ActiveCfg = Release|Any CPU
+		{7F3A2B1C-4D5E-4F60-A7B8-9C0D1E2F3A4B}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -451,5 +465,6 @@ Global
 		{A0ABEEA9-9989-4184-AFCE-8E3B898B808D} = {9CB50C3F-3B44-4DD3-8FD2-5EA9544CF395}
 		{D8E15096-3471-4A8C-A533-287721036B2E} = {9CB50C3F-3B44-4DD3-8FD2-5EA9544CF395}
 		{09085C19-1043-4E59-A09B-22315D291534} = {9CB50C3F-3B44-4DD3-8FD2-5EA9544CF395}
+		{7F3A2B1C-4D5E-4F60-A7B8-9C0D1E2F3A4B} = {9CB50C3F-3B44-4DD3-8FD2-5EA9544CF395}
 	EndGlobalSection
 EndGlobal

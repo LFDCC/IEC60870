@@ -1,0 +1,49 @@
+{
+  "generated": "2026-10-12T13:51:41.6019255+08:00",
+  "config": { "devices": 15000, "basePort": 10000, "durationSeconds": 20, "rampPerSecond": 600, "spontaneousPerDevicePerSecond": 1, "commandIntervalMs": 600, "pointsPerMonitorAsdu": 8 },
+  "environment": { "os": "Microsoft Windows NT 10.0.26200.0", "dotnet": "8.0.28", "logicalCores": 16 },
+  "availability": {
+    "mastersConnected": 15000,
+    "devicesStarted": 15000,
+    "expectedDevices": 15000,
+    "serverActiveSessions": 14991,
+    "clientConnectionClosed": 17,
+    "serverConnectionClosed": 139,
+    "decodeErrors": 0,
+    "serverAsduErrors": 327,
+    "commandTimeouts": 87,
+    "commandFailures": 11934,
+    "selectMismatches": 0,
+    "giTimeouts": 751
+  },
+  "throughput": {
+    "measureSeconds": 20.370,
+    "downAsdu": 1829187, "upAsdu": 539197,
+    "downAsduPerSec": 89798.999, "upAsduPerSec": 26470.422,
+    "downMbitPerSec": 48.059, "upMbitPerSec": 4.540,
+    "spontaneousAsdu": 993410, "interrogatedAsdu": 3405716, "confirmationAsdu": 1873807
+  },
+  "latencyMs": {
+    "commandRtt": { "count": 600000, "mean": 2.448, "p50": 1.468, "p90": 4.387, "p99": 14.273, "p999": 48.501, "max": 97.442 },
+    "giRtt": { "count": 106299, "mean": 8.576, "p50": 6.355, "p90": 11.790, "p99": 72.338, "max": 205.369 }
+  },
+  "resources": {
+    "cpuPercentAvg": 898.236, "cpuPercentAvgOfMachine": 56.140, "cpuSecondsUsed": 182.969, "cpuPercentPeakSampled": 1399.456,
+    "workingSetBeforeMB": 1109.164, "workingSetAfterMB": 1130.996, "workingSetPeakMB": 1130.996,
+    "privateBeforeMB": 1168.359, "privateAfterMB": 1190.402,
+    "managedHeapBeforeMB": 695.810, "managedHeapAfterMB": 860.321,
+    "totalAllocatedDeltaMB": 5129.445,
+    "gen0": 97, "gen1": 25, "gen2": 6,
+    "kbPerDevice": 77.209
+  },
+  "coverage": {
+    "monitorTypesSeen": 33,
+    "monitorTypesExpected": 33,
+    "controlTypesConfirmed": 14,
+    "controlTypesExpected": 14,
+    "perTypeDownCount": {"1": 129909, "2": 144510, "3": 144108, "4": 144099, "5": 143869, "6": 143568, "7": 143234, "8": 142855, "9": 142496, "10": 142252, "11": 141799, "12": 141333, "13": 140751, "14": 140343, "15": 140108, "16": 139569, "17": 138780, "18": 137063, "19": 134726, "20": 133121, "21": 132019, "30": 130894, "31": 129962, "32": 129958, "33": 129944, "34": 129944, "35": 129944, "36": 129930, "37": 129930, "38": 129930, "39": 129915, "40": 129913, "45": 110464, "46": 124717, "47": 123894, "48": 123101, "49": 122148, "50": 120883, "51": 119821, "58": 118835, "59": 118186, "60": 117862, "61": 117084, "62": 115848, "63": 113737, "64": 112013, "70": 23599, "100": 212636}
+  },
+  "commandCoverage": {"C_SC_NA_1": { "attempts": 111585, "confirmed": 110740, "timeouts": 3 }, "C_DC_NA_1": { "attempts": 125716, "confirmed": 124855, "timeouts": 13 }, "C_RC_NA_1": { "attempts": 124898, "confirmed": 124026, "timeouts": 9 }, "C_SE_NA_1": { "attempts": 124146, "confirmed": 123266, "timeouts": 8 }, "C_SE_NB_1": { "attempts": 123220, "confirmed": 122346, "timeouts": 2 }, "C_SE_NC_1": { "attempts": 121955, "confirmed": 121087, "timeouts": 7 }, "C_BO_NA_1": { "attempts": 120812, "confirmed": 119961, "timeouts": 6 }, "C_SC_TA_1": { "attempts": 119882, "confirmed": 119042, "timeouts": 8 }, "C_DC_TA_1": { "attempts": 119105, "confirmed": 118256, "timeouts": 6 }, "C_RC_TA_1": { "attempts": 118796, "confirmed": 117942, "timeouts": 3 }, "C_SE_TA_1": { "attempts": 118124, "confirmed": 117264, "timeouts": 2 }, "C_SE_TB_1": { "attempts": 116966, "confirmed": 116106, "timeouts": 5 }, "C_SE_TC_1": { "attempts": 114987, "confirmed": 114128, "timeouts": 10 }, "C_BO_TA_1": { "attempts": 113134, "confirmed": 112280, "timeouts": 5 }},
+  "gi": { "issued": 107142, "completed": 106314 },
+  "timeline": [{"t": 1.016, "downAsduPerSec": 76337.546, "upAsduPerSec": 26092.240, "mbitPerSec": 45.330, "cpuPercent": 1309.686, "cpuSeconds": 418.984, "workingSetMB": 1108.922, "activeSessions": 14991}, {"t": 2.042, "downAsduPerSec": 82601.938, "upAsduPerSec": 26269.725, "mbitPerSec": 48.483, "cpuPercent": 822.692, "cpuSeconds": 427.391, "workingSetMB": 1076.949, "activeSessions": 14991}, {"t": 3.056, "downAsduPerSec": 78237.235, "upAsduPerSec": 26234.603, "mbitPerSec": 44.150, "cpuPercent": 72.188, "cpuSeconds": 428.125, "workingSetMB": 1076.977, "activeSessions": 14991}, {"t": 4.084, "downAsduPerSec": 80645.672, "upAsduPerSec": 25867.351, "mbitPerSec": 46.458, "cpuPercent": 488.653, "cpuSeconds": 433.109, "workingSetMB": 1076.977, "activeSessions": 14991}, {"t": 5.107, "downAsduPerSec": 107191.444, "upAsduPerSec": 27229.072, "mbitPerSec": 63.365, "cpuPercent": 1011.156, "cpuSeconds": 443.531, "workingSetMB": 1077.066, "activeSessions": 14991}, {"t": 6.123, "downAsduPerSec": 95324.991, "upAsduPerSec": 26686.314, "mbitPerSec": 55.707, "cpuPercent": 1150.475, "cpuSeconds": 455.234, "workingSetMB": 1077.566, "activeSessions": 14991}, {"t": 7.153, "downAsduPerSec": 80277.402, "upAsduPerSec": 26262.756, "mbitPerSec": 46.185, "cpuPercent": 1276.629, "cpuSeconds": 468.375, "workingSetMB": 1077.582, "activeSessions": 14991}, {"t": 8.167, "downAsduPerSec": 101380.474, "upAsduPerSec": 26697.920, "mbitPerSec": 59.760, "cpuPercent": 1203.792, "cpuSeconds": 480.594, "workingSetMB": 1077.586, "activeSessions": 14991}, {"t": 9.186, "downAsduPerSec": 116552.722, "upAsduPerSec": 27283.725, "mbitPerSec": 70.856, "cpuPercent": 928.430, "cpuSeconds": 490.031, "workingSetMB": 1077.637, "activeSessions": 14991}, {"t": 10.207, "downAsduPerSec": 79709.541, "upAsduPerSec": 26090.658, "mbitPerSec": 45.827, "cpuPercent": 1230.598, "cpuSeconds": 502.594, "workingSetMB": 1077.703, "activeSessions": 14991}, {"t": 11.226, "downAsduPerSec": 77893.529, "upAsduPerSec": 26021.113, "mbitPerSec": 44.549, "cpuPercent": 380.501, "cpuSeconds": 506.469, "workingSetMB": 1077.711, "activeSessions": 14991}, {"t": 12.240, "downAsduPerSec": 82869.176, "upAsduPerSec": 26478.313, "mbitPerSec": 47.752, "cpuPercent": 124.426, "cpuSeconds": 507.734, "workingSetMB": 1077.727, "activeSessions": 14991}, {"t": 13.251, "downAsduPerSec": 77328.490, "upAsduPerSec": 26097.054, "mbitPerSec": 43.761, "cpuPercent": 314.953, "cpuSeconds": 510.922, "workingSetMB": 1065.734, "activeSessions": 14991}, {"t": 14.267, "downAsduPerSec": 88302.861, "upAsduPerSec": 26266.516, "mbitPerSec": 51.235, "cpuPercent": 1102.546, "cpuSeconds": 522.109, "workingSetMB": 1071.914, "activeSessions": 14991}, {"t": 15.286, "downAsduPerSec": 104263.946, "upAsduPerSec": 26965.068, "mbitPerSec": 62.295, "cpuPercent": 1340.227, "cpuSeconds": 535.703, "workingSetMB": 1090.207, "activeSessions": 14991}, {"t": 16.296, "downAsduPerSec": 90645.883, "upAsduPerSec": 26576.181, "mbitPerSec": 53.318, "cpuPercent": 1399.456, "cpuSeconds": 549.906, "workingSetMB": 1119.344, "activeSessions": 14991}, {"t": 17.309, "downAsduPerSec": 86321.563, "upAsduPerSec": 26273.025, "mbitPerSec": 50.690, "cpuPercent": 1079.748, "cpuSeconds": 560.844, "workingSetMB": 1129.570, "activeSessions": 14991}, {"t": 18.334, "downAsduPerSec": 100654.163, "upAsduPerSec": 27007.418, "mbitPerSec": 60.523, "cpuPercent": 1129.642, "cpuSeconds": 572.422, "workingSetMB": 1128.762, "activeSessions": 14991}, {"t": 19.356, "downAsduPerSec": 112833.242, "upAsduPerSec": 27071.212, "mbitPerSec": 68.093, "cpuPercent": 1095.239, "cpuSeconds": 583.609, "workingSetMB": 1129.398, "activeSessions": 14991}, {"t": 20.369, "downAsduPerSec": 76475.606, "upAsduPerSec": 25950.710, "mbitPerSec": 43.537, "cpuPercent": 498.502, "cpuSeconds": 588.656, "workingSetMB": 1130.996, "activeSessions": 14991}]
+}

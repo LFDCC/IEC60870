@@ -487,5 +487,111 @@ namespace IEC60870.CS104.Tests
             Assert.Throws<ASDUParsingException>(() => _ = asdu.GetElement<SinglePointInformation>(1),
                 "index 越界应透传 GetElement(int) 的 ASDUParsingException");
         }
+
+        // ── 缺陷回归：C_SE_* / C_BO_TA_1 的接收侧 Select 位读取（ReadSelectBit）──
+        // 早期 ReadSelectBit 固定从 HeaderLength + SizeOfIOA 读限定词字节 bit7，该假设仅对
+        // C_SC/DC/RC 成立。C_SE_NA/NB 的限定词(2 字节值之后)偏移为 +2、C_SE_NC 为 +4，故会误
+        // 读值的低字节 bit7：当该位恰好置 1（如归一化值 0.5f 的低字节 0xFF）时，接收侧 key 变
+        // 成 select=true 而发送侧为 select=false → 确认匹配失败 → 命令超时。C_BO_TA_1 无 Select
+        // 位但早期未排除，同样会误读位串字节 bit7。以下用「编码 → 线字节解析」端到端断言收发一致。
+
+        /// <summary>把命令对象编码为完整 ASDU，再叠加 AsduView，供接收侧 ReadSelectBit 读取真实线字节。</summary>
+        private static AsduView EncodeToView(ASDU asdu, byte[] buffer, ApplicationLayerParameters al)
+        {
+            var writer = new AsduWriter(buffer);
+            asdu.Encode(ref writer, al);
+            return new AsduView(new ReadOnlySpan<byte>(buffer, 0, writer.Position), al);
+        }
+
+        [Test]
+        public void ReadSelectBit_C_SE_NA_1_MatchesSendSide_WhenValueLowByteHasBit7Set()
+        {
+            // 复现缺陷的关键输入：0.5f → 归一化原始值 0x3FFF，低字节 0xFF（bit7=1）。
+            // 这会让早期 ReadSelectBit 误判为 select=true。
+            var al = new ApplicationLayerParameters();
+            var buf = new byte[al.MaxAsduLength];
+
+            foreach (var select in new[] { false, true })
+            {
+                var cmd = new SetpointCommandNormalized(3001, 0.5f, new SetpointCommandQualifier(select, 0));
+                var asdu = new ASDU(al, CauseOfTransmission.ACTIVATION, false, false, 0, 1, false);
+                Assert.IsTrue(asdu.AddInformationObject(cmd));
+
+                var view = EncodeToView(asdu, buf, al);
+
+                Assert.AreEqual(ControlConfirmMatcher.GetSelectBit(cmd), ControlConfirmMatcher.ReadSelectBit(view, al),
+                    $"C_SE_NA_1 收发两侧 Select 位必须一致（select={select}，值 0.5f 低字节置位）");
+                Assert.AreEqual(select, ControlConfirmMatcher.ReadSelectBit(view, al),
+                    "C_SE_NA_1 接收侧应读到真实 QOS.Select，而非值低字节的 bit7");
+            }
+        }
+
+        [Test]
+        public void ReadSelectBit_SendReceiveAgree_ForAllControlTypes()
+        {
+            // 覆盖全部 14 种控制命令 × 预发/执行，断言发送侧（类型化）与接收侧（线字节）Select 位一致。
+            var al = new ApplicationLayerParameters();
+            var buf = new byte[al.MaxAsduLength];
+
+            foreach (var typeId in ControlTypesForTest)
+            {
+                foreach (var select in new[] { false, true })
+                {
+                    var io = MakeControlSample(typeId, 3000 + (int)typeId, select);
+                    var asdu = new ASDU(al, CauseOfTransmission.ACTIVATION, false, false, 0, 1, false);
+                    Assert.IsTrue(asdu.AddInformationObject(io), $"{typeId} 应能加入 ASDU");
+
+                    var view = EncodeToView(asdu, buf, al);
+                    Assert.AreEqual(ControlConfirmMatcher.GetSelectBit(io), ControlConfirmMatcher.ReadSelectBit(view, al),
+                        $"{typeId}（select={select}）收发两侧 Select 位必须一致");
+                }
+            }
+        }
+
+        [Test]
+        public void ReadSelectBit_C_BO_TA_1_HasNoSelectBit()
+        {
+            // C_BO_TA_1 无 Select 位；位串值低字节置 1 也不得被误判。
+            var al = new ApplicationLayerParameters();
+            var buf = new byte[al.MaxAsduLength];
+            var cmd = new Bitstring32CommandWithCP56Time2a(3000, 0x000000FFu, new CP56Time2a(DateTime.Now));
+            var asdu = new ASDU(al, CauseOfTransmission.ACTIVATION, false, false, 0, 1, false);
+            Assert.IsTrue(asdu.AddInformationObject(cmd));
+
+            var view = EncodeToView(asdu, buf, al);
+            Assert.IsFalse(ControlConfirmMatcher.ReadSelectBit(view, al),
+                "C_BO_TA_1 无 Select 位，接收侧必须恒为 false（不得误读位串/时标字节）");
+        }
+
+        private static readonly TypeID[] ControlTypesForTest =
+        {
+            TypeID.C_SC_NA_1, TypeID.C_DC_NA_1, TypeID.C_RC_NA_1,
+            TypeID.C_SE_NA_1, TypeID.C_SE_NB_1, TypeID.C_SE_NC_1, TypeID.C_BO_NA_1,
+            TypeID.C_SC_TA_1, TypeID.C_DC_TA_1, TypeID.C_RC_TA_1,
+            TypeID.C_SE_TA_1, TypeID.C_SE_TB_1, TypeID.C_SE_TC_1, TypeID.C_BO_TA_1
+        };
+
+        private static InformationObject MakeControlSample(TypeID typeId, int ioa, bool select)
+        {
+            var ts = new CP56Time2a(new DateTime(2026, 7, 23, 12, 0, 0));
+            switch (typeId)
+            {
+                case TypeID.C_SC_NA_1: return new SingleCommand(ioa, true, select, 0);
+                case TypeID.C_SC_TA_1: return new SingleCommandWithCP56Time2a(ioa, false, select, 0, ts);
+                case TypeID.C_DC_NA_1: return new DoubleCommand(ioa, DoubleCommand.ON, select, 0);
+                case TypeID.C_DC_TA_1: return new DoubleCommandWithCP56Time2a(ioa, DoubleCommand.OFF, select, 0, ts);
+                case TypeID.C_RC_NA_1: return new StepCommand(ioa, StepCommandValue.LOWER, select, 0);
+                case TypeID.C_RC_TA_1: return new StepCommandWithCP56Time2a(ioa, StepCommandValue.HIGHER, select, 0, ts);
+                case TypeID.C_SE_NA_1: return new SetpointCommandNormalized(ioa, 0.5f, new SetpointCommandQualifier(select, 0));
+                case TypeID.C_SE_TA_1: return new SetpointCommandNormalizedWithCP56Time2a(ioa, -0.5f, new SetpointCommandQualifier(select, 0), ts);
+                case TypeID.C_SE_NB_1: return new SetpointCommandScaled(ioa, new ScaledValue(-32000), new SetpointCommandQualifier(select, 0));
+                case TypeID.C_SE_TB_1: return new SetpointCommandScaledWithCP56Time2a(ioa, new ScaledValue(32000), new SetpointCommandQualifier(select, 0), ts);
+                case TypeID.C_SE_NC_1: return new SetpointCommandShort(ioa, 123.456f, new SetpointCommandQualifier(select, 0));
+                case TypeID.C_SE_TC_1: return new SetpointCommandShortWithCP56Time2a(ioa, -0.001f, new SetpointCommandQualifier(select, 0), ts);
+                case TypeID.C_BO_NA_1: return new Bitstring32Command(ioa, 0xDEADBEEFu);
+                case TypeID.C_BO_TA_1: return new Bitstring32CommandWithCP56Time2a(ioa, 0x0F0F0F0Fu, ts);
+                default: throw new ArgumentOutOfRangeException(nameof(typeId), typeId, null);
+            }
+        }
     }
 }
