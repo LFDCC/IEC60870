@@ -24,10 +24,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET 8 SDK
+      - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "8.0.x"
+          # 库与测试项目目标 net6.0，示例目标 net8.0：
+          # 两者都要装，否则 testhost 会因缺少 Microsoft.NETCore.App 6.0.0 启动失败。
+          dotnet-version: |
+            6.0.x
+            8.0.x
 
       - name: Verify commit exists in origin/main
         run: |
@@ -39,6 +43,9 @@ jobs:
 
       - name: Test
         run: dotnet test tests-cs104/tests-cs104.csproj -c Release --nologo
+        env:
+          # 兜底：即便 6.0 运行时在当前 runner 上安装失败，net6.0 测试也能在 8.0 上运行
+          DOTNET_ROLL_FORWARD: Major
 
       - name: Pack
         run: |
