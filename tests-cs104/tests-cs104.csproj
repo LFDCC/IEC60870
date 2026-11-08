@@ -16,6 +16,7 @@
   <ItemGroup>
     <ProjectReference Include="..\IEC60870.Core\IEC60870.Core.csproj" />
     <ProjectReference Include="..\IEC60870.CS101\IEC60870.CS101.csproj" />
+    <ProjectReference Include="..\IEC60870.CS103\IEC60870.CS103.csproj" />
     <ProjectReference Include="..\IEC60870.CS104\IEC60870.CS104.csproj" />
   </ItemGroup>
 </Project>

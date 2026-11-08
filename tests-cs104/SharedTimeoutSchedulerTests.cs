@@ -222,7 +222,7 @@ namespace IEC60870.CS104.Tests
         {
             const int n = 200;
             var perConn = new int[n];
-            var entries = new SharedTimeoutScheduler.Entry[n];
+            var entries = new SharedTimeoutScheduler.TimeoutEntry[n];
 
             for (var i = 0; i < n; i++)
             {
@@ -256,7 +256,7 @@ namespace IEC60870.CS104.Tests
         {
             const int n = 64;
             var perConn = new int[n];
-            var entries = new SharedTimeoutScheduler.Entry[n];
+            var entries = new SharedTimeoutScheduler.TimeoutEntry[n];
 
             for (var i = 0; i < n; i++)
             {

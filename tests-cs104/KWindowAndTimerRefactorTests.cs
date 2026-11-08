@@ -34,11 +34,12 @@ namespace IEC60870.CS104.Tests
 
         private static APCIParameters MakeParams(int k = 12, int t1 = 15, int t2 = 2, int t3 = 20)
         {
-            return new APCIParameters { K = k, W = k / 2, T0 = 7, T1 = t1, T2 = t2, T3 = t3 };
+            // W 必须 ≥ 1（标准要求 1..32767）；k=1 时 k/2 会得到非法的 0
+            return new APCIParameters { K = k, W = Math.Max(1, k / 2), T0 = 7, T1 = t1, T2 = t2, T3 = t3 };
         }
 
         /// <summary>立即完成发送的桩 sink（不阻塞，用于制造 k 窗口满窗场景）。</summary>
-        private sealed class ImmediateSink : IApduSink
+        private sealed class ImmediateSink : IIec104ApduSink
         {
             public bool IsConnected => true;
             public ValueTask SendAsync(ReadOnlyMemory<byte> apdu, CancellationToken cancellationToken)
@@ -46,7 +47,7 @@ namespace IEC60870.CS104.Tests
         }
 
         /// <summary>发送必然失败的桩 sink：验证发送异常时 k 槽位被归还。</summary>
-        private sealed class FailingSink : IApduSink
+        private sealed class FailingSink : IIec104ApduSink
         {
             public bool IsConnected => true;
             public ValueTask SendAsync(ReadOnlyMemory<byte> apdu, CancellationToken cancellationToken)
@@ -54,7 +55,7 @@ namespace IEC60870.CS104.Tests
         }
 
         /// <summary>记录发送帧的桩 sink：验证 S/U 帧内容与定时器触发的自动发送。</summary>
-        private sealed class RecordingSink : IApduSink
+        private sealed class RecordingSink : IIec104ApduSink
         {
             public ConcurrentQueue<byte[]> Frames { get; } = new ConcurrentQueue<byte[]>();
             public bool IsConnected => true;
@@ -68,6 +69,13 @@ namespace IEC60870.CS104.Tests
         private static async Task SendDummyAsync(ApduConnection conn, ApplicationLayerParameters al,
             CancellationToken ct = default)
         {
+            // 新的协议门禁：未收到 STARTDT_CON 前禁止发送 I 帧（STOPDT 期间同理）。
+            // 这些用例只验证 k 窗口机制，未激活时先激活（重复激活会重复派发事件）。
+            if (!conn.IsActive)
+            {
+                conn.OnUFrame(ApduCodec.StartDtCon);
+            }
+
             var asdu = new ASDU(al, CauseOfTransmission.SPONTANEOUS, false, false, 0, 1, false);
             asdu.AddInformationObject(new SinglePointInformation(1, true, new QualityDescriptor()));
             await conn.SendAsduAsync(asdu, ct).ConfigureAwait(false);
@@ -175,7 +183,12 @@ namespace IEC60870.CS104.Tests
             }
         }
 
-        /// <summary>发送异常（传输失败）时在途槽位必须归还，后续发送不被饿死。</summary>
+        /// <summary>
+        /// 发送异常（传输失败）时：槽位必须归还（不与窗口状态耦合），且连接被判定失效。
+        /// 注意：失效后不再允许发送（序号已分配却无法确知帧是否上线，104 规范下序号歧义
+        /// 不可恢复），所以这里断言的是「槽位归还」而不是「后续发送能推进」——
+        /// 旧断言把"抛出 OperationCanceledException"误当成"发送完成"，是假绿灯。
+        /// </summary>
         [Test]
         public async Task KWindow_SendFailure_ReleasesSlot()
         {
@@ -183,10 +196,15 @@ namespace IEC60870.CS104.Tests
 
             Assert.ThrowsAsync<IOException>(async () => await SendDummyAsync(conn, _al).ConfigureAwait(false));
 
-            // 失败释放的槽位应立即可用（K=1）：后续发送直接推进
-            var s2 = SendDummyAsync(conn, _al);
-            await WaitSettledAsync();
-            Assert.That(s2.IsCompleted, Is.True, "发送失败的槽位应被归还，后续发送可推进");
+            Assert.That(conn.CloseReason, Is.EqualTo(ConnectionCloseReason.IoError),
+                "发送失败（N(S) 已分配）必须判定连接失效");
+            Assert.That(conn.IsActive, Is.False, "失效连接必须置为非激活");
+
+            // 槽位归还验证：失效后再次发送应立刻得到「连接已失效」，而不是卡在满窗背压上
+            var ex = Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                await SendDummyAsync(conn, _al).ConfigureAwait(false));
+            Assert.That(ex.Message, Does.Contain("connection failed"),
+                "后续发送应立即被拒绝（说明 k 槽已归还、未被永久占用）");
         }
 
         // ═════════════════════════════════════════════════════════════

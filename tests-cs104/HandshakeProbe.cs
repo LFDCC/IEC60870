@@ -9,7 +9,10 @@ namespace IEC60870.CS104.Tests
     [TestFixture]
     public class HandshakeProbeTests
     {
+        // 纯手动诊断探针：只打印握手过程、无断言、固定等待 2 秒。
+        // 标 Explicit 避免它「永远通过」给 CI 的全绿结果带来虚假安全感。
         [Test]
+        [Explicit("手动诊断探针，需人工观察控制台输出；不参与常规测试")]
         public async Task Handshake()
         {
             var server = new Iec104Server();

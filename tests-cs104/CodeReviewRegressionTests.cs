@@ -22,7 +22,7 @@ namespace IEC60870.CS104.Tests
     public class CodeReviewRegressionTests
     {
         /// <summary>立即完成发送的桩 sink（不阻塞，用于制造 k 窗口满窗场景）。</summary>
-        private sealed class ImmediateSink : IApduSink
+        private sealed class ImmediateSink : IIec104ApduSink
         {
             public bool IsConnected => true;
             public ValueTask SendAsync(ReadOnlyMemory<byte> apdu, CancellationToken cancellationToken)
@@ -30,7 +30,7 @@ namespace IEC60870.CS104.Tests
         }
 
         /// <summary>可手动开启闸门的桩 sink：SendAsync 阻塞直到 <see cref="Open"/>，且响应取消（token 取消即抛 OCE）。</summary>
-        private sealed class GateSink : IApduSink
+        private sealed class GateSink : IIec104ApduSink
         {
             private readonly TaskCompletionSource _gate =
                 new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -43,6 +43,13 @@ namespace IEC60870.CS104.Tests
         private static async Task SendDummyAsync(ApduConnection conn, ApplicationLayerParameters al,
             CancellationToken ct = default)
         {
+            // 协议门禁：未收到 STARTDT_CON 前禁止发送 I 帧。本文件只验证窗口/背压机制，
+            // 未激活时先激活（重复激活会重复派发事件）。
+            if (!conn.IsActive)
+            {
+                conn.OnUFrame(ApduCodec.StartDtCon);
+            }
+
             var asdu = new ASDU(al, CauseOfTransmission.SPONTANEOUS, false, false, 0, 1, false);
             asdu.AddInformationObject(new SinglePointInformation(1, true, new QualityDescriptor()));
             await conn.SendAsduAsync(asdu, ct).ConfigureAwait(false);
