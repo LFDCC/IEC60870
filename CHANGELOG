@@ -1,6 +1,802 @@
 IEC60870.NETAsync — Changelog
 =============================
 
+Changes to version 6.1.0
+------------------------
+- fix(protocol, CS101): **串口字符超时覆盖整帧读取窗口（致命）**。`StreamByteSource.ReadAsync`
+  用一个 `CancelAfter(characterTimeout)` 包住"读满整帧"的循环，默认 50ms；
+  9600 波特每字节约 1.04ms → **帧体 >48 字节的合法帧必然被判超时丢弃**（总召唤响应、
+  多 IOA 测量帧几乎全部命中），主站无限重发直至链路故障。现改为**字符间超时**
+  （每读到字节就重置计时，首字节仍受完整 timeout 约束）；`Iec101Server` 新增
+  `SetTimeouts(messageTimeout, characterTimeout)` 暴露配置。
+- fix(protocol, CS101): 噪声洪泛时 `FT12Framer` 单次调用内做 128 次重同步且无等待，
+  外层循环立即重入 → 满核空转。重同步返回 0 前加 1ms 退避。
+- fix(protocol, CS101): 文件事务无应用层重传 —— 一次丢帧（串口常态）就整笔传输失败。
+  现对 `SELECT / CALL FILE / CALL SECTION / FILE READY` 做**有界重发**（默认 2 次，
+  超时才真正判失败并通知应用层）；重发对从站幂等（忙状态 SELECT 会先收尾旧传输）。
+  同时修正 `Finished(...)` 与 `ResetStateToIdle()` 的**顺序**：先复位内部状态再回调，
+  否则应用在回调里立刻发起下一笔传输会被接收线程的复位清掉（连续传输第 N 次必超时）。
+  `RequestFile/SendFile` 在忙时先中止旧传输并通知旧接收者，不再静默覆盖。
+- fix(protocol, CS103): **从站把主站的重发帧重复派发给应用层**（High）——FCB 去重只作用于
+  链路应答，同一遥控/对时/定值写会被执行两遍（现场表现为重复变位/重复动作）。
+  现在 `SessionCore` 在派发前按"同地址 + 同 FCB + **ASDU 逐字节相同**"判重：
+  重复帧只重发缓存应答、不调 `DispatchAsdu`；只比 FCB 会把"主站连续两帧未翻转 FCB"
+  误判为重复，因此必须比对负载字节。
+- fix(protocol, CS103): `TryDecode` 对 TI=1 空数据区抛 `IndexOutOfRangeException`（违背"不抛"契约）；
+  `DisturbanceAsdu.DecodeCommand` 无长度校验；`ByteQueue.Write` 单块超过环容量时 `_count` 变负、
+  字节顺序错乱。三处均已修（空数据返回空点集、短帧抛 `FormatException`、超容量只保留尾部并 clamp）。
+- fix(protocol, CS104): **`CheckSequenceNumbers=false` 时 k 窗口永不释放**（High）——
+  该开关为兼容不规范装置常被关闭，关闭后发满 K 帧即永久阻塞在槽位等待上。
+  现关闭校验时旁路 k 流控（不占槽、不登记窗口），S 确认逻辑不受影响。
+- fix(protocol, CS104): STOPDT 之后仍处理并派发 I 帧 —— 停机期间的脏数据会入库。
+  现在未激活时 I 帧只维护 N(R)/仍发 S 确认但不派发；`SendAsduAsync` 在未激活时抛
+  `InvalidOperationException`。`RawFrameReceived` 订阅者异常也已隔离（不再打断收包管线）。
+- fix(protocol, CS104): `APCIParameters` 的 K/W/T1/T2/T3 加范围校验（K/W 1..32767、
+  定时器拒绝负数、0 表示不启用；T0<T1<T3 与 W≤K 在构造时校验），避免 K=0 在深处抛错、
+  K=1e6 分配 16MB。
+- fix(stability, CS101): **`AsyncByteQueue` 的信号量语义错误，导致长跑 CPU 空转**。
+  原实现按**字节** `Release(N)`，而 `ReadAsync` 每次只消费一个许可并取走整段字节：
+  写 100 字节后残留 99 个许可，读循环在无数据时连续立即返回 0，上层零延迟重入
+  （每次还新建一个 linked CTS）。现改为**电平触发**：仅在 `0 → 非0` 跃变时放行一个，
+  读走后若仍有数据再补一个；`Clear()` 同时抽干残留许可。这也与 CS103 的
+  `ByteQueue103` 保持一致（该库此前单独修过同类缺陷，CS101 是漏修的那一半）。
+- fix(stability, CS101): 串口读失败/流已释放原先**静默返回 0** —— 拔线后满核空转且无告警。
+  新增 `IByteSource.IsFaulted` 区分"超时"与"已故障"，读路径上报 `PortDenied`
+  （置致命标志 + Warning）；`LinkLayerEngine` 对 0 字节/异常加最小退避。
+  同时修正 `SerialTransceiverFT12.EnsureStream` 在端口重开后仍指向已释放旧 `BaseStream`。
+- fix(stability, CS101): 重复 `StartAsync` 只 `Dispose` 旧 CTS、不取消，会启动**第二个**
+  收发循环同读同一条链路（帧切碎、旧 Task 永不可回收）。现在先取消并等待旧循环
+  （5 秒上限，超时拒绝启动）；循环内改用局部 token；`Dispose` 等待循环退出后再释放传输，
+  Dispose 后 `StartAsync` 抛 `ObjectDisposedException`。
+- fix(stability, CS101): **文件传输状态机跨会话残留**，是"重连后第一次文件传输必然超时"的根因。
+  `FileServer` 是随服务端长期存在的单实例：主站收完最后一段就断线时状态会停在
+  `WAITING_FOR_FILE_ACK` 一类非空闲态，新主站的 `SELECT FILE` 被当成
+  "Unexpected SELECT FILE" 静默忽略直到 3 秒超时。新增 `FileServer.Reset()`
+  并在 `TcpServerLinkTransport` 的"新链路建立"回调里接上（`ResetApplicationLayerState`
+  此前是死代码，从未被调用），同时清空上一会话残留的传输层字节队列。
+  另外把"状态非空闲但既无选中文件也无接收者"的僵尸状态按空闲处理。
+- fix(stability, CS101): `FileServer._fileChecksum` 在成功后从不清零
+  （唯一清零点是超时路径），同一从站**第二次上传必失败**。新增
+  `ResetTransferStats()`，在 `SELECT FILE`、成功/否定/中止/DEACTIVATE 各结束路径统一复位。
+  `CALL FILE` 首段长度也补上赋值（原实现只写了注释，`SECTION READY` 长度恒为 0 或残留值）。
+  下载成功/远端中止分支现在会释放 `_fileReceiver` 引用（原实现保留到下次传输或超时，
+  持有文件流/大缓冲的应用会在长跑中看到句柄不释放）。
+- fix(stability, CS101): 平衡模式发送队列**无界**（链路不可用时周期发送会堆积到 OOM），
+  现加上限（默认 1024，`UserDataQueueMaxSize`）并在满时抛 `LinkLayerBusyException`
+  背压，与非平衡分支语义一致。服务端 1/2 类队列溢出原先静默丢最旧帧，
+  现累计 `DroppedClass1Count`/`DroppedClass2Count` 并在首次/每千次输出 Warning。
+- fix(stability, CS101): 服务端收发循环异常退出时 `StartAsync` 仍"正常返回"，
+  调用方以为服务在运行。现在置致命标志、Warning 上报，并让返回的 Task 进入 faulted。
+  非平衡模式"请求帧超时重发"分支原用已被清空的 `requestClass1Data/2Data` 判断，
+  条件恒为 false → 重发是空操作，一次应答丢失就要空等到 `TimeoutRepeat` 才进 ERROR；
+  现单独记录在途请求类型并按它重发。
+- fix(stability, CS103): 主站重连**每次泄漏一个旧传输**（`ConnectAsync` 直接覆盖
+  `_transport`，被动断线路径既不退订 `TransportClosed` 也不 `DisposeAsync`）；
+  `ConnectAsync/DisconnectAsync/DisposeAsync` 现在统一由 `_lifecycleLock` 串行化，
+  换传输前先 `DetachTransportAsync()`（退订 + 释放），读循环所有退出路径统一
+  置 `_connected=false`、结束事务、去重上报 `Disconnected` 并后台释放传输。
+- fix(stability, CS103): 串口/Stream 被动断链后 `SessionCore` 既不 `Dispose` 也不注销
+  （CTS/写锁/读循环泄漏，且旧核心的 `TransportClosed` 订阅可能把**新**核心置空）。
+  `OnTransportClosed` 现在先退订、注销会话、再释放核心；`DisposeAsync` 用
+  `try/finally` 保证异常路径也释放 CTS；`RunAsync` 的 `finally` 统一复位
+  `LinkEstablished`、注销会话、释放核心（原实现异常退出后留下僵尸会话，
+  `BroadcastAsync` 继续向死链路投递）。会话 1/2 级队列加上界（默认 10000）并累计丢弃计数。
+- fix(stability, CS103): `SessionOpened`/`SessionClosed` 未隔离，订阅者抛一次异常即可
+  让 `StopAsync`/启动流程中断并泄漏会话与监听资源；现统一走 `SafeInvoke`，
+  `StartStreamCoreAsync` 失败路径按创建逆序回滚。
+- fix(stability, CS104): 服务端 `StopAsync` 只关传输，不清 `_sessions`/`_sessionToGroup`/
+  `_sessionGroups`（清理只在 `SafetyDispose`），`ConnectionClosed` 未触发时每轮 Stop/Start
+  泄漏 N 个冗余组 + N 条映射（500 装置场景每轮 500 组）。新增 `CleanupAllSessions()`
+  供 Stop 与 Dispose 共用，并加 `_stopping` 关闸防止迟到的 accept 回调把会话填回。
+  重复 `StartAsync` 现在抛 `InvalidOperationException`，`ReinitGroups` 先 `Cancel` 旧组。
+- fix(stability, CS104): 端点清理**没有代际校验**：旧连接的 `RequestTransportClose`
+  收尾可能 `Dispose` 掉重连后刚建立的新连接（新链路"连上即断"）。`ApduEndpoint`
+  增加 `_generation`，`Rebuild` 递增并在后台任务/finally/致命回调中校验归属。
+- fix(stability, CS104): 共享调度器 `Register` 在锁外检查 `_shutdown` 再自增计数，
+  与"最后一个 `Unregister` 关闭实例"竞态时 entry 入堆但永不 arm（该连接 T1/T2/T3 不运行
+  —— 僵尸链路）。现"检查 + 入堆"整体在 `SingletonGate` + 分片锁内完成，失败回滚计数并抛
+  `ObjectDisposedException`；`Dispose()` 同时把单例置空。
+- fix(stability, CS104): 补上 `Iec104Client.SafetyDispose`（同步 `using` 原先只走基类释放，
+  泄漏端点 CTS/连接与调度器注册）；`OnConnectionFailed` 改走 `FinalizeSession`
+  （补齐 CTS 释放）；`RedundancyGroup` 实现 `IDisposable` 并释放 CTS/信号量/引用；
+  `DrainAsync` 不再被非 OCE 异常静默杀死；`AsduEventQueue` 修正 `REMOVE_OLDEST`
+  淘汰时未回收许可导致的"有许可无元素"异常。
+- test(stability): 新增三协议**长跑稳定性测试** `StabilityEnduranceTests`：
+  101 文件传输循环 + 周期重连、103 召唤循环 + 周期重连（此前完全没有 soak 覆盖）、
+  104 持续自发数据 + 周期重连。每条都带 **句柄/线程/托管堆漂移断言**
+  （句柄按 TIME_WAIT 特性用常量上界，内存/线程严格），时长可用
+  `IEC_STABILITY_SECONDS` 控制。配套 `examples/stability/run-stability.sh`
+  以**三个独立进程并行**执行（资源计数互不污染）。
+  压测工具 `Metrics`/`ResourceSampler` 增加句柄数与线程数采样与报告
+  （104 JSON 也输出 `handlesBefore/After`、`threadsBefore/After`）。
+- fix(protocol, CS101): 平衡/非平衡主站在 `SECONDARY_LINK_LAYER_BUSY` 状态**没有任何退出路径**
+  （空 break）——装置启动瞬间回一帧 NACK 或 DFC=1，主站就永久不再发送任何 ASDU、
+  也不复位链路（"链路显示在线但永远没有数据"）。超过 `TimeoutRepeat` 后回 IDLE 重建链路。
+- fix(protocol, Core): `FileSegment.GetEncodedSize()` 只算固定前缀 4 字节、不含段数据长度，
+  而 `EncodeBody` 实际写 `4 + data.Length` —— `ASDU.AsByteArray()` 按错误尺寸分配缓冲区后越界
+  （104 冗余组入队、抓包导出都会走这条路径）。补回归测试并做过"回退即失败"验证。
+- test: 新增 `CS101ByteQueueTests`（许可配平 3 项）、`CS103LifecycleTests`（4 项）、
+  `CS104LifecycleTests`（3 项）、`CS101SerialTimeoutTests`（6 项，含"100 字节帧在
+  9600 波特下不被误杀"）、`CS103ProtocolHardeningTests`（6 项）、
+  `CS104ProtocolHardeningTests`（10 项）、`CoreFileSegmentTests`（2 项）。
+  全量 **308 项全部通过**（Debug 与 Release 均验证）。
+- feat(CS103): **new `LFDCC.IEC60870.CS103` package** — IEC 60870-5-103
+  (DL/T 667-1999) protective-equipment stack, `net6.0`, native FT1.2 framing
+  (no APCI). Master and slave, **serial (RS-485/RS-232) and TCP**, plus a generic
+  `Stream` transport for gateways and in-memory testing. All I/O is async with
+  `CancellationToken`; no `Thread.Sleep`, no sync-over-async, no fire-and-forget.
+  * Protocol core: FT1.2 fixed/variable/single-char frames, stream framer with
+    half-frame timeout recovery, link control field (PRM/FCB/FCV/ACD/DFC),
+    ASDU codec, zero-copy `Iec103AsduView`, CP56/CP32 time, DPI quality,
+    generic classification (GIN/KOD/GDD/GRC/NGD, GB18030), disturbance records.
+  * Link layer: unbalanced state machine with FCB flip + verification, duplicate
+    frame detection, timeout retransmission, class 1/2 queues, ACD.
+  * **Vendor-private extensions on five axes**: TypeID, FUN+INF, FUN ranges,
+    generic-classification GIN/KOD/GDD, and COT descriptions. Anything not
+    registered surfaces as `Iec103UnknownAsdu` carrying the **full raw frame** —
+    never silently dropped. Per-instance registries let different devices use
+    different vendor tables.
+  * Multi-master TCP slaves (monitoring console + protection info substation +
+    portable test set on the same device), single-link serial slaves with
+    RS-485 address filtering (`LocalLinkAddress` / `AcceptBroadcast`).
+  * Diagnostics: `FrameTraced` reports every FT1.2 frame (including fixed frames
+    and single-char ACK) in both directions; `RawFrameReceived` / `RawFrameSent`
+    for capture. Missing link-layer visibility was the main obstacle when
+    diagnosing 103 field issues.
+  * Serial port ownership follows the CS101 convention: the library `Close()`s
+    but never `Dispose()`s a caller-supplied `SerialPort`, so it can be reopened.
+  * 110 new CS103 tests (73 protocol-core + 11 TCP loopback + 9 serial/stream
+    via in-memory pipe + 17 audit regressions), all green; full suite 193 passing
+    with no CS101/CS104 regressions. The manual `HandshakeProbe` (zero asserts)
+    is now `[Explicit]` so CI green is meaningful.
+- fix(CS103): `ByteQueue103` released its semaphore once per **byte** while
+  `ReadAsync` consumed one permit per **read**, leaving stale permits that made
+  the next `WaitAsync` return immediately with 0 bytes — which the receive loop
+  interpreted as "connection closed" and exited. Every request after the first
+  link reset was silently dropped. Now released once per write batch, and a
+  zero-byte read is only returned when the queue is genuinely completed.
+- fix(CS103): variable-length frames (FC=8 "data with response") were delivered
+  to the ASDU handler but **not** to the link-response queue, so `SEND/CONFIRM`
+  and `REQUEST CLASS 1/2` always timed out even though the data decoded fine.
+  In 103 a data frame *is* the link-layer confirmation; it must go to both.
+- fix(CS103): general interrogation lost its first measurement point when the
+  slave piggybacked user data on the confirmation of the TI=7 command. The
+  client now harvests ASDU payloads from *any* response frame.
+- fix(CS103): `Iec103Options.Clone()` copied `Iec103LinkParameters` field by
+  field and silently dropped `LocalLinkAddress` / `AcceptBroadcast`, so serial
+  address filtering was inoperative. Parameters now copy through a single
+  `CopyFrom` source of truth.
+- fix(CS103): renamed `IIec103LinkTransport.Closed` to `TransportClosed` (it
+  shadowed `TcpClient.Closed`, so subscribers attached to the wrong event) and
+  `Protocol` to `ProtocolName` (it collided with TouchSocket's `Protocol`
+  struct). Raw-frame capture now includes fixed and single-char frames.
+- docs: readme corrected — the libraries target **net6.0**, not net8.0; added
+  103 sections covering the 103-vs-104 distinction, serial/TCP usage, and
+  vendor-private type registration.
+- **CS101 FT1.2 now matches CS103's implementation** (the more complete one).
+  Both packages independently own the same four capabilities; no shared
+  assembly, no source sharing — only behavioural parity:
+  * New `CS101.Ft12Frame`: immutable value type with `EncodeFixedTo` /
+    `EncodeVariableTo` / `TryDecode` (span-based, zero-alloc). Address field
+    length is a parameter (0/1/2) because 101 allows all three while 103 fixes
+    it at one byte. Validation covers length double-write, terminator, and the
+    checksum range from the C field to the end of the ASDU.
+  * New `CS101.Ft12FrameParser`: push-style byte-stream framer with noise
+    resynchronisation and half-frame timeout reset — the two capabilities CS101
+    previously lacked and the reason slow serial links could lose whole frames.
+  * `LinkLayerEngine` send paths (`SendFixedFrame`,
+    `SendVariableLengthFramePrimary/Secondary`, `SendSingleCharACK`) and both
+    receive paths (`ParseHeaderSecondaryUnbalanced`,
+    `HandleMessageBalancedAndPrimaryUnbalanced`) now go through `Ft12Frame`;
+    business branching (balanced/unbalanced, address filtering, FC dispatch)
+    stays where it was.
+  * `FT12Framer.ReadFrameAsync` gained the same noise resynchronisation and
+    half-frame reset, so the pull path and the push path behave identically.
+  * **Bug found while porting**: the variable-frame total length was computed as
+    `ASDU + AddressLength + 6`, omitting the C field — every encoded variable
+    frame would have been one byte short. Fixed to `+7` and covered by tests.
+  * Address-length-0 frames correctly omit the address field from both the
+    checksum and the decoded `Address`.
+  * 36 new tests (`CS101Ft12Tests.cs`) cover 0/1/2 address lengths × fixed /
+    variable / single-char frames, length double-write, checksum range,
+    terminator and length-field rejection, coalesced and split reads, noise
+    bytes, bad-frame reporting with recovery, half-frame timeout reset, and
+    slow-fragmented long frames. Full suite: 229 passing.
+- **CS103 is now independent of `IEC60870.Core`** (breaking only in the sense
+  that the shared package is gone; CS103 API is unchanged): removed the
+  `ProjectReference` and the `global using IEC60870.Core` from CS103, moving the
+  protocol identifier into a new `Iec103Protocol` constant class. Measured before
+  removal: CS103 referenced exactly **one** Core member
+  (`Iec60870Utility.Iec103`, a `const string`); every other `ASDU` /
+  `CP56Time2a` / `TypeID` hit was a comment or string literal, never code.
+  Keeping the reference pulled all 106 public Core types into every CS103
+  compilation unit, creating near-duplicate names that differed only by letter
+  case yet meant completely different things — `ASDU` (101/104 information-object
+  tree) vs `Asdu` (103 flat FUN/INF header); Core `CP56Time2a` (class, 0-999 ms,
+  1970 epoch) vs CS103 `Cp56Time2a` (struct, 0-59999 ms, 2000 epoch). A single
+  mistyped letter still compiled, silently binding to the wrong model.
+  CS103 now depends only on TouchSocket and the BCL and can be published
+  standalone; the two `cs103-*` examples no longer reference Core either.
+- **Full functional audit & repair (pre-release)**: four parallel read-only
+  reviews (CS103 protocol core / CS103 runtime / existing three libraries /
+  tests & build) surfaced ~40 real defects. Fixed:
+  * CS103 protocol core: `DisturbanceAsdu.ChannelData` allocated/sent one extra
+    byte (`9+2N` vs `8+2N`); `GeneralCommand` masked off the QU qualifier
+    (`dco & 0x03`) so commands could not carry bit6-7; `Ft12FrameParser.TryResetStale`
+    measured whole-frame elapsed time instead of inter-character gap, dropping
+    legitimate long frames on slow serial links (timestamp now refreshed on each
+    byte); `GenericDataSet.DecodeValue` ignored `Gdd.Number` (multi-element GID),
+    sign-extended on the wrong byte, truncated `UnsignedFixed` to one byte, and
+    used host-endian `BitConverter` (now explicit little-endian `BinaryPrimitives`
+    + new `DecodeValues()`); GB18030 truncation split surrogate pairs; missing
+    length guards on six public decode helpers; `VsQBits` silently truncated
+    out-of-range counts.
+  * CS103 runtime: **per-transaction response matching** (`LinkTransaction103`)
+    replaces the global response queue — late/duplicate frames can no longer be
+    consumed by the next transaction (the original `iec103-dotnet` defect); all
+    synchronous subscriber callbacks are exception-isolated so a throwing handler
+    cannot kill the receive loop while `IsConnected` still reports true; removed
+    the silent client-side `ResetFcbState()` that desynchronised primary/secondary
+    FCB on consecutive general interrogations; in-flight transactions now use a
+    linked lifetime token so `DisconnectAsync` cancels them instead of hanging
+    for ~8s and stealing the first frame after reconnect.
+  * CS103 protocol flow: CLASS1/CLASS2 queues are now dispatched separately;
+    SEND/CONFIRM returns a standard fixed-frame ACK instead of data; broadcast
+    (255) requests other than SEND/NO REPLY are not answered (RS-485 bus
+    contention); ACD computed after dequeue; `SendPrivateAsync` can resolve by
+    TypeID; generic-classification responses validate RII/length/COT; private
+    GIN/KOD/GDD now correctly surface as unknown entries; `ByteQueue` drop-oldest
+    matches its contract; removed dead `ChannelReader`.
+  * CS103 lifecycle: concurrent `StartAsync` guarded by a `Starting` state;
+    failed `ConnectAsync` no longer leaks a `TcpClient`; `StopAsync` explicitly
+    disposes every session core and the TCP host; stream-link loss unregisters
+    the session once and allows restart; `DisposeAsync` no longer disposes the
+    still-in-use semaphore.
+  * Existing libraries: CS104 `ApduConnection` now rolls back N(S) when the
+    sink fails (previously the next I-frame skipped a sequence number and the
+    peer closed the connection); `Iec104TimerScheduler.Dispose` unregisters from
+    the entry's owning scheduler instance; T0 now covers STARTDT completion;
+    U-frame timeouts are only cleared by the matching CON frame; `PumpAsync`
+    reads the w counter under `_kLock`; CS101 `FileServer` no longer dereferences
+    `_selectedFile` in receive state and uses the correct section index on
+    negative section retransmission; `FilesAvailable.GetFiles()` takes its lock.
+  * Build/docs: all four packages aligned to 6.1.0; readme framework/package
+    count/manual-pack commands corrected; `release_script.sh` and CI include
+    CS103 and now run `dotnet test` before packing; sln `Release|Any CPU`
+    configuration for `cs101-slave-balanced` fixed.
+  * Added `tests-cs104/CS103AuditRegressionTests.cs` with 17 guards covering
+    every P0/P1 defect above: ASDU30 length, QU preservation, slow-fragmented
+    long frames, multi-element GID / sign extension / little-endian / surrogate
+    pairs, short-data guards, consecutive general interrogations, throwing
+    subscriber callbacks, CLASS1/CLASS2 separation, broadcast non-reply,
+    TypeID-based private registration, and VSQ/NOG bounds.
+- refactor(naming, **breaking**): unified public type naming across all four
+  packages under one rule — *outward-facing components/contracts carry the
+  `Iec{N}` prefix; protocol-internal domain types do not and are disambiguated
+  by namespace*. Core was already compliant and unchanged.
+  * CS101: `CS101n104File` -> `internal FileServerEntry` (was an implementation
+    wrapper leaking into the public API with two protocol numbers in its name);
+    removed dead `ASDUQueueException` (zero references, and it collided with the
+    live CS104 type of the same name).
+  * CS104: `IApduSink` -> `IIec104ApduSink` (the only public interface in the
+    package without the `IIec104` prefix); internal `SharedTimeoutScheduler.Entry`
+    -> `TimeoutEntry`.
+  * CS103 (unreleased, renamed before publishing): outward-facing types gained
+    the `Iec103`/`IIec103` prefix — `IMaster` -> `IIec103Master`, `ISlave` ->
+    `IIec103Slave`, `ISession` -> `IIec103Session`, `ILinkTransport` ->
+    `IIec103LinkTransport`, `LinkParameters` -> `Iec103LinkParameters`,
+    `UnknownTypePolicy` -> `Iec103UnknownTypePolicy`, `PrivateTypeRegistry` ->
+    `Iec103PrivateTypeRegistry`, `UnknownAsdu` -> `Iec103UnknownAsdu`,
+    `LinkEvent` -> `Iec103LinkEvent`, `StreamSession` -> `Iec103StreamSession`,
+    etc. `AsduView` -> `Iec103AsduView` and the two handler delegates gained
+    the prefix to resolve exact-name collisions with `Core.AsduView` and the
+    CS104 delegates. `Iec103ServerMode` keeps its prefix to avoid colliding
+    with CS104 `ServerMode`.
+  * CS103 protocol-internal types lost their `103` suffixes (`Asdu103` -> `Asdu`,
+    `Frame103` -> `Ft12Frame`, `Cp56Time2a103` -> `Cp56Time2a`, …) and the
+    constant tables dropped the redundant `Values` suffix in favour of
+    collision-free names (`TypeIds`, `CotCodes`, `KodCodes`, `TooCodes`, …).
+    `Iec103`'s `Cp56Time2a`/`Cp32Time2a` deliberately remain its own value
+    types: Core's classes are reference types with different millisecond and
+    century semantics.
+  * CS103 `StreamLinkTransport`/`SerialLinkTransport` became `internal`
+    (implementation pipeline, never part of the public API).
+  * Full suite: 193 tests passing (194 total, 1 manual probe marked Explicit), no CS101/CS104 regressions.
+- feat(examples/103/cs103-parse): 新增「标准类型解析」示例，回答「只有一帧 ASDU 怎么取字段」：
+  * `StandardAsduParser.Parse(in Iec103AsduView)` 覆盖 TI=1/2/5/6/7/8/9/10/20/23/30，
+    返回带公共头的强类型 `ParsedAsdu` 派生记录（`ParsedMonitor` / `ParsedProtection` / …），
+    不认识的 TI 返回 null 交给私有/未知兜底。
+  * 演示两条取值路径：零拷贝直接读 span（热路径推荐），以及需要复用库内解码器时
+    `Asdu.Materialize(in view)` 后交给 `DisturbanceAsdu`（扰动表/通道数据这类复杂布局）。
+  * `--hex <frame>` 模式可离线解析现场抓到的 FT1.2 帧（含控制域/功能码/链路地址/ASDU 字段）。
+- feat(examples/103/cs103-private-ioa): 新增 TI=61 定值读写完整流程（现场「读定值 / 写定值」场景）：
+  * `SettingClient`：`ReadAsync(cpu, zone)` 发 INF=100，反复召 1 级数据直到 COT=10 结束帧并按
+    定值序号拼装；`WriteAsync(...)` 走 **预发 101 → 返校 102 逐项校验 → 执行 103 → 确认 104**，
+    返校不一致时自动撤销（105）再抛错；另有 `CancelAsync()`。
+  * `SettingDevice`：从站侧模拟 (CPU 板, 定值区) 参数区，按表26~28 响应各子命令，
+    无定值时回表27 否定确认（COT=21），并把定值按每帧 64 项分片。
+  * 示例自环中完成「读 5 项 → 改 1 项写回 → 回读校验 → 读不存在的定值区被拒绝」四步验证。
+  * 说明 103 的轮询特性：装置收到命令只做链路确认，数据进 1 级队列，主站必须自行召唤。
+- feat(CS103): 标准 ASDU 强类型解码器 `Iec103AsduDecoder`，解决 103「取值要自己算字节偏移」的问题。
+  * 103 没有 IOA，寻址在 ASDU 头的 FUN/INF、信息体按 TI 解释，不能照搬 104 的
+    「按 TypeID 造对象 + 用 IOA 定位」。库改为**按 TI 整帧解码**，一次返回该 TI 的全部字段。
+  * `Decode(in Iec103AsduView)` → `Iec103DecodedAsdu`（基类携带 `Iec103AsduHeader`：
+    TI/COT/P/N/CA/FUN/INF），派生记录：`Iec103MonitorMessage`（TI=1，多元素 + 品质 + 时标 +
+    附加信息，兼容 8/12 字节两种现场布局）、`Iec103ProtectionEventMessage`(2)、
+    `Iec103IdentificationMessage`(5)、`Iec103ClockSyncMessage`(6)、`Iec103InterrogationMessage`(7/8)、
+    `Iec103MeasurandMessage`(9)、`Iec103GenericDataMessage`(10)、`Iec103GeneralCommandMessage`(20)、
+    `Iec103DisturbanceListMessage`(23)、`Iec103ChannelDataMessage`(30)。
+  * `TryDecode(in view, out value, out error)` 不抛异常版本；未覆盖的 TI 返回 false，
+    与私有类型注册表（TypeID / FUN+INF 轴）并行、互不干扰。
+  * 消费端写法变为 `switch (decoded) { case Iec103MonitorMessage m: ... }`，
+    不再需要 `BinaryPrimitives` / 手工切片。
+- feat(examples/103): 补齐网口实例 `cs103-master-tcp` / `cs103-slave-tcp`
+  （此前只有串口版），支持多主站并发接入、周期量测（TI=9 走 2 级）与保护事件（TI=2 走 1 级）。
+- refactor(examples/103/cs103-parse): 改用库内 `Iec103AsduDecoder`，删除示例里重复的本地解析器。
+- fix(CS101): `Iec101Server.SetFileReadyHandler` 的注册从未生效——handler 只存在服务端字段上，
+  而真正处理文件 ASDU 的 `FileServer` 有自己的同名字段，服务端从不转交，导致
+  `FileServer` 永远认为「没有 handler」，一律回否定确认，文件传输无法建立。
+  现转发给 `_fileServer`（示例中已能看到 "Accept file download."）。
+  **遗留**：接受之后传输仍停在等待段就绪——文件服务器的推进只由启动时的一次
+  `HandleFileTransmission()` 驱动，运行期没有周期性 tick，主站在平衡链路上又不主动
+  召唤 1 级数据，于是双方互等。该功能无端到端测试覆盖，需要单独一轮修复 + 补测试。
+- fix(examples/104/tls): TLS 示例用相对路径加载证书（`server.pfx` / `client1.pfx`），
+  而 `dotnet run` 的工作目录是调用方当前目录，从仓库根运行必然找不到文件；
+  改为 `Path.Combine(AppContext.BaseDirectory, ...)`（证书本来就随
+  `CopyToOutputDirectory` 复制到输出目录）。
+- docs(CS103): 清理跨协议对比注释。103 已是独立包，注释里不再出现「与 101/104 不同」
+  「沿用 CS101/CS104 做法」「参考实现 iec103-dotnet 的缺陷」这类比较——
+  改为直接陈述 103 自身的位布局、COT 语义与设计约束（同时删掉无信息量的
+  「原实现如何如何」历史注记）。涉及 Asdu / TypeIds / CotCodes / TimeAndQuality /
+  LinkControl / LinkLayerEngine / StandardAsduDecoder / PrivateTypeRegistry /
+  Iec103Protocol / Iec103Options / Iec103Server / Contracts / Ft12Frame / 三个传输实现。
+- refactor(review, **breaking**): 全库深度审查后的清理与整合。
+  * 删除「配置了但从未生效」的选项：`Iec103Options.AutoReconnect` / `ReconnectIntervalMs` /
+    `UseAutoReconnect()` / `RawFrameSnapshotCapacity` / `UseRawFrameSnapshotCapacity()`，
+    以及 `Iec103LinkParameters.UseSingleCharAck`（从站一直用固定帧 ACK，选项从未被读取）。
+    留着一个承诺了行为却没实现的开关，比没有更糟——需要重连请在应用层做
+    （参考 `examples/104/cs104-client-reconnect`），需要 E5 应答再显式实现。
+  * 删除从未被触发的枚举值 `Iec103LinkEventKind.Reconnecting` / `Repeat`。
+  * `Iec103AsduView` 删除被 `Iec103AsduDecoder` 取代的两个定长快捷方法
+    `TryGetMeasurement` / `TryGetProtectionEvent`（后者还零调用）；保留通用的
+    `TryGetDpi` / `TryGetCp56Time2a`。
+  * CS104：删除 `IecApdu._controlParsed` 死字段（只写不读）。
+  * 示例整合：`cs103-master-serial` 与 `cs103-slave-serial` 对齐网口版——
+    串口主站改用 `Iec103AsduDecoder` 统一取值、去掉手写的分类型解码；
+    串口从站去掉 3 处 `SendAsduAsync(...).AsTask().GetAwaiter().GetResult()`
+    同步阻塞调用（在回调里同步等待发送完成，属于 sync-over-async）。
+  * 修正 `XujiPrivateTypes` 过时的类注释（还写着「会触发私有类型回调」）。
+- refactor(CS103, **breaking**): 私有类型解析交还业务代码，去掉「库替你做 switch」这层。
+  * 删除 `Iec103PrivateTypeRegistry.TryDecode` —— 它只是 `TryResolve + Decode` 的封装，
+    而 103 私有类型布局全是厂商的，业务侧一个 `switch (asdu.TypeId)` 更直白。
+  * `IIec103PrivateTypeHandler` 收缩为「登记 + 编码」契约：删除 `Decode` 与
+    `GetPayloadSize`（后者从未被调用），只保留 `TypeId` / `VendorTag` / `Fun` / `Inf` / `Encode`。
+  * `Iec103DecodedAsdu` 成为**唯一**的解码结果基类：标准类型（`Iec103AsduDecoder`）与
+    私有类型（业务代码自己的解析函数）返回同一个基类，`switch (decoded)` 一次匹配到底，
+    不再出现「私有类型返回 object」的半套设计。`SendPrivateAsync` 也改为收 `Iec103DecodedAsdu`。
+  * 新增 `Iec103ElementList<T>`：多元素信息体（TI=40/41/43/50/36 这类）的通用容器，
+    元素仍是 struct、不装箱。
+  * 示例改为「先问厂商解码器，再问库标准解码器」：
+    `XujiPrivateTypes.Decode(in asdu) ?? Iec103AsduDecoder.Decode(in asdu)`。
+  * 注册仍然需要（`RegisterAll`）：注册决定「这个 TI 我认识」，否则会走 `UnknownAsduReceived`。
+- refactor(CS103, **breaking**): 去掉重复的私有报文投递通道。
+  * 删除 `Iec103Client.PrivateAsduReceived`（及 `IIec103Master` 同名契约）。原先每一帧私有
+    ASDU 会**同时**触发 `PrivateAsduReceived` 和 `AsduReceived`，同一帧投递两次，且从站侧
+    本来就只有 `AsduReceived` 一个入口——主从两侧行为不一致。
+  * 新增 `Iec103PrivateTypeRegistry.TryDecode(in Iec103AsduView, out object?)`：在唯一的
+    `AsduReceived` 回调里就地解析，一行拿到强类型对象。
+    `if (client.PrivateTypes.TryDecode(in asdu, out var v)) …`
+  * `TypeIds.IsStandard` 从 18 个常量的白名单（与常量表重复维护）改为范围判断
+    `1..31`（新增常量 `StandardTypeIdMax`）。标准 TI 本就连续，新增标准类型不必再改两处；
+    标准保留位也不会再被误报成厂商私有类型。
+  * 同步更新 readme、示例与 2 个测试到单入口写法。
+- fix(CS103, **breaking**): `DpiQuality` 的位序对齐标准。原实现沿用参考库的
+  `bit2 IV / bit3 NT / bit4 SB / bit5 BL / bit6 EI`，与 IEC 60870-5-101/104 的
+  `DIQ`（`bit4 BL / bit5 SB / bit6 NT / bit7 IV`，与本仓库 101 的
+  `QualityDescriptor` 同构）没有任何一处对得上——装置发 `0x81`（IV + 分）会被解成
+  「分、品质全干净」，把无效值当有效值用。现按标准实现：
+  `DPI(bit0-1) | 保留(bit2-3) | BL(0x10) | SB(0x20) | NT(0x40) | IV(0x80)`。
+  * 移除非标准位 `El`（"EI 事件有效"，IEC 103 的 DIQ 里没有这个位）
+    与从未被引用的 `UnusedExtraInfo`；`DPI`/`IV`/`NT`/`SB`/`BL` 属性名不变。
+  * 新增掩码常量 `DpiMask`/`BlockedMask`/`SubstitutedMask`/`NonTopicalMask`/`InvalidMask`。
+  * 测试改为字节级断言（`0xF2` 全品质位、`0x81` → IV+分、`0x0C` 保留位忽略），
+    替换原来只做自洽往返的用例。
+  * 需要旧位序的消费方无法兼容——这是 wire 语义修正，没有开关。
+- refactor(examples/103): 库的 `DpiQuality` 修正后，示例里自带的
+  `XujiStatusQuality`（含两套掩码和 `ToDpiQuality`/`FromDpiQuality` 转换）成为重复代码，
+  整体删除，直接复用库类型；示例净减约 90 行。
+- fix(sln): `dotnet sln add` 只给 103 建了解决方案文件夹，101/104 的项目仍平铺在
+  `examples` 下。现按 `examples/{101,103,104}` 重建解决方案文件夹层级，30 个示例工程
+  全部归位。
+- feat(examples): reorganized into `examples/101`, `examples/103`, `examples/104`
+  (plus `examples/104/tls-certs`); all project-reference paths and `IEC60870.sln`
+  entries updated. Examples no longer crash when stdin is redirected
+  (`Console.KeyAvailable` / `Console.ReadKey` are now guarded by
+  `Console.IsInputRedirected`), so they can run headless in CI.
+- feat(examples/104/cs104-private-ioa): renamed from `cs104-xuji-private-ioa` and
+  split into a per-vendor `Xuji/` folder, so other vendors can be added alongside.
+  The Xuji 104 implementation was re-verified table-by-table against
+  《许继104通信规约》: only ASDU 166 / 168 are vendor-private TypeIDs and both
+  byte layouts match the spec — nothing was missing.
+- feat(examples/103/cs103-private-ioa): Xuji 103 vendor extensions, all **18**
+  extended TypeIDs (36/39/40/41/42/43/50/61/62/64/65/67/70/73/74/88/93/94),
+  implemented as `IIec103PrivateTypeHandler`s with byte-accurate layouts from
+  《许继103通信规约》表10~表38, plus the extra COTs (13/64/66) and the
+  TI=61 INF sub-commands (100~106). For 103 the "private" mechanism is *not* a
+  private TypeID range (the standard stops at 31) but vendor-extended TypeIDs
+  36-94 with device-specific FUN/INF, so the example registers on the TypeID
+  axis only and keeps the unknown-ASDU fallback intact. The example runs a
+  full TCP loopback (reset -> GI -> class-1 poll) and decodes every type,
+  so it doubles as a regression script.
+- feat(examples/103/cs103-stress): new 103 stress/performance harness
+  (N device slaves + N masters, spontaneous background, class-1/2 polling,
+  command and GI RTT, allocation/GC counters, optional burst mode).
+  Measured on this machine (Release, 20 s):
+  * 100 devices, steady: 2.6k ASDU/s, class-1 RTT avg 1.46 ms, 0 timeouts,
+    268 MiB working set.
+  * 100 devices, burst (16 frames per class-1 poll): **71.5k ASDU/s**,
+    class-1 RTT avg 2.31 ms, 0 timeouts, 272 MiB.
+- fix(CS101): **file transfer no longer deadlocks**. Diagnosed from a clean
+  packet-level repro (master pushes a 1025-byte file to the slave); three
+  independent defects had to be fixed together — each one alone still stalls:
+  * `SecondaryLinkLayerBalanced` only sent a link-layer ACK when the
+    *application* returned "handled". Link-layer acknowledgement is not the
+    application's decision: if the master has no ASDU handler registered (the
+    common case) it stayed silent, and the peer reset the link on ACK timeout.
+    It now always answers (single-char ACK or fixed ACK, following
+    `UseSingleCharACK`), which is what `SecondaryLinkLayerUnbalanced` already
+    did. FCB/FCV validation now only decides whether the payload is delivered to
+    the application, not whether the frame is acknowledged — a repeated frame
+    must be ACKed so the sender stops repeating.
+  * `Iec101Client.RunLoopAsync` never called `_fileClient.HandleFileService()`,
+    while the single-step `RunAsync` did. File-transfer segments are not
+    triggered by peer traffic, so the master sent exactly one segment and then
+    waited forever in `SEND_SECTION`. Both paths now drive the file state
+    machine at the top of each iteration.
+- fix(CS101): `StreamByteSource` read via the legacy
+  `ReadAsync(byte[], int, int, CancellationToken)` overload. On any `Stream`
+  that does not override that overload the call falls back to the synchronous
+  `Read` path, which never sees the cancellation token — so the per-read timeout
+  was silently ignored and the receive loop blocked forever. This affected
+  serial transports and any user-supplied `Stream`. Now uses
+  `ReadAsync(Memory<byte>, CancellationToken)` uniformly, with the same
+  `Math.Max(timeout, 1)` guard as `AsyncByteQueue`.
+- fix(CS101): `SerialTransceiverFT12(SerialPort, ...)` read `SerialPort.BaseStream`
+  in its constructor, which throws `InvalidOperationException` unless the port is
+  already open — making the documented ownership contract ("caller owns the port,
+  the library opens it in `StartAsync`") unreachable and crashing every serial
+  example at construction time. The stream is now resolved lazily on first I/O.
+- fix(CS101): unbalanced master silently dropped user data when the target
+  address had no registered slave connection (`SlaveAddress` left at its `0`
+  default, or simply not `AddSlave`d). `SendConfirmed` / `SendNoReply` now throw
+  `ArgumentException`, consistent with `GetStateOfSlave`, instead of losing the
+  message without a trace.
+- fix(CS101): `Iec101Server.LinkLayerAddressOtherStation` was dead after startup.
+  `RunAsync` created the balanced primary link layer into a **local** variable
+  that shadowed the field the property setter writes to, so assigning the peer
+  address at runtime had no effect (the property's `!= null` guard never fired).
+- test(CS101): closed the two largest end-to-end coverage gaps. All previous
+  CS101 end-to-end tests ran BALANCED over TCP with a 1-byte address — the
+  server's *default* mode (UNBALANCED) and the serial/`Stream` transports had no
+  automated coverage at all. New: `CS101FileTransferTests` (download, upload, and
+  the "unconsumed ASDU must still be ACKed" contract), `CS101UnbalancedTests`
+  (GI and single-command round trips, including the class-2 polling → ACD →
+  class-1 fetch sequence), `CS101SerialAndStreamTests` (master↔slave over an
+  in-memory duplex pipe, plus the constructor/ownership contract). Each fix above
+  is covered by a test that was verified to fail when the fix is reverted.
+  Full suite: **237 passing**.
+- fix: **production-readiness hardening** (from a four-dimension deep review:
+  concurrency, resource lifetime, protocol robustness, API/ops). Fixed the items that
+  could cause silent field failures — each verified with a regression test that fails
+  when the fix is reverted:
+  * **CS104 shared timer could silently stop all T1/T2/T3** (high). The last
+    `Unregister` decremented the live count to zero and called the *static*
+    `ForceShutdown()`, which disposed the process-wide timer and cleared every shard
+    heap. A connection registering concurrently got its entry wiped (`HeapIndex = -1`,
+    never armed) → its T1/T2/T3 never ran, a half-open TCP was never declared dead,
+    `ConnectionClosed` never fired, the client never reconnected — and no log line was
+    written. Also, an *old* instance reaching zero would shut down whichever instance
+    was current. Now: shutdown is instance-scoped behind `SingletonGate`, re-checks the
+    count under the lock, only runs when `ReferenceEquals(_instance, this)`, and
+    `Register` throws `ObjectDisposedException` instead of returning a never-armed
+    entry. `Instance` uses `Volatile.Read/Write` for correct double-checked locking on
+    weak memory models.
+  * **CS104 disposed `_sendLock` while a send could still hold it** (high). The comment
+    assumed no sender can hold the lock, but `CleanupConnection()` is invoked from
+    `RequestTransportClose`'s `Task.Run`, `OnTcpClosed`, `Rebuild` and `SafetyDispose`
+    on arbitrary threads. `SemaphoreSlim.Dispose()` then made the `finally`'s
+    `Release()` throw `ObjectDisposedException`, **masking the original send
+    exception**; `WaitAsync` on a disposed semaphore throws ODE instead of OCE, so
+    retry logic keyed on `OperationCanceledException` took the wrong branch. The
+    semaphore (no unmanaged resources when `WaitHandle` is untouched) is no longer
+    disposed.
+  * **CS104 signalled STARTDT_CON success on Dispose** (high). `Dispose` used
+    `TrySetResult(true)` to wake the handshake waiter, so `StartDataTransferAsync`
+    returned *success* when the connection was torn down mid-handshake;
+    `Iec104Client` then set `_dataTransferStarted = true` and all later calls silently
+    no-opped while STARTDT had never completed. Dispose now cancels the waiter.
+  * **CS101 `_fatalError` was never reset** (fatal). A single port-denied / write
+    failure made `RunLoopAsync`'s loop condition false forever — the master stopped
+    silently, `StartAsync` still returned normally, and there was no event and no
+    `Warning` log. `StartAsync` now resets it, and the fatal path logs at `Warning`
+    (it was `Debug`, invisible at production log levels).
+  * **CS101 `StartAsync` blocked forever on the serial path** (fatal for callers).
+    It returned `RunLoopAsync(...)`, so `await StartAsync()` never completed —
+    contradicting its own XML doc ("non-blocking") and the semantics of CS103/CS104.
+    It now starts an internal loop task and returns immediately.
+  * **CS104 `TypeHandlers` was dead configuration** (high). The receive path always
+    did `new AsduView(asdu, _al)` and never injected the registry, so user-registered
+    private types (e.g. Xuji 166/168) still threw "Unknown ASDU type id". The registry
+    is now passed through `ApduEndpoint` into `ApduConnection`.
+  * **CS104 `StopAsync()` → `StartAsync()` left the server "fake online"** (high).
+    `StopAsync` cancelled every redundancy group's drain loop and `Init` is
+    idempotent, so after a restart the server accepted connections and received
+    frames but `EnqueueAsync` events were **never sent** — no exception, no log.
+    `StartAsync` now rebuilds the groups.
+  * **CS101 unbalanced master could silently drop remote-control commands** (high).
+    `SendConfirmed` / `SendNoReply` did a check-then-set on `nextMessage` with no lock
+    while the loop thread consumed it — two concurrent sends overwrote each other.
+    Now guarded by a per-slave `MessageGate`.
+  * `IsUserDataClass1QueueFull` / `Class2QueueFull` compared with `==` (missed
+    overflow) and read without the lock; now `>=` under the lock.
+  * CS104 `AsduReceived` is now exception-isolated (a throwing subscriber used to skip
+    the S-frame acknowledgement and bubble into the transport); CS103 already did this.
+  * `Iec104Client.SendAsync` throws `InvalidOperationException("连接未建立…")` instead of
+    NRE.
+  * Guards: `tests-cs104/ProductionHardeningTests.cs` (5 tests). Full suite
+    **272 passing**.
+- fix(CS101): **reconnect lost the first frame of each new session**. Found by the new
+  soak test (12 disconnect/reconnect cycles). Symptom: from the 2nd cycle on, the
+  slave-pushed `ACTIVATION_CON` of a general interrogation was silently dropped —
+  the data frame and `ACT_TERM` arrived, only the very first frame was missing.
+  Root cause: `PrimaryLinkLayerBalanced._nextFcb` (the slave's *sending* frame-count
+  bit) was initialised once and never reset. On reconnect the peer resets its
+  expectation to FCB=1 (per `RESET_REMOTE_LINK`), but the local `_nextFcb` kept the
+  value from the previous session, so the peer saw a duplicate frame and — by design
+  in 101, which prefers dropping to re-executing — discarded it.
+  Fix: `ResetSequenceState()` on `PrimaryLinkLayerBalanced`, invoked from
+  `SecondaryLinkLayerBalanced`'s `RESET_REMOTE_LINK` branch (the exact point where the
+  peer resets its own expectation). Verified by reverting it: the reconnect test fails
+  immediately with "0 ASDUs in round 1".
+- test: **production-readiness test suite** (10 new tests, `RobustnessFuzzTests` +
+  `SoakAndReconnectTests`), covering what the existing tests never did:
+  * **Fuzz**: 2,000 random 64-byte writes into the FT1.2 framer (no crash, no
+    deadlock, bounded buffering), truncated/over-long frames, 500 malformed APCI
+    buffers, 3,000 random ASDU byte blobs through the CS101/CS103 decoders —
+    asserting only *controlled* exceptions (`ASDUParsingException`) escape, never
+    `IndexOutOfRange` / `NullReference` / `ArgumentOutOfRange`.
+  * **Soak/reconnect**: 12 CS104 reconnect cycles (asserting the managed heap grows
+    < 8 MB and all server sessions are reclaimed), 8 CS101 balanced reconnect cycles,
+    8 concurrent CS104 clients soaking for 10 s, and 20 clients that connect-then-drop
+    immediately (asserting zero leaked server sessions).
+  Full suite: **267 passing**.
+- fix(CS103): **follow-up "half-fix" audit (2026-11-08)** — same exercise as CS101/CS104
+  for the 103 package; nine places where a fix had covered only one side of a symmetric
+  pair are now fixed:
+  * **Serial transport read `SerialPort.BaseStream` in its constructor** — that property
+    throws `InvalidOperationException` ("The BaseStream is only available when the port
+    is open") unless the port is already open, while the class contract is "caller
+    passes a closed port, the library opens it". `SerialLinkTransport` now resolves the
+    stream lazily in `Open()`/first I/O (`EnsureInner`). This is the *same* defect fixed
+    in CS101's `SerialTransceiverFT12` earlier in this release — the whole serial path
+    would have failed on real hardware before doing any I/O, and every existing 103 test
+    used in-memory pipes so it never showed. A regression test now constructs the
+    transport with a closed `SerialPort` and asserts the exact exception is gone
+    (verified to fail when reverted).
+  * **Slave-side subscriber callbacks had no exception isolation**: `Iec103Server.Raise*`
+    were bare `?.Invoke`, so one throwing subscriber killed that session's read loop
+    silently (the client had `SafeInvoke` all along). Now all raise paths are isolated,
+    `SessionCore.DispatchAsdu` has local try/catch (including a dedicated
+    `Iec103UnknownAsduException` handler for the Throw policy), and `RaiseLinkEvent`/
+    `RawFrameSent`/`FrameTraced` on the client are isolated too. While doing this, a
+    latent infinite-recursion hazard was removed: `SafeInvoke` used to re-enter
+    `RaiseLinkEvent` on failure.
+  * **`LinkTransaction103` correlation was never wired**: `Begin()` was called with no
+    arguments, so `ExpectedAddress`/`AcceptedFunctions` stayed null and `IsMatch`
+    only checked `PRM=0` — a stale ACK from the previous round could be consumed by a
+    class-1/2 data call. `ExecuteLinkServiceAsync` now takes an accepted-function set
+    and the operations pass `ControlFrameResponses` / `DataCallResponses` /
+    `SendConfirmResponses`.
+  * **`LinkTransaction103.Complete()` masqueraded as a timeout**: completion only
+    released the semaphore, and the reader then threw `OperationCanceledException`,
+    which matched the "frame timed out → retransmit" branch. Added
+    `Iec103TransactionAbortedException` and re-threw it before the timeout branch in
+    both wait paths, so ending a transaction no longer triggers a bogus resend.
+  * **Passive disconnect left state behind**: `OnTransportClosed` did not cancel the
+    lifetime token (in-flight transactions then waited the full
+    `MessageTimeoutMs × (MaxRepeat+1)`) and `ConnectAsync` overwrote the old loop/CTS
+    without disposing them (two readers could contend on the same stream). Both fixed.
+  * **Slave-side gaps**: `UnknownTypePolicy.Throw` was not implemented (only Log
+    existed); `Iec103UnknownAsdu.Session` was hard-coded `null`; the slave's frame-trace
+    text callback was an empty method body. All three now behave like the client.
+  * **`StreamLinkTransport` never marked itself failed** on read/write errors, so
+    `IsOpen` stayed true and reads kept retrying a dead stream; TCP-session
+    `TransportClosed` was never raised (three transports had three different
+    semantics); slave broadcast used sync-over-async
+    (`.AsTask().GetAwaiter().GetResult()`) despite the contract forbidding it.
+  * **Guards**: `CS103SlaveIsolationTests.cs` (3 tests) proves a throwing
+    `AsduReceived` / `UnknownAsduReceived` / `FrameTraced` subscriber on the *slave*
+    cannot kill the session, and `CS103SerialTests` gained the closed-`SerialPort`
+    construction test.
+- fix(CS101): **follow-up "half-fix" audit (2026-11-08)** — a deep re-review of the
+  CS101 file-transfer work found several more places where only one of two symmetric
+  paths had been repaired. These are now fixed:
+  * `FileServer.HandleFileTransmission` gated all timeout handling on
+    `_selectedFile != null`, which is only set for **uploads**. The download states
+    (`WAITING_FOR_SECTION_READY` / `RECEIVE_SECTION`, driven by `_fileReceiver`)
+    were excluded entirely: if the master stopped mid-transfer, the slave never timed
+    out and never called `_fileReceiver.Finished(TIMEOUT)`. It now tracks both
+    directions, notifies the receiver, and clears checksums/state.
+  * `FileServerState.SEND_ABORT` was a **dead state**: four assignment sites but no
+    handler, so DEACTIVATE_FILE was never sent (only a 3 s timeout escaped).
+    `SendDeactivateAndReset()` now emits it and resets both directions' state,
+    symmetric with `FileClient.AbortFileTransfer`.
+  * `FileServer` download path never verified the section checksum: `F_SG_NA_1`
+    accumulated no checksum and `F_LS_NA_1` unconditionally replied
+    `POS_ACK_SECTION`. It now accumulates and compares, replying
+    `NEG_ACK_SECTION / CHECKSUM_FAILED` — symmetric with the client.
+  * `FileClient.AbortFileTransfer` notified only `_fileReceiver`; the upload-side
+    `_fileProvider.TransferComplete(false)` was missing (the timeout path did both).
+    Fixed. The `F_FR_NA_1` / `WAITING_FOR_REQUEST_FILE` rejection branch now aborts
+    and resets state instead of leaving the state machine stuck (which caused a
+    second `TransferComplete(false)` on timeout).
+  * `HandleFileService` let a `LinkLayerBusyException` or send failure escape into
+    `Iec101Client.RunLoopAsync`'s catch, which **exits the whole receive loop** while
+    the file state stayed in `SEND_SECTION`. Busy now retries next round; hard
+    failures notify both sides and reset to IDLE.
+  * `Iec101Server` created `_linkLayer` lazily inside `RunAsync`, so pre-start calls
+    to `DIR`, `SendLinkLayerTestFunction`, `SetReceivedRawMessageHandler` /
+    `SetSentRawMessageHandler` threw NRE (the client creates it in its constructor).
+    `EnsureLinkLayerEngine()` now runs in all three constructors; primary/secondary
+    layers are still assembled in `RunAsync` (link mode can change until then).
+  * PortDenied/fatal-error guard was registered only in `StartAsync` (and re-added on
+    every call), while `_fatalError` was only checked by single-step `RunAsync` — so
+    neither drive path actually stopped a dead-port loop. Registration moved to
+    `InitializeLinkLayer`/constructor, `RunLoopAsync` now checks `_fatalError`, and
+    `Iec101Server` got the same guard (it had none). `Iec101Server.StartAsync` now
+    also disposes the previous CTS like the client does.
+  * `IServerApplicationLayer.ResetCUReceived(bool onlyFcb)` ignored its parameter
+    and always cleared both queues; RESET_FCB (FC=7, `onlyFcb=true`) must not discard
+    pending class-1/2 data. Now honoured.
+  * **Guards**: `tests-cs104/CS101FileFailureTests.cs` (3 tests, each verified to
+    fail when the corresponding fix is reverted) covers download-direction timeout
+    → `Finished(TIMEOUT)` + state reset, `SEND_ABORT` → DEACTIVATE_FILE actually
+    emitted, and pre-start `DIR` / raw-handler / link-test access on `Iec101Server`.
+- chore(examples): `examples/104/cs104-server-file` → `examples/101/cs101-slave-file`
+  and `examples/104/cs104-client-file-upload` → `examples/101/cs101-master-file`.
+  Both use `Iec101Server` / `Iec101Client` and were misfiled under 104 with 104
+  names; namespaces, `.csproj` names, solution entries and the solution folder
+  nesting (104 → 101) were updated. Both examples now run BALANCED (the file
+  state machine needs the slave to push frames), the master demonstrates **both**
+  directions (upload *and* download), waits for the link to come up instead of
+  blindly sleeping, and bounds every wait with a timeout so a stall reports a
+  failure instead of hanging.
+- feat(examples): new `examples/101/cs101-stress-500` — 101 stress harness with the
+  **same measurement口径** as `examples/104/cs104-stress-500` (same device/master
+  topology, spontaneous rate, command cadence, GI cadence, per-ASDU point count),
+  so 101 and 104 can be compared directly. 500 devices = 500 device servers on
+  their own ports + 500 master clients in one process.
+- test: **500-device re-measurement of all three protocols** (v6.1.0 working tree,
+  Release, single machine — Ryzen 7 5800H, 16 logical cores, .NET 8.0.28):
+
+  | | 101 | 103 | 104 |
+  |---|---|---|---|
+  | 链路/会话建立 | 500/500 | 500/500 | 500/500 |
+  | 合计 ASDU 吞吐 | 11,244 /s | 12,869 /s | 10,719 /s |
+  | 命令 RTT P99 | 76.6 ms | — | **1.04 ms** |
+  | CPU（整机占比） | 12.8 % | — | 4.8 % |
+  | 工作集 | 138 MB | 323 MB | 355 MB |
+  | 超时 / 错误 | **0 / 0** | **0 / 0** | 0 解码错误，**但有 7 % 链路失效（见下）** |
+
+  Findings: 101's per-command round trip is ~70x slower than 104's (P99 76 ms vs
+  1 ms) because FT1.2 is one-frame-one-ACK with no window — a link-layer property,
+  not a defect; conversely 101 uses only 39 % of 104's per-device memory (283 KB vs
+  727 KB) since it has no k-buffer/APCI adapter/T1T2T3 timers. Reports:
+  `examples/101/cs101-stress-500/STRESS-TEST-REPORT.md`,
+  `examples/103/cs103-stress/STRESS-TEST-REPORT.md`,
+  `examples/104/cs104-stress-500/STRESS-TEST-REPORT.md` (+ raw logs/JSON under each
+  tool's `results/`).
+- fix(CS104): **fixed the "receive-only zombie link" defect** found by the 500-device
+  stress run. Under load ~7 % of links (36/500) silently stopped accepting sends:
+  `ConnectionClosed` never fired, `IsActivated`/`Online` still reported true, yet every
+  later `SendAsync` threw "Writing is not allowed after writer was completed".
+  Diagnosis (instrumented stack + link-state snapshot) uncovered **two** root causes,
+  not one — the initial "rollback" theory was only the surface:
+  1. **A register-after-await race was the actual trigger.** `SendAsduAsync` /
+     `SendEncodedAsduAsync` took N(S) (advancing `_nextSendSeq`) but registered the
+     frame in the k-window ring buffer only *after* `await _sink.SendAsync`. In that
+     window `unacked == 0` while `nextSendSeq` had already advanced, so a perfectly
+     legitimate redundant acknowledgement `N(R) = nextSendSeq-1` fell outside
+     `KWindow.Ack`'s legal interval `[S, nextSendSeq]` and was rejected as a protocol
+     error. Every one of the 33 instrumented errors had exactly this signature
+     (`NR out of range: NR=4 nextSendSeq=5 unacked=0`). Fix: `TakeSendSeq` +
+     `RegisterSent` + APCI header now happen in the **same `_kLock` critical section**,
+     both send paths. `CheckSequenceNumbers=false` behaviour is unchanged.
+  2. **Failure/close reporting was tied to TouchSocket's `Closed` event.** Protocol
+     errors were handled by `CloseAsync("protocol error")` from inside the receive
+     callback; that left the socket `Online`, completed the adapter's `PipeWriter`, and
+     *never* fired `Closed` — the only place `ConnectionClosed` was dispatched from.
+     Fix: `ApduEndpoint.FailConnection(reason)` now owns the path — it synchronously
+     sets `IsActive=false`, records `CloseReason`, dispatches `ConnectionClosed` exactly
+     once (`ApduConnection.NotifyClosed` is idempotent), and *asynchronously* requests
+     transport close, so no socket teardown happens inside a receive callback. It is
+     used by protocol errors, fatal timeouts, and send failures alike; both hosts
+     (`Iec104Client` / `Iec104Session`) no longer call `CloseAsync` from
+     `OnTcpReceived`. `LastProtocolErrorDetail` now records which branch fired
+     (NS mismatch / NR out of range / short ASDU) with window state, plus a warning
+     log — previously there was no diagnostic at all.
+  - `KWindow.RollbackSendSeq` / `SequenceNumbers.Decrement` **removed**: rolling back
+    N(S) on a send exception is unsound because a thrown send may still have reached
+    the peer (sequence ambiguity is unrecoverable under 104). A failed send with an
+    allocated N(S) now fails the connection (`IoError`) instead. A failed connection
+    rejects further sends with a diagnostic `OperationCanceledException("connection
+    failed: …")` and ignores any frames arriving before transport teardown.
+  - `Dispose`/`NotifyClosed` now also clear `IsActive`, so the state query can never
+    disagree with `ConnectionClosed`.
+  - **The host-side cleanup also no longer depends on `OnTcpClosed`.** The original
+    symptom was two-layered: not only was `ConnectionClosed` not dispatched, but
+    `CleanupAsync()` (wake pending command-confirmation waiters) / server session
+    unregister never ran either whenever TouchSocket's `Closed` callback did not
+    fire — callers would hang until `CommandConfirmationTimeout`. `Rebuild` now takes
+    an idempotent `onFailed` action that `RequestTransportClose` invokes in a
+    `finally` after the async transport close, unconditionally (even if closing the
+    transport itself throws). `Iec104Client` wires it to `CancelLife` +
+    `CompleteAllCanceled()`, `Iec104Session` to `CancelLife` + `UnregisterSession`.
+    This is what makes a *send* failure (not just a protocol error) fully reportable.
+  - **Follow-up "half-fix" audit (2026-11-08)**: a full re-review of this same change
+    found seven more places where the new failure mechanism had only been applied to one
+    of several symmetric paths. All are now fixed:
+    * **Structural guard**: `ApduEndpoint.RequestTransportClose` now calls
+      `CleanupConnection()` in its own `finally` (releasing the shared timer
+      registration / `_liveCount` and the state machine). Previously this was left to
+      the host `onFailed` callbacks — i.e. one more "only one side wired" risk.
+      `SharedTimeoutScheduler.LiveCount` was added as a diagnostic, and a regression
+      test asserts the release happens **even with no host callback at all**
+      (verified to fail when the endpoint's own cleanup is removed). Both hosts still
+      call `CleanupConnection()` defensively; all paths are idempotent.
+    * `SendUAsync` / `SendSAckAsync` wrote to the sink with neither a `_failed` guard
+      nor a failure path, while both I-frame paths had been fixed — U/S write
+      failures escaped into `OnTcpReceived` (no catch) or were swallowed as
+      "transient" by the timer scheduler, leaving a dead link polled forever. All
+      three send paths now share `ThrowIfFailed()` and call `FailConnection(IoError)`.
+    * `RedundancyGroup.DrainAsync` caught `OperationCanceledException` as "loop
+      cancelled" and `break`ed. The new `_failed → OCE("connection failed: …")`
+      signal therefore **regressed** standby promotion: a dead primary stopped the
+      drain loop permanently and events piled up. It now distinguishes token
+      cancellation (break) from connection failure (requeue + promote).
+    * `StopDataTransferAsync` never cleared `_dataTransferStarted`, so after STOPDT
+      a later `StartDataTransferAsync` silently no-opped (asymmetric with the
+      failure path which does reset it). Now reset on STOPDT_CON.
+    * `Iec104Server.RaiseConnectionEvent` handled `Activated` / `ConnectionClosed`
+      but not `Deactivated`: a STOPDT-deactivated session stayed the redundancy
+      group's active target and kept receiving I-frames. Added `OnDeactivated`.
+    * `Rebuild`'s `closeAsync` was hardcoded `CloseAsync("timeout")` for *all*
+      failure reasons; it now receives the real `ConnectionCloseReason`.
+    * Removed the now-orphaned `ApduConnection.MarkCloseReason` (vestige of the old
+      "record reason, wait for `OnTcpClosed` to dispatch" mechanism that caused the
+      zombie links in the first place).
+  - **Verification**: `tests-cs104/CS104ConnectionFailureTests.cs` (12 tests, each
+    verified to fail on the pre-fix code) covers send-failure → fail + event,
+    event idempotency, NR-out-of-range → fail + event + transport-close request,
+    the register-after-await race with a gated sink, post-dispose state,
+    post-failure frame suppression, **cleanup still runs when `OnTcpClosed`
+    never fires / when transport close throws**, and **U/S frame send failures
+    and post-failure rejection on all three send paths**. The legacy
+    `KWindow_SendFailure_ReleasesSlot` assertion was a false green (it passed
+    because the second send *threw*); it now asserts the real contract.
+    Full suite **257/257** (Debug + Release). 500-device stress re-run after the
+    fix (three independent runs, all identical): **500/500 links up, 0 disconnects,
+    0 decode errors, 0 command timeouts, 0 command failures, 0 GI timeouts,
+    ~11,180 ASDU/s** — see `examples/104/cs104-stress-500/results/`.
+- chore(examples/104/cs104-stress-500): the tool's `catch (Exception)` lumped all
+  command failures into one anonymous counter, which is why the defect above stayed
+  hidden. It now attributes failures by exception type + message, keeps the **full
+  exception text and stack of the first occurrence**, records the failure
+  **concentration across masters** (what tied the 36 failed masters to the 36
+  server-side session closes), captures a **link-state snapshot** at the first
+  failure (`Online` / `IsActivated` / `LastCloseReason` / TouchSocket `Closed`
+  fired?), and prints "still-active masters N/M" in the report.
+
 Changes to version 6.0.2
 ------------------------
 - fix(CS104): `ControlConfirmMatcher.ReadSelectBit` mis-read the Select bit for
