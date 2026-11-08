@@ -1,0 +1,23 @@
+﻿{
+    "devices": 500,
+    "durationSeconds": 60,
+    "spontaneousPerDevicePerSecond": 4,
+    "commandIntervalMs": 250,
+    "mastersConnected": 500,
+    "linksUpAtReport": 500,
+    "decodeErrors": 0,
+    "sendFailures": 0,
+    "commandTimeouts": 0,
+    "commandFailures": 0,
+    "giTimeouts": 0,
+    "measureSeconds": 60.438,
+    "downAsduPerSec": 8898.407,
+    "upAsduPerSec": 2345.419,
+    "commandLatencyUs": { "count": 138479, "mean": 35447, "p50": 34260, "p90": 63767, "p99": 76542, "p999": 84996, "max": 100761 },
+    "giLatencyUs": { "count": 3506, "mean": 34944, "p50": 33299, "p90": 64043, "p99": 83435, "p999": 100424, "max": 101518 },
+    "cpuPercentAvg": 205.065,
+    "cpuSecondsUsed": 122.891,
+    "workingSetAfterMB": 138.184,
+    "workingSetPeakMB": 139.465,
+    "totalAllocatedDeltaMB": 6671.453
+}

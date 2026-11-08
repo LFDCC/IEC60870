@@ -1,0 +1,137 @@
+======================================================================
+ IEC 60870-5-101 压力测试 — 模拟 N 台装置 (cs101-stress-500)
+======================================================================
+ 装置数 (devices)      : 500
+ 端口范围 (ports)      : 26000..26499
+ 链路建立速率 (ramp)   : 25/s
+ 测量时长 (duration)   : 60s
+ 每装置自发速率 (spont) : 4/s
+ 主站命令周期 (cmd)    : 250ms
+ 主站总召唤周期 (gi)   : 10000ms
+ 每报文测点数 (points)  : 8
+----------------------------------------------------------------------
+[1/4] 启动装置服务端 ...
+      装置服务端就绪 500/500，耗时 7.9s
+[2/4] 主站建链（限速）...
+      建链完成 500/500，耗时 66.0s
+[3/4] 预热与测量 ...
+      t=   1s  ↓   7,242 ASDU/s  ↑  2,290 ASDU/s    1.2 Mbit/s  CPU 100.6%  WS      0MB  在线 500/500
+      t=   2s  ↓   6,884 ASDU/s  ↑  2,219 ASDU/s    1.2 Mbit/s  CPU 501.8%  WS      0MB  在线 500/500
+      t=   3s  ↓   6,529 ASDU/s  ↑  2,166 ASDU/s    1.2 Mbit/s  CPU 527.8%  WS      0MB  在线 500/500
+      t=   4s  ↓   6,451 ASDU/s  ↑  2,044 ASDU/s    1.1 Mbit/s  CPU 163.0%  WS      0MB  在线 500/500
+      t=   5s  ↓   6,257 ASDU/s  ↑  2,013 ASDU/s    1.1 Mbit/s  CPU 126.8%  WS      0MB  在线 500/500
+      t=   6s  ↓   6,212 ASDU/s  ↑  1,994 ASDU/s    1.1 Mbit/s  CPU  23.4%  WS      0MB  在线 500/500
+      t=   7s  ↓   6,170 ASDU/s  ↑  1,993 ASDU/s    1.1 Mbit/s  CPU 265.4%  WS      0MB  在线 500/500
+      t=   8s  ↓   6,147 ASDU/s  ↑  1,992 ASDU/s    1.1 Mbit/s  CPU 151.3%  WS      0MB  在线 500/500
+      t=   9s  ↓   6,127 ASDU/s  ↑  1,992 ASDU/s    1.1 Mbit/s  CPU  56.0%  WS      0MB  在线 500/500
+      t=  10s  ↓   6,111 ASDU/s  ↑  1,992 ASDU/s    1.1 Mbit/s  CPU 520.7%  WS      0MB  在线 500/500
+      t=  11s  ↓   6,201 ASDU/s  ↑  2,018 ASDU/s    1.1 Mbit/s  CPU  85.3%  WS      0MB  在线 500/500
+      t=  12s  ↓   6,248 ASDU/s  ↑  2,033 ASDU/s    1.1 Mbit/s  CPU 181.7%  WS      0MB  在线 500/500
+      t=  13s  ↓   6,224 ASDU/s  ↑  2,029 ASDU/s    1.1 Mbit/s  CPU 357.6%  WS      0MB  在线 500/500
+      t=  14s  ↓   6,199 ASDU/s  ↑  2,027 ASDU/s    1.1 Mbit/s  CPU 183.1%  WS      0MB  在线 500/500
+      t=  15s  ↓   6,183 ASDU/s  ↑  2,024 ASDU/s    1.1 Mbit/s  CPU  56.7%  WS      0MB  在线 500/500
+      t=  16s  ↓   6,167 ASDU/s  ↑  2,021 ASDU/s    1.1 Mbit/s  CPU 345.7%  WS      0MB  在线 500/500
+      t=  17s  ↓   6,149 ASDU/s  ↑  2,019 ASDU/s    1.1 Mbit/s  CPU  43.6%  WS      0MB  在线 500/500
+      t=  18s  ↓   6,131 ASDU/s  ↑  2,018 ASDU/s    1.1 Mbit/s  CPU 111.9%  WS      0MB  在线 500/500
+      t=  19s  ↓   6,117 ASDU/s  ↑  2,016 ASDU/s    1.1 Mbit/s  CPU 196.7%  WS      0MB  在线 500/500
+      t=  20s  ↓   6,102 ASDU/s  ↑  2,014 ASDU/s    1.1 Mbit/s  CPU 126.0%  WS      0MB  在线 500/500
+      t=  21s  ↓   6,158 ASDU/s  ↑  2,025 ASDU/s    1.1 Mbit/s  CPU 408.6%  WS      0MB  在线 500/500
+      t=  22s  ↓   6,179 ASDU/s  ↑  2,031 ASDU/s    1.1 Mbit/s  CPU 518.1%  WS      0MB  在线 500/500
+      t=  23s  ↓   6,164 ASDU/s  ↑  2,024 ASDU/s    1.1 Mbit/s  CPU  60.8%  WS      0MB  在线 500/500
+      t=  24s  ↓   6,142 ASDU/s  ↑  2,018 ASDU/s    1.1 Mbit/s  CPU  65.6%  WS      0MB  在线 500/500
+      t=  25s  ↓   6,130 ASDU/s  ↑  2,016 ASDU/s    1.1 Mbit/s  CPU 108.9%  WS      0MB  在线 500/500
+      t=  26s  ↓   6,120 ASDU/s  ↑  2,012 ASDU/s    1.1 Mbit/s  CPU 300.9%  WS      0MB  在线 500/500
+      t=  27s  ↓   6,115 ASDU/s  ↑  2,011 ASDU/s    1.1 Mbit/s  CPU 282.7%  WS      0MB  在线 500/500
+      t=  28s  ↓   6,104 ASDU/s  ↑  2,011 ASDU/s    1.1 Mbit/s  CPU  76.1%  WS      0MB  在线 500/500
+      t=  29s  ↓   6,101 ASDU/s  ↑  2,009 ASDU/s    1.1 Mbit/s  CPU 113.8%  WS      0MB  在线 500/500
+      t=  30s  ↓   6,089 ASDU/s  ↑  2,008 ASDU/s    1.1 Mbit/s  CPU 233.9%  WS      0MB  在线 500/500
+      t=  31s  ↓   6,127 ASDU/s  ↑  2,019 ASDU/s    1.1 Mbit/s  CPU 324.8%  WS      0MB  在线 500/500
+      t=  32s  ↓   6,144 ASDU/s  ↑  2,020 ASDU/s    1.1 Mbit/s  CPU  74.3%  WS      0MB  在线 500/500
+      t=  33s  ↓   6,137 ASDU/s  ↑  2,019 ASDU/s    1.1 Mbit/s  CPU  21.8%  WS      0MB  在线 500/500
+      t=  34s  ↓   6,131 ASDU/s  ↑  2,017 ASDU/s    1.1 Mbit/s  CPU 193.7%  WS      0MB  在线 500/500
+      t=  35s  ↓   6,127 ASDU/s  ↑  2,017 ASDU/s    1.1 Mbit/s  CPU  63.5%  WS      0MB  在线 500/500
+      t=  36s  ↓   6,121 ASDU/s  ↑  2,015 ASDU/s    1.1 Mbit/s  CPU 201.1%  WS      0MB  在线 500/500
+      t=  37s  ↓   6,113 ASDU/s  ↑  2,014 ASDU/s    1.1 Mbit/s  CPU 379.1%  WS      0MB  在线 500/500
+      t=  38s  ↓   6,110 ASDU/s  ↑  2,014 ASDU/s    1.1 Mbit/s  CPU  90.2%  WS      0MB  在线 500/500
+      t=  39s  ↓   6,102 ASDU/s  ↑  2,012 ASDU/s    1.1 Mbit/s  CPU  23.4%  WS      0MB  在线 500/500
+      t=  40s  ↓   6,097 ASDU/s  ↑  2,011 ASDU/s    1.1 Mbit/s  CPU 170.0%  WS      0MB  在线 500/500
+      t=  41s  ↓   6,128 ASDU/s  ↑  2,018 ASDU/s    1.1 Mbit/s  CPU  61.5%  WS      0MB  在线 500/500
+      t=  42s  ↓   6,126 ASDU/s  ↑  2,019 ASDU/s    1.1 Mbit/s  CPU 152.8%  WS      0MB  在线 500/500
+      t=  43s  ↓   6,117 ASDU/s  ↑  2,017 ASDU/s    1.1 Mbit/s  CPU 765.3%  WS      0MB  在线 500/500
+      t=  44s  ↓   6,114 ASDU/s  ↑  2,018 ASDU/s    1.1 Mbit/s  CPU 216.2%  WS      0MB  在线 500/500
+      t=  45s  ↓   6,107 ASDU/s  ↑  2,012 ASDU/s    1.1 Mbit/s  CPU  57.7%  WS      0MB  在线 500/500
+      t=  46s  ↓   6,101 ASDU/s  ↑  2,011 ASDU/s    1.1 Mbit/s  CPU 155.9%  WS      0MB  在线 500/500
+      t=  47s  ↓   6,096 ASDU/s  ↑  2,010 ASDU/s    1.1 Mbit/s  CPU  65.0%  WS      0MB  在线 500/500
+      t=  48s  ↓   6,093 ASDU/s  ↑  2,010 ASDU/s    1.1 Mbit/s  CPU  62.4%  WS      0MB  在线 500/500
+      t=  49s  ↓   6,088 ASDU/s  ↑  2,008 ASDU/s    1.1 Mbit/s  CPU  80.8%  WS      0MB  在线 500/500
+      t=  50s  ↓   6,082 ASDU/s  ↑  2,006 ASDU/s    1.1 Mbit/s  CPU  55.9%  WS      0MB  在线 500/500
+      t=  51s  ↓   6,112 ASDU/s  ↑  2,014 ASDU/s    1.1 Mbit/s  CPU 308.7%  WS      0MB  在线 500/500
+      t=  52s  ↓   6,114 ASDU/s  ↑  2,015 ASDU/s    1.1 Mbit/s  CPU 527.2%  WS      0MB  在线 500/500
+      t=  53s  ↓   6,109 ASDU/s  ↑  2,013 ASDU/s    1.1 Mbit/s  CPU 274.0%  WS      0MB  在线 500/500
+      t=  54s  ↓   6,105 ASDU/s  ↑  2,012 ASDU/s    1.1 Mbit/s  CPU 400.1%  WS      0MB  在线 500/500
+      t=  55s  ↓   6,100 ASDU/s  ↑  2,012 ASDU/s    1.1 Mbit/s  CPU 390.9%  WS      0MB  在线 500/500
+      t=  56s  ↓   6,092 ASDU/s  ↑  2,010 ASDU/s    1.1 Mbit/s  CPU  52.8%  WS      0MB  在线 500/500
+      t=  57s  ↓   6,089 ASDU/s  ↑  2,009 ASDU/s    1.1 Mbit/s  CPU 246.8%  WS      0MB  在线 500/500
+      t=  58s  ↓   6,087 ASDU/s  ↑  2,008 ASDU/s    1.1 Mbit/s  CPU 164.0%  WS      0MB  在线 500/500
+      t=  59s  ↓   6,084 ASDU/s  ↑  2,007 ASDU/s    1.1 Mbit/s  CPU 104.2%  WS      0MB  在线 500/500
+      t=  60s  ↓   6,081 ASDU/s  ↑  2,007 ASDU/s    1.1 Mbit/s  CPU 325.6%  WS      0MB  在线 500/500
+[4/4] 生成报告 ...
+
+======================================================================
+ 可行性 / 可用性 报告 — IEC 60870-5-101 装置压力测试
+======================================================================
+ 生成时间        : 2026-11-07 22:37:04
+ 运行环境        : Microsoft Windows NT 10.0.26200.0 / .NET 8.0.28
+ 处理器          : 16 逻辑核
+ 测量时长        : 60.4s（含预热后稳定期）；总运行 144.4s
+
+── 1. 可用性 (Availability) ─────────────────────────────────────────
+ 装置服务端启动  : 500/500 成功
+ 主站链路建立    : 500/500 成功
+ 报告时链路可用  : 500/500
+ 解码错误        : 0 次
+ 发送失败        : 0 次
+ 命令超时        : 0 次, 命令失败 0 次
+ 总召唤超时      : 0 次
+ ⇒ 可用性判定    : 通过 — 全量链路稳定，无超时/错误
+
+── 2. 吞吐量 (Throughput) ──────────────────────────────────────────
+ 下行 ASDU (装置→主站):      537,804  =      8,898 ASDU/s
+ 上行 ASDU (主站→装置):      141,753  =      2,345 ASDU/s
+ 合计 ASDU            :      679,557  =     11,244 ASDU/s
+ 下行带宽             :      1.64 Mbit/s
+ 上行带宽             :      0.19 Mbit/s
+ 每装置下行速率       :      17.8 ASDU/s
+
+── 3. 时延 (Latency) ───────────────────────────────────────────────
+ 命令往返 (发送→ACT_CON): n=138,375  均值=35.46ms  P50=34.27ms  P90=63.77ms  P99=76.55ms  P99.9=85.00ms  最大=100.76ms
+ 总召唤往返 (命令→ACT_TERM): n=3,500  均值=35.00ms  P50=33.33ms  P90=64.04ms  P99=83.48ms  P99.9=100.42ms  最大=101.52ms
+ 命令成功/尝试        : 138,389/138,457
+ 总召唤完成           : 3,500/3,500 轮
+
+── 4. 资源占用 (Resource Footprint) ────────────────────────────────
+ CPU 平均占用         : 205.1 % CPU-time（= 整机能力的 12.8%，16 逻辑核）
+ CPU 峰值（秒级采样） : 765.3 % CPU-time
+ 累计消耗 CPU 时间    : 122.9 s（窗口 60.4s）
+ 进程工作集           : 起始 134 MB → 结束 138 MB (峰值 139 MB)
+ 私有内存             : 起始 110 MB → 结束 112 MB
+ 托管堆               : 起始 58 MB → 结束 48 MB
+ 期间总分配           : 6671 MB
+ GC 次数 (Gen0/1/2)   : 1462/1262/23
+ 每装置内存           : 283 KB (工作集 / 装置)
+
+── 5. 判定结论 (Verdict) ───────────────────────────────────────────
+ 该测试在单进程内同时运行 N 个装置服务端与 N 个主站（共 2N 个端点），
+ 比「一个主站接 N 台装置」更苛刻。
+======================================================================
+
+
+JSON 指标已写入：E:\GitRepository\lib60870.NETAsync\examples\101\cs101-stress-500\results\metrics-500devices-v6.1.0.json
+
+正在停止主站业务流量 ...
+正在关闭主站 ...
+      主站关闭完成，耗时 114 ms（0 个超时未返回）
+正在关闭装置服务端 ...
+      装置关闭完成，耗时 24 ms
+完成。
+EXIT=0

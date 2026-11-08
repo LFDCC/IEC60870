@@ -1,0 +1,126 @@
+======================================================================
+ IEC 60870-5-104 压力测试 — 模拟 500 台装置 (cs104-stress-500)
+======================================================================
+ 装置数 (devices)      : 500
+ 端口范围 (ports)      : 25000..25499
+ 链路建立速率 (ramp)   : 25/s
+ 测量时长 (duration)   : 60s
+ 每装置自发速率 (spont) : 4/s
+ 主站命令周期 (cmd)    : 250ms
+ 每报文测点数 (points)  : 8
+----------------------------------------------------------------------
+[1/4] 启动装置服务端 ...
+      已启动 500 个 Iec104Server，耗时 103 ms (均值 0.21 ms/装置)
+[2/4] 建立主站链路 (ramp 25/s) ...
+      已连接 50/500，活动会话 50
+      已连接 100/500，活动会话 100
+      已连接 150/500，活动会话 150
+      已连接 200/500，活动会话 200
+      已连接 250/500，活动会话 250
+      已连接 300/500，活动会话 300
+      已连接 350/500，活动会话 350
+      已连接 400/500，活动会话 400
+      已连接 450/500，活动会话 450
+      已连接 500/500，活动会话 500
+      链路建立完成：500 成功 / 0 失败，耗时 20.0s
+      服务端活动会话：500/500
+[3/4] 测量阶段 (60s) ...
+      t=   5s  ↓    7115 ASDU/s  ↑   3758 ASDU/s     3.7 Mbit/s  CPU 489.7%  WS     271MB  会话 500
+      t=  10s  ↓    7015 ASDU/s  ↑   3739 ASDU/s     3.6 Mbit/s  CPU  83.9%  WS     369MB  会话 500
+      t=  15s  ↓    7079 ASDU/s  ↑   3749 ASDU/s     3.7 Mbit/s  CPU   0.0%  WS     369MB  会话 500
+      t=  20s  ↓    6898 ASDU/s  ↑   3741 ASDU/s     3.6 Mbit/s  CPU   0.0%  WS     370MB  会话 500
+      t=  25s  ↓    6975 ASDU/s  ↑   3742 ASDU/s     3.6 Mbit/s  CPU   0.0%  WS     374MB  会话 500
+      t=  30s  ↓    6891 ASDU/s  ↑   3761 ASDU/s     3.6 Mbit/s  CPU  44.5%  WS     376MB  会话 500
+      t=  35s  ↓    6990 ASDU/s  ↑   3742 ASDU/s     3.7 Mbit/s  CPU 498.0%  WS     353MB  会话 500
+      t=  41s  ↓    6843 ASDU/s  ↑   3760 ASDU/s     3.5 Mbit/s  CPU   0.0%  WS     354MB  会话 500
+      t=  46s  ↓    7038 ASDU/s  ↑   3766 ASDU/s     3.8 Mbit/s  CPU   0.0%  WS     354MB  会话 500
+      t=  51s  ↓    6834 ASDU/s  ↑   3787 ASDU/s     3.6 Mbit/s  CPU 139.7%  WS     354MB  会话 500
+      t=  56s  ↓    7003 ASDU/s  ↑   3770 ASDU/s     3.7 Mbit/s  CPU 140.3%  WS     354MB  会话 500
+      t=  61s  ↓    6714 ASDU/s  ↑   3770 ASDU/s     3.5 Mbit/s  CPU   0.0%  WS     355MB  会话 500
+[4/4] 生成报告 ...
+
+======================================================================
+ 可行性 / 可用性 报告 — IEC 60870-5-104 500 装置压力测试
+======================================================================
+ 生成时间        : 2026-11-07 22:21:23
+ 运行环境        : Microsoft Windows NT 10.0.26200.0 / .NET 8.0.28
+ 处理器          : 16 逻辑核
+ 测量时长        : 60.8s（含预热后稳定期）；总运行 81.6s
+
+── 1. 可用性 (Availability) ─────────────────────────────────────────
+ 装置服务端启动  : 500/500 成功
+ 主站链路建立    : 500/500 成功
+ 报告时仍激活主站: 500/500
+ 服务端活动会话  : 500/500
+ 运行期链路断开  : 客户端侧 0 次, 服务端侧 36 次
+   断开原因明细   : RemoteClosed=36
+ 解码错误        : 0 次
+ 服务端处理异常  : 30 次
+       └      23 × OperationCanceledException: connection has been disposed
+       └       5 × ClientNotConnectedException: The client is not connected.
+       └       2 × TaskCanceledException: A task was canceled.
+ 命令超时        : 33 次, 其它命令失败 13794 次
+       └  13,793 × InvalidOperationException: Writing is not allowed after writer was completed.
+       └       1 × ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'bytes')
+       失败集中在 36/500 个主站上；最多者: #30=553, #35=549, #105=533, #120=531, #135=520
+       ── 首次出现时的完整异常 ──
+       System.InvalidOperationException: Writing is not allowed after writer was completed.
+          at System.IO.Pipelines.ThrowHelper.ThrowInvalidOperationException_NoWritingAllowed()
+          at TouchSocket.Core.SingleStreamDataHandlingAdapter.SendInput[TWriter](TWriter& writer, ReadOnlySequence`1& sequence)
+          at TouchSocket.Sockets.TcpClientBase.ProtectedSendAsync(ReadOnlyMemory`1 memory, CancellationToken cancellationToken)
+          at IEC60870.CS104.ApduConnection.SendAsduAsync(ASDU asdu, CancellationToken cancellationToken) in E:\GitRepository\lib60870.NETAsync\IEC60870.CS104\Connection\ApduConnection.cs:line 361
+          at IEC60870.CS104.Iec104Client.SendAsync(ASDU asdu, CancellationToken cancellationToken) in E:\GitRepository\lib60870.NETAsync\IEC60870.CS104\Components\Iec104Client.cs:line 323
+          at IEC60870.CS104.Iec104MasterExtension.SendControlCommandAndWaitAsync(IIec104Master master, CauseOfTransmission cot, Int32 ca, InformationObject io, CancellationToken cancellationToken) in E:\GitRepository\lib60870.NETAsync\IEC60870.CS104\Extensions\Iec104MasterExtension.cs:line 95
+          at cs104_stress_500.MasterClient.SendOneCommandAsync(Iec104Client client, TypeID typeId, Int32 ioa, Boolean select, CancellationToken token) in E:\GitRepository\lib60870.NETAsync\examples\104\cs104-stress-500\MasterClient.cs:line 177
+ 预发/执行 Select 位不匹配 : 0 次
+ 总召唤超时      : 190 次
+ ⇒ 可用性判定    : 需关注 — 见上方异常计数
+
+── 2. 吞吐量 (Throughput) ──────────────────────────────────────────
+ 下行 ASDU (装置→主站):      423,503  =      6,965 ASDU/s
+ 上行 ASDU (主站→装置):      228,247  =      3,754 ASDU/s
+ 合计 ASDU            :      651,750  =     10,719 ASDU/s
+ 下行带宽             :     3.00 Mbit/s
+ 上行带宽             :     0.66 Mbit/s
+ 合计带宽             :     3.65 Mbit/s
+ 每装置下行速率       :     13.9 ASDU/s
+ 自发报文占比         : 26.60298898462898  (自发 134,858)
+ 总召唤响应报文       :      114,353
+ 确认报文             :      257,717
+
+── 3. 时延 (Latency) ───────────────────────────────────────────────
+ 命令往返 (发送→ACT_CON): n=250,292  均值=0.43ms  P50=0.41ms  P90=0.70ms  P99=1.04ms  P99.9=1.78ms  最大=29.17ms
+ 总召唤往返 (命令→ACT_TERM): n=3,558  均值=1.30ms  P50=1.17ms  P90=1.45ms  P99=2.60ms  P99.9=16.66ms  最大=30.14ms
+ 总召唤完成           : 3559/3779 轮
+
+── 4. 资源占用 (Resource Footprint) ────────────────────────────────
+ CPU 平均占用         : 76.1 % CPU-time（= 整机能力的 4.8%，16 逻辑核）
+ CPU 峰值（秒级采样） : 598.8 % CPU-time
+ 累计消耗 CPU 时间    : 46.3 s（窗口 60.8s）
+ 进程工作集           : 起始 223 MB → 结束 355 MB (峰值 377 MB)
+ 私有内存             : 起始 218 MB → 结束 357 MB
+ 托管堆               : 起始 107 MB → 结束 149 MB
+ 期间总分配           : 1481 MB
+ GC 次数 (Gen0/1/2)   : 9/7/2
+ 每装置内存           : 727 KB (工作集 / 装置)
+
+── 5. 协议类型覆盖 (TypeID Coverage) ───────────────────────────────
+ 监视方向 (M_*)       : 接收到 33/33 种
+ 控制方向 (C_*) 确认  : 14/14 种
+ 控制命令覆盖明细     : C_BO_NA_1, C_BO_TA_1, C_DC_NA_1, C_DC_TA_1, C_RC_NA_1, C_RC_TA_1, C_SC_NA_1, C_SC_TA_1, C_SE_NA_1, C_SE_NB_1, C_SE_NC_1, C_SE_TA_1, C_SE_TB_1, C_SE_TC_1
+
+── 6. 判定结论 (Verdict) ───────────────────────────────────────────
+ 可行性 : 基本可行（存在异常计数） — 单机单进程可承载 500 台装置的 104 通信。
+ 可用性 : 中 — 全量链路在线，10,719 ASDU/s，CPU 76%（整机 5%），内存 355MB。
+======================================================================
+
+
+JSON 指标已写入：E:\GitRepository\lib60870.NETAsync\examples\104\cs104-stress-500\results\metrics-500devices-v6.1.0.json
+
+正在停止主站业务流量 ...
+正在关闭主站 ...
+      主站关闭完成，耗时 30011 ms（36 个超时未返回）
+正在关闭装置服务端 ...
+      装置关闭完成，耗时 21 ms
+完成。
+EXIT=0
