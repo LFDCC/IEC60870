@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <Authors>LFDCC</Authors>
+    <Company>LFDCC</Company>
+    <Copyright>Copyright 2026 LFDCC</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageId>LFDCC.IEC60870.CS103</PackageId>
+    <Version>6.1.0</Version>
+    <RootNamespace>IEC60870.CS103</RootNamespace>
+    <AssemblyName>IEC60870.CS103</AssemblyName>
+    <TargetFramework>net6.0</TargetFramework>
+    <!-- 103 协议核移植自 iec103-dotnet（Nullable enable），保留可空注解以避免逐处改写 -->
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <Description>IEC 60870-5-103 (DL/T 667-1999) protective equipment protocol library: native FT1.2 framing over TCP/serial, client/server, fully async, TouchSocket-based, vendor-private type extensions. Self-contained — no dependency on IEC60870.Core.</Description>
+    <PackageTags>iec103;iec-60870-5-103;dlt667;protection;relay;scada;ft1.2;touchsocket</PackageTags>
+    <PackageOutputPath>nupkg</PackageOutputPath>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <!-- 生成 XML 文档：NuGet 包内随 dll 分发 .xml，消费方 IDE 才有中文 IntelliSense 提示 -->
+    <!-- CS1591（公有成员缺注释）已按库现状抑制，避免海量噪声警告 -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <!-- 源码按 SDK 默认通配编译（**/*.cs）：Protocol/ 协议核、LinkLayer/ 链路层、Transport/ 传输、根/ 公共 API -->
+  <!-- 刻意不引用 IEC60870.Core：103 的 ASDU（FUN/INF 寻址）、COT/TypeID 数值空间、
+       时标语义均与 101/104 不同，Core 的应用层模型对 103 无一可用。
+       解除依赖后 103 是真正独立的协议包，也消除了 ASDU/Asdu、
+       CP56Time2a/Cp56Time2a 这类只差大小写的近似名风险。 -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="tests-cs104" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="TouchSocket" Version="4.3.10" />
+    <PackageReference Include="System.IO.Ports" Version="8.0.0" />
+    <!-- GB18030 描述文本（通用分类 OS8ASCII/中文描述）需要代码页提供程序 -->
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>
