@@ -92,6 +92,13 @@ namespace IEC60870.CS101;
         private PrimaryLinkLayer _primaryLinkLayer = null;
         private SecondaryLinkLayer _secondaryLinkLayer = null;
 
+        /// <summary>从站侧因 FCB 校验失败丢弃的用户数据帧数（排障用）。</summary>
+        internal long SecondaryFcbMismatchDrops
+            => (_secondaryLinkLayer as SecondaryLinkLayerBalanced)?.FcbMismatchDrops ?? 0;
+
+        internal string SecondaryFcbDropInfo
+            => (_secondaryLinkLayer as SecondaryLinkLayerBalanced)?.LastFcbDropInfo ?? "";
+
         private byte[] _singleCharAck = new byte[] { 0xe5 };
 
         private bool _dir;
@@ -209,6 +216,9 @@ namespace IEC60870.CS101;
             _primaryLinkLayer = primaryLinkLayer;
         }
 
+        /// <summary>当前主站（主动发送方）链路层；平衡模式下用于双端 FCB 同步。</summary>
+        internal PrimaryLinkLayer PrimaryLinkLayer => _primaryLinkLayer;
+
         public void SetSecondaryLinkLayer(SecondaryLinkLayer secondaryLinkLayer)
         {
             _secondaryLinkLayer = secondaryLinkLayer;
@@ -236,14 +246,30 @@ namespace IEC60870.CS101;
 
         public void SendSingleCharACK()
         {
-            if (_sentRawMessageHandler != null)
-        {
-            _sentRawMessageHandler(_sentRawMessageHandlerParameter, _singleCharAck, 1);
+            _buffer[0] = Ft12Frame.SingleAck;
+            EmitFrame(1);
         }
 
-        RawFrameSent?.Invoke((byte[])_singleCharAck.Clone()); // 单字符 ACK 原始报文
+        /// <summary>
+        /// 统一出口：触发原始报文事件（有订阅者才拷贝）并追加到发送缓冲。
+        /// 所有帧（固定/可变/单字符）都经过这里，保证事件与发送行为一致。
+        /// </summary>
+        private void EmitFrame(int frameLength)
+        {
+            if (_sentRawMessageHandler != null)
+            {
+                _sentRawMessageHandler(_sentRawMessageHandlerParameter, _buffer, frameLength);
+            }
 
-            SendMessage(_singleCharAck, 1);
+            // 原始报文事件（有订阅者才拷贝，无订阅者零开销）
+            if (RawFrameSent != null)
+            {
+                var copy = new byte[frameLength];
+                Array.Copy(_buffer, copy, frameLength);
+                RawFrameSent(copy);
+            }
+
+            SendMessage(_buffer, frameLength);
         }
 
         /// <summary>
@@ -286,289 +312,140 @@ namespace IEC60870.CS101;
 
         public void SendFixedFrame(byte fc, int address, bool prm, bool dir, bool acd, bool dfc)
         {
-            var bufPos = 0;
-
-            _buffer[bufPos++] = 0x10; /* START */
-
             var c = fc;
 
             if (prm)
-        {
-            c += 0x40;
-        }
-
-        if (dir)
-        {
-            c += 0x80;
-        }
-
-        if (acd)
-        {
-            c += 0x20;
-        }
-
-        if (dfc)
-        {
-            c += 0x10;
-        }
-
-        _buffer[bufPos++] = c;
-
-            if (linkLayerParameters.AddressLength > 0)
             {
-                _buffer[bufPos++] = (byte)(address % 0x100);
-
-                if (linkLayerParameters.AddressLength > 1)
-            {
-                _buffer[bufPos++] = (byte)((address / 0x100) % 0x100);
-            }
-        }
-
-            byte checksum = 0;
-
-            for (var i = 1; i < bufPos; i++)
-        {
-            checksum += _buffer[i];
-        }
-
-        _buffer[bufPos++] = checksum;
-
-            _buffer[bufPos++] = 0x16; /* END */
-
-            if (_sentRawMessageHandler != null)
-        {
-            _sentRawMessageHandler(_sentRawMessageHandlerParameter, _buffer, bufPos);
-        }
-
-        // 固定帧(0x10) 原始报文（有订阅者才拷贝）
-        if (RawFrameSent != null)
-            {
-                var copy = new byte[bufPos];
-                Array.Copy(_buffer, copy, bufPos);
-                RawFrameSent(copy);
+                c = (byte)(c + 0x40);
             }
 
-            SendMessage(_buffer, bufPos);
+            if (dir)
+            {
+                c = (byte)(c + 0x80);
+            }
+
+            if (acd)
+            {
+                c = (byte)(c + 0x20);
+            }
+
+            if (dfc)
+            {
+                c = (byte)(c + 0x10);
+            }
+
+            // 统一走 Ft12Frame 编码（与 103 共用同一套字节规则），
+            // 地址域长度由链路参数决定（0/1/2）。
+            var bufPos = Ft12Frame.EncodeFixedTo(_buffer, c, address, linkLayerParameters.AddressLength);
+            EmitFrame(bufPos);
         }
 
 
         public void SendVariableLengthFramePrimary(FunctionCodePrimary fc, int address, bool fcb, bool fcv, BufferFrame frame)
         {
-            _buffer[0] = 0x68; /* START */
-            _buffer[3] = 0x68; /* START */
-
             var c = (byte)fc;
 
             if (_dir)
-        {
-            c += 0x80;
-        }
+            {
+                c = (byte)(c + 0x80);
+            }
 
-        c += 0x40; // PRM = 1;
+            c = (byte)(c + 0x40); // PRM = 1;
 
             if (fcv)
-        {
-            c += 0x10;
-        }
-
-        if (fcb)
-        {
-            c += 0x20;
-        }
-
-        _buffer[4] = c;
-
-            var bufPos = 5;
-
-            if (linkLayerParameters.AddressLength > 0)
             {
-                _buffer[bufPos++] = (byte)(address % 0x100);
-
-                if (linkLayerParameters.AddressLength > 1)
-            {
-                _buffer[bufPos++] = (byte)((address / 0x100) % 0x100);
-            }
-        }
-
-            var userData = frame.GetBuffer();
-            var userDataLength = frame.GetMsgSize();
-
-            for (var i = 0; i < userDataLength; i++)
-        {
-            _buffer[bufPos++] = userData[i];
-        }
-
-        var l = 1 + linkLayerParameters.AddressLength + frame.GetMsgSize();
-
-            if (l > 255)
-        {
-            return;
-        }
-
-        _buffer[1] = (byte)l;
-            _buffer[2] = (byte)l;
-
-            byte checksum = 0;
-
-            for (var i = 4; i < bufPos; i++)
-        {
-            checksum += _buffer[i];
-        }
-
-        _buffer[bufPos++] = checksum;
-
-            _buffer[bufPos++] = 0x16; /* END */
-
-            if (_sentRawMessageHandler != null)
-        {
-            _sentRawMessageHandler(_sentRawMessageHandlerParameter, _buffer, bufPos);
-        }
-
-        // 变长帧(0x68) 原始报文（有订阅者才拷贝）
-        if (RawFrameSent != null)
-            {
-                var copy = new byte[bufPos];
-                Array.Copy(_buffer, copy, bufPos);
-                RawFrameSent(copy);
+                c = (byte)(c + 0x10);
             }
 
-            SendMessage(_buffer, bufPos);
+            if (fcb)
+            {
+                c = (byte)(c + 0x20);
+            }
+
+            // 统一走 Ft12Frame 编码；ASDU 超长时直接放弃本帧（与原实现一致）。
+            try
+            {
+                var bufPos = Ft12Frame.EncodeVariableTo(
+                    _buffer, c, address, linkLayerParameters.AddressLength,
+                    new ReadOnlySpan<byte>(frame.GetBuffer(), 0, frame.GetMsgSize()));
+                EmitFrame(bufPos);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                // L 超过 255：原实现静默 return，保持同样行为
+                DebugLog("WARN: variable frame too long, dropped");
+            }
         }
 
         internal void SendVariableLengthFrameSecondary(FunctionCodeSecondary fc, int address, bool acd, bool dfc, BufferFrame frame)
         {
-            _buffer[0] = 0x68; /* START */
-            _buffer[3] = 0x68; /* START */
-
             var c = (byte)((int)fc & 0x1f);
 
             if (_linkLayerMode == LinkLayerMode.BALANCED)
             {
                 if (_dir)
-            {
-                c += 0x80;
+                {
+                    c = (byte)(c + 0x80);
+                }
             }
-        }
 
             if (acd)
-        {
-            c += 0x20;
-        }
-
-        if (dfc)
-        {
-            c += 0x10;
-        }
-
-        _buffer[4] = c;
-
-            var bufPos = 5;
-
-            if (linkLayerParameters.AddressLength > 0)
             {
-                _buffer[bufPos++] = (byte)(address % 0x100);
-
-                if (linkLayerParameters.AddressLength > 1)
-            {
-                _buffer[bufPos++] = (byte)((address / 0x100) % 0x100);
-            }
-        }
-
-            var userData = frame.GetBuffer();
-            var userDataLength = frame.GetMsgSize();
-
-            var l = 1 + linkLayerParameters.AddressLength + userDataLength;
-
-            if (l > 255)
-        {
-            return;
-        }
-
-        _buffer[1] = (byte)l;
-            _buffer[2] = (byte)l;
-
-            for (var i = 0; i < userDataLength; i++)
-        {
-            _buffer[bufPos++] = userData[i];
-        }
-
-        byte checksum = 0;
-
-            for (var i = 4; i < bufPos; i++)
-        {
-            checksum += _buffer[i];
-        }
-
-        _buffer[bufPos++] = checksum;
-
-            _buffer[bufPos++] = 0x16; /* END */
-
-            if (_sentRawMessageHandler != null)
-        {
-            _sentRawMessageHandler(_sentRawMessageHandlerParameter, _buffer, bufPos);
-        }
-
-        // 变长帧(0x68) 原始报文（有订阅者才拷贝）
-        if (RawFrameSent != null)
-            {
-                var copy = new byte[bufPos];
-                Array.Copy(_buffer, copy, bufPos);
-                RawFrameSent(copy);
+                c = (byte)(c + 0x20);
             }
 
-            SendMessage(_buffer, bufPos);
+            if (dfc)
+            {
+                c = (byte)(c + 0x10);
+            }
+
+            // 统一走 Ft12Frame 编码；ASDU 超长时放弃本帧（与原实现一致）。
+            try
+            {
+                var bufPos = Ft12Frame.EncodeVariableTo(
+                    _buffer, c, address, linkLayerParameters.AddressLength,
+                    new ReadOnlySpan<byte>(frame.GetBuffer(), 0, frame.GetMsgSize()));
+                EmitFrame(bufPos);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                DebugLog("WARN: variable frame too long, dropped");
+            }
         }
 
 
         private void ParseHeaderSecondaryUnbalanced(byte[] msg, int msgSize)
         {
-            var userDataLength = 0;
+            // 帧解析统一走 Ft12Frame.TryDecode（与 103 共用同一套校验规则：
+            // 长度双写、结束符、校验和范围）。业务分支（地址判定、FC 分派）保留在本方法。
+            if (!Ft12Frame.TryDecode(new ReadOnlySpan<byte>(msg, 0, msgSize),
+                    linkLayerParameters.AddressLength, out var frame, out var decodeError))
+            {
+                if (msgSize > 0 && msg[0] == 0xE5)
+                {
+                    /* 来自其他从站的确认帧，直接忽略 */
+                    return;
+                }
+
+                DebugLog("ERROR: " + (decodeError ?? "invalid frame"));
+                return;
+            }
+
+            if (frame!.Format == Ft12FrameFormat.SingleChar)
+            {
+                // 来自其他从站的确认帧，直接忽略
+                return;
+            }
+
+            var c = frame.Control;
+            var address = frame.Address;
             var userDataStart = 0;
-            byte c;
-            int csStart;
-            int csIndex;
-            var address = 0;
+            var userDataLength = 0;
 
-            if (msg[0] == 0x68)
+            if (frame.Format == Ft12FrameFormat.VariableLength)
             {
-
-                if (msg[1] != msg[2])
-                {
-                    DebugLog("ERROR: L fields differ!");
-                    return;
-                }
-
-                userDataLength = msg[1] - linkLayerParameters.AddressLength - 1;
                 userDataStart = 5 + linkLayerParameters.AddressLength;
-
-                csStart = 4;
-                csIndex = userDataStart + userDataLength;
-
-                // 校验报文长度是否合理
-                if (msgSize != (userDataStart + userDataLength + 2 /* CS + END */))
-                {
-                    DebugLog("ERROR: Invalid message length");
-                    return;
-                }
-
-                c = msg[4];
-            }
-            else if (msg[0] == 0x10)
-            {
-                c = msg[1];
-                csStart = 1;
-                csIndex = 2 + linkLayerParameters.AddressLength;
-
-            }
-            else if (msg[0] == 0xE5)
-            {
-                /* 来自其他从站的确认帧，直接忽略 */
-                return;
-            }
-            else
-            {
-                DebugLog("ERROR: Received unexpected message type in unbalanced slave mode!");
-                return;
+                userDataLength = frame.Asdu.Length;
             }
 
             var isBroadcast = false;
@@ -576,24 +453,20 @@ namespace IEC60870.CS101;
             //check address
             if (linkLayerParameters.AddressLength > 0)
             {
-                address = msg[csStart + 1];
-
                 if (linkLayerParameters.AddressLength > 1)
                 {
-                    address += (msg[csStart + 2] * 0x100);
-
                     if (address == 65535)
-                {
-                    isBroadcast = true;
+                    {
+                        isBroadcast = true;
+                    }
                 }
-            }
                 else
                 {
                     if (address == 255)
-                {
-                    isBroadcast = true;
+                    {
+                        isBroadcast = true;
+                    }
                 }
-            }
             }
 
             var fc = c & 0x0f;
@@ -615,20 +488,6 @@ namespace IEC60870.CS101;
                     DebugLog("INFO: unknown link layer address -> ignore message");
                     return;
                 }
-            }
-
-            //check checksum
-            byte checksum = 0;
-
-            for (var i = csStart; i < csIndex; i++)
-        {
-            checksum += msg[i];
-        }
-
-        if (checksum != msg[csIndex])
-            {
-                DebugLog("ERROR: checksum invalid!");
-                return;
             }
 
 
@@ -660,112 +519,55 @@ namespace IEC60870.CS101;
 
         public void HandleMessageBalancedAndPrimaryUnbalanced(byte[] msg, int msgSize)
         {
-            var userDataLength = 0;
-            var userDataStart = 0;
-            byte c = 0;
-            var csStart = 0;
-            var csIndex = 0;
-            var address = 0; /* 平衡模式下地址是否可忽略？ */
-            var prm = true;
-            var fc = 0;
-
-            var isAck = false;
-
-            if (msg[0] == 0x68)
+            // 帧解析统一走 Ft12Frame.TryDecode（与 103 共用同一套校验规则）。
+            // 业务分支（平衡/非平衡、主/从、FC 分派）保留在本方法。
+            if (!Ft12Frame.TryDecode(new ReadOnlySpan<byte>(msg, 0, msgSize),
+                    linkLayerParameters.AddressLength, out var frame, out var decodeError))
             {
-
-                if (msg[1] != msg[2])
-                {
-                    DebugLog("ERROR: L fields differ!");
-                    return;
-                }
-
-                userDataLength = msg[1] - linkLayerParameters.AddressLength - 1;
-                userDataStart = 5 + linkLayerParameters.AddressLength;
-
-                csStart = 4;
-                csIndex = userDataStart + userDataLength;
-
-                // 校验报文长度是否合理
-                if (msgSize != (userDataStart + userDataLength + 2 /* CS + END */))
-                {
-                    DebugLog("ERROR: Invalid message length");
-                    return;
-                }
-
-                c = msg[4];
-
-                if (linkLayerParameters.AddressLength > 0)
-            {
-                address += msg[5];
-            }
-
-            if (linkLayerParameters.AddressLength > 1)
-            {
-                address += msg[6] * 0x100;
-            }
-        }
-            else if (msg[0] == 0x10)
-            {
-                c = msg[1];
-                csStart = 1;
-                csIndex = 2 + linkLayerParameters.AddressLength;
-
-                if (linkLayerParameters.AddressLength > 0)
-            {
-                address += msg[2];
-            }
-
-            if (linkLayerParameters.AddressLength > 1)
-            {
-                address += msg[3] * 0x100;
-            }
-        }
-            else if (msg[0] == 0xe5)
-            {
-                isAck = true;
-                fc = (int)FunctionCodeSecondary.ACK;
-                prm = false; /* 单字符 ACK 仅由副站发送 */
-                DebugLog("Received single char ACK");
-            }
-            else
-            {
-                DebugLog("ERROR: Received unexpected message type!");
+                DebugLog("ERROR: " + (decodeError ?? "invalid frame"));
                 return;
             }
 
-            if (isAck == false)
-            {
+            var c = frame!.Control;
+            var address = frame.Address;
+            var userDataStart = 0;
+            var userDataLength = 0;
 
-                //check checksum
-                byte checksum = 0;
-
-                for (var i = csStart; i < csIndex; i++)
+            if (frame.Format == Ft12FrameFormat.VariableLength)
             {
-                checksum += msg[i];
+                userDataStart = 5 + linkLayerParameters.AddressLength;
+                userDataLength = frame.Asdu.Length;
             }
 
-            if (checksum != msg[csIndex])
+            var isAck = frame.Format == Ft12FrameFormat.SingleChar;
+
+            if (isAck)
+            {
+                /* 单字节 ACK */
+                DebugLog("Received single char ACK");
+                if (_primaryLinkLayer != null)
                 {
-                    DebugLog("ERROR: checksum invalid!");
-                    return;
+                    _primaryLinkLayer.HandleMessage(FunctionCodeSecondary.ACK, false, false, -1, null, 0, 0);
                 }
 
-                // parse C field bits
-                fc = c & 0x0f;
-                prm = ((c & 0x40) == 0x40);
+                return;
+            }
 
-                if (prm)
-                { /* 本端为副站链路层 */
-                    var fcb = ((c & 0x20) == 0x20);
-                    var fcv = ((c & 0x10) == 0x10);
+            // parse C field bits
+            var fc = c & 0x0f;
+            var prm = ((c & 0x40) == 0x40);
 
-                    DebugLog("PRM=" + (prm == true ? "1" : "0") + " FCB=" + (fcb == true ? "1" : "0") + " FCV=" + (fcv == true ? "1" : "0")
-                        + " FC=" + fc + "(" + ((FunctionCodePrimary)c).ToString() + ")");
+            if (prm)
+            { /* 本端为副站链路层 */
+                var fcb = ((c & 0x20) == 0x20);
+                var fcv = ((c & 0x10) == 0x10);
 
-                    FunctionCodePrimary fcp = (FunctionCodePrimary)fc;
+                DebugLog("PRM=" + (prm == true ? "1" : "0") + " FCB=" + (fcb == true ? "1" : "0") + " FCV=" + (fcv == true ? "1" : "0")
+                    + " FC=" + fc + "(" + ((FunctionCodePrimary)c).ToString() + ")");
 
-                    if (_secondaryLinkLayer != null)
+                FunctionCodePrimary fcp = (FunctionCodePrimary)fc;
+
+                if (_secondaryLinkLayer != null)
                 {
                     _secondaryLinkLayer.HandleMessage(fcp, false, address, fcb, fcv, msg, userDataStart, userDataLength);
                 }
@@ -774,21 +576,20 @@ namespace IEC60870.CS101;
                     DebugLog("No secondary link layer available!");
                 }
             }
-                else
-                { /* 本端为主站链路层 */
-                    var dir = ((c & 0x80) == 0x80); /* DIR：平衡传输方向位 */
-                    var dfc = ((c & 0x10) == 0x10); /* DFC：数据流控制 */
-                    var acd = ((c & 0x20) == 0x20); /* ACD：1 类数据访问请求（非平衡传输） */
+            else
+            { /* 本端为主站链路层 */
+                var dir = ((c & 0x80) == 0x80); /* DIR：平衡传输方向位 */
+                var dfc = ((c & 0x10) == 0x10); /* DFC：数据流控制 */
+                var acd = ((c & 0x20) == 0x20); /* ACD：1 类数据访问请求（非平衡传输） */
 
-                    DebugLog("PRM=" + (prm == true ? "1" : "0") + " DIR=" + (dir == true ? "1" : "0") + " DFC=" + (dfc == true ? "1" : "0")
-                        + " FC=" + fc + "(" + ((FunctionCodeSecondary)c).ToString() + ")");
+                DebugLog("PRM=" + (prm == true ? "1" : "0") + " DIR=" + (dir == true ? "1" : "0") + " DFC=" + (dfc == true ? "1" : "0")
+                    + " FC=" + fc + "(" + ((FunctionCodeSecondary)c).ToString() + ")");
 
-                    FunctionCodeSecondary fcs = (FunctionCodeSecondary)fc;
+                FunctionCodeSecondary fcs = (FunctionCodeSecondary)fc;
 
-                    if (_primaryLinkLayer != null)
-                    {
-
-                        if (_linkLayerMode == LinkLayerMode.BALANCED)
+                if (_primaryLinkLayer != null)
+                {
+                    if (_linkLayerMode == LinkLayerMode.BALANCED)
                     {
                         _primaryLinkLayer.HandleMessage(fcs, dir, dfc, address, msg, userDataStart, userDataLength);
                     }
@@ -797,21 +598,11 @@ namespace IEC60870.CS101;
                         _primaryLinkLayer.HandleMessage(fcs, acd, dfc, address, msg, userDataStart, userDataLength);
                     }
                 }
-                    else
+                else
                 {
                     DebugLog("No primary link layer available!");
                 }
             }
-
-            }
-            else
-            { /* 单字节 ACK */
-                if (_primaryLinkLayer != null)
-            {
-                _primaryLinkLayer.HandleMessage(FunctionCodeSecondary.ACK, false, false, -1, null, 0, 0);
-            }
-        }
-
         }
 
         void HandleMessageAction(byte[] msg, int msgSize)
@@ -872,6 +663,20 @@ namespace IEC60870.CS101;
             {
                 HandleMessageAction(_recvBuffer, n);
             }
+                else
+            {
+                    // 底层在"无数据"时立即返回 0（串口流 EOF、已释放的 BaseStream、
+                    // TCP 队列的残留许可）会让上层 RunLoop 无延迟重入 → 100% CPU 空转。
+                    // 这里给一个最小退避，把"立即返回 0"的路径限制在 ≤1000 次/秒。
+                    // 正常 TCP 超时本来就要等 50ms，1ms 退避对时延无可测影响。
+                    try
+                    {
+                        await Task.Delay(1, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+            }
         }
             catch (OperationCanceledException)
             {
@@ -880,6 +685,15 @@ namespace IEC60870.CS101;
             catch (Exception ex)
             {
                 DebugLog?.Invoke("LinkLayerEngine RunAsync error: " + ex.GetType().Name + ": " + ex.Message);
+
+                // 异常也不得让上层零延迟重入：退避一次再返回
+                try
+                {
+                    await Task.Delay(5, ct).ConfigureAwait(false);
+                }
+                catch
+                {
+                }
             }
 
             if (_linkLayerMode == LinkLayerMode.BALANCED)

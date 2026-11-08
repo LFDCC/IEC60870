@@ -6,7 +6,7 @@
     <Copyright>Copyright 2026 LFDCC</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageId>LFDCC.IEC60870.CS101</PackageId>
-    <Version>6.0.2</Version>
+    <Version>6.1.0</Version>
     <RootNamespace>IEC60870.CS101</RootNamespace>
     <AssemblyName>IEC60870.CS101</AssemblyName>
     <TargetFramework>net6.0</TargetFramework>
@@ -24,6 +24,10 @@
   <!-- 源码按 SDK 默认通配编译（**/*.cs）：LinkLayer/ 链路层、File/ 文件服务、根/ 站点组件，新增文件无需维护清单 -->
   <ItemGroup>
     <ProjectReference Include="..\IEC60870.Core\IEC60870.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- 与 CS103/CS104 一致：让测试项目能直接验证 internal 的链路层引擎 -->
+    <InternalsVisibleTo Include="tests-cs104" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="TouchSocket" Version="4.3.10" />

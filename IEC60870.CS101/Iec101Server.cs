@@ -124,10 +124,17 @@ namespace IEC60870.CS101;
         }
 
         /// <summary>Sets a callback handler that is called when a file ready message is received from a master.</summary>
+        /// <remarks>
+        /// 文件传输的 ASDU 由 <see cref="FileServer"/> 处理，它持有自己的 handler 字段。
+        /// 原实现只把 handler 存在本类上、从不转交，导致这里的注册完全是空操作
+        /// （FileServer 永远认为没有 handler，一律回否定确认）。
+        /// </remarks>
         public void SetFileReadyHandler(FileReadyHandler handler, object parameter)
         {
             _fileReadyHandler = handler;
             _fileReadyHandlerParameter = parameter;
+
+            _fileServer?.SetFileReadyHandler(handler, parameter);
         }
 
         private FilesAvailable _filesAvailable = new FilesAvailable();
@@ -195,6 +202,14 @@ namespace IEC60870.CS101;
 
         void IServerApplicationLayer.ResetCUReceived(bool onlyFcb)
         {
+            // RESET_FCB (FC=7, onlyFcb=true) 只复位帧计数位，不得丢弃待发的 1/2 类数据；
+            // RESET_REMOTE_LINK (FC=0, onlyFcb=false) 才复位整个通信单元。
+            // 原实现完全忽略该参数，两个调用点语义都被压成"清空队列"。
+            if (onlyFcb)
+            {
+                return;
+            }
+
             lock (_userDataClass1Queue)
             {
                 _userDataClass1Queue.Clear();
@@ -206,6 +221,7 @@ namespace IEC60870.CS101;
         }
 
         private LinkLayerEngine _linkLayer = null;
+        private volatile bool _fatalError = false;
 
         private byte[] _buffer = new byte[300];
         private SerialPort _port = null;
@@ -226,6 +242,31 @@ namespace IEC60870.CS101;
 
         private Queue<BufferFrame> _userDataClass2Queue = new Queue<BufferFrame>();
         private int _userDataClass2QueueMaxSize = 100;
+
+        private long _class1Dropped;
+        private long _class2Dropped;
+
+        /// <summary>
+        /// 因队列满被丢弃的应答帧数（1 类 / 2 类）。非零说明主站取数长期跟不上，
+        /// 现场表现为"偶发缺帧/总召唤超时"，这里是唯一可见的信号。
+        /// </summary>
+        public long DroppedClass1Count => Interlocked.Read(ref _class1Dropped);
+
+        /// <inheritdoc cref="DroppedClass1Count"/>
+        public long DroppedClass2Count => Interlocked.Read(ref _class2Dropped);
+
+        private void NoteQueueDrop(bool class1)
+        {
+            ref var counter = ref class1 ? ref _class1Dropped : ref _class2Dropped;
+            var total = Interlocked.Increment(ref counter);
+
+            // 只在前几次和每 1000 次打一条，避免刷屏
+            if (total <= 3 || total % 1000 == 0)
+            {
+                Logger?.Warning($"CS101 SLAVE: {(class1 ? "1" : "2")} 类应答队列已满，丢弃最旧帧（累计 {total}）。"
+                    + "主站取数速度跟不上上送速率，请检查 k 窗口/轮询周期。");
+            }
+        }
 
         private FileServer _fileServer;
 
@@ -291,7 +332,36 @@ namespace IEC60870.CS101;
         catch { /* port already gone */ }
     }
 
-    internal bool IsUserDataClass1Available()
+        /// <summary>
+        /// 链路重建时复位从站侧应用层状态：清空待发的 1/2 类队列。
+        /// </summary>
+        /// <remarks>
+        /// 必须做：平衡模式下从站把应答放进 1 级队列等主站来取。
+        /// 若主站在"数据已入队、尚未被取走"时断开，残留帧会在下一轮重连后
+        /// 被发给新链路（内容属于上一次会话），并且与新应答混在一起导致
+        /// 序号/内容错乱 —— 表现为"重连后第一次总召唤收不到数据"。
+        /// 传输层的字节队列已在 <c>TcpServerLinkTransport.OnTcpClosed</c> 清理，
+        /// 这里是应用层队列的对称清理。
+        /// </remarks>
+        internal void ResetApplicationLayerState()
+        {
+            lock (_userDataClass1Queue)
+            {
+                _userDataClass1Queue.Clear();
+            }
+
+            lock (_userDataClass2Queue)
+            {
+                _userDataClass2Queue.Clear();
+            }
+
+            // 文件传输状态机也必须一起复位：它是有状态的，且没有任何"对端已换人"的自愈路径。
+            // 主站在收完最后一段就断线时状态会停在 WAITING_FOR_FILE_ACK 一类非空闲态，
+            // 新主站的 SELECT FILE 会被静默忽略 —— 表现为重连后第一次文件传输必然超时。
+            _fileServer?.Reset();
+        }
+
+        internal bool IsUserDataClass1Available()
         {
             lock (_userDataClass1Queue)
             {
@@ -312,9 +382,33 @@ namespace IEC60870.CS101;
             _userDataClass2QueueMaxSize = class2QueueSize;
         }
 
+        /// <summary>
+        /// 设置接收超时（毫秒）。串口传输默认 50ms / 50ms，现场可按线路质量与波特率调整。
+        /// </summary>
+        /// <param name="messageTimeoutMs">等待帧起始字符的最大时长（本轮无数据时的等待窗口）。</param>
+        /// <param name="characterTimeoutMs">
+        /// <b>字符间超时</b>（character inter-byte timeout）：帧内相邻两个字节之间的最大间隔，
+        /// <b>不是整帧总时长</b>。9600 波特下每字节约 1.04ms，100 字节的合法帧光传输就要约 104ms，
+        /// 因此该值只用于判定"线路断流/半帧"，不会把长帧（总召唤响应、多 IOA 帧）误判为超时。
+        /// </param>
+        /// <remarks>
+        /// 直接转发给底层传输层：串口（<c>SerialTransceiverFT12</c>）与 TCP 隧道
+        /// （<c>TcpServerLinkTransport</c>）都实现了 <c>ISerialLinkTransport.SetTimeouts</c>，
+        /// 无需改动接口。传输层尚未创建时忽略；运行期任意时刻调用均可，对下一次读帧生效。
+        /// </remarks>
+        public void SetTimeouts(int messageTimeoutMs, int characterTimeoutMs)
+        {
+            _transport?.SetTimeouts(messageTimeoutMs, characterTimeoutMs);
+        }
+
         public bool IsUserDataClass1QueueFull()
         {
-            return (_userDataClass1Queue.Count == _userDataClass1QueueMaxSize);
+            // 原实现用 ==（无锁）：队列超过上限时恒为 false（误报"未满"），
+            // 且与其他线程的 Enqueue/Dequeue 裸竞争。改为加锁 + >=。
+            lock (_userDataClass1Queue)
+            {
+                return _userDataClass1Queue.Count >= _userDataClass1QueueMaxSize;
+            }
         }
 
         public void EnqueueUserDataClass1(ASDU asdu)
@@ -328,9 +422,10 @@ namespace IEC60870.CS101;
                 _userDataClass1Queue.Enqueue(frame);
 
                 while (_userDataClass1Queue.Count > _userDataClass1QueueMaxSize)
-            {
-                _userDataClass1Queue.Dequeue();
-            }
+                {
+                    _userDataClass1Queue.Dequeue();
+                    NoteQueueDrop(class1: true);
+                }
         }
         }
 
@@ -366,7 +461,11 @@ namespace IEC60870.CS101;
 
         public bool IsUserDataClass2QueueFull()
         {
-            return (_userDataClass2Queue.Count == _userDataClass2QueueMaxSize);
+            // 同 IsUserDataClass1QueueFull：== 会漏判超限，且需加锁。
+            lock (_userDataClass2Queue)
+            {
+                return _userDataClass2Queue.Count >= _userDataClass2QueueMaxSize;
+            }
         }
 
         public void EnqueueUserDataClass2(ASDU asdu)
@@ -380,9 +479,10 @@ namespace IEC60870.CS101;
                 _userDataClass2Queue.Enqueue(frame);
 
                 while (_userDataClass2Queue.Count > _userDataClass2QueueMaxSize)
-            {
-                _userDataClass2Queue.Dequeue();
-            }
+                {
+                    _userDataClass2Queue.Dequeue();
+                    NoteQueueDrop(class1: false);
+                }
         }
         }
 
@@ -426,20 +526,52 @@ namespace IEC60870.CS101;
         /// </summary>
         public Protocol Protocol { get; protected set; }
 
+        /// <summary>
+        /// 构造期就创建链路引擎（与 Iec101Client 对称），使 <see cref="DIR"/>、
+        /// <see cref="SetReceivedRawMessageHandler"/> / <see cref="SetSentRawMessageHandler"/>、
+        /// <see cref="SendLinkLayerTestFunction"/> 在 StartAsync 之前调用不会空引用。
+        /// 主/次级链路层仍延迟到 RunAsync 创建 —— 那时 <see cref="LinkLayerMode"/> 才最终确定。
+        /// </summary>
+        private void EnsureLinkLayerEngine()
+        {
+            if (_linkLayer != null)
+            {
+                return;
+            }
+
+            _linkLayer = new LinkLayerEngine(_buffer, _linkLayerParameters, _transport, DebugLog);
+            _linkLayer.LinkLayerMode = _linkLayerMode;
+
+            // 桥接原始报文事件：lambda 动态读取订阅者，任意时刻订阅均能收到
+            _linkLayer.RawFrameReceived += f => RawFrameReceived?.Invoke(f);
+            _linkLayer.RawFrameSent += f => RawFrameSent?.Invoke(f);
+
+            // 端口拒绝（写失败/被占用）时终止收发循环，避免对死端口无限重试。
+            // 必须以 Warning 级别可见，否则运维只看得到"进程正常但无数据"。
+            _linkLayer.AddPortDeniedHandler((_, _) =>
+            {
+                if (_fatalError)
+                {
+                    return;
+                }
+
+                _fatalError = true;
+                Logger?.Warning("CS101 SLAVE: 链路致命错误（端口被拒/写失败），收发循环已停止。"
+                    + "调用 StartAsync 可重新启动。");
+            });
+        }
+
         public Iec101Server(SerialPort port, LinkLayerParameters parameters = null)
         {
             Protocol = new Protocol(Iec60870Utility.Iec101);
 
             _port = port;
-            _linkLayerParameters = parameters;
-            if (_linkLayerParameters == null)
-        {
-            _linkLayerParameters = new LinkLayerParameters();
-        }
+            _linkLayerParameters = parameters ?? new LinkLayerParameters();
 
-        _transport = new SerialTransceiverFT12(port, _linkLayerParameters, DebugLog);
+            _transport = new SerialTransceiverFT12(port, _linkLayerParameters, DebugLog);
             _initialized = false;
             _fileServer = new FileServer(this, GetAvailableFiles(), DebugLog);
+            EnsureLinkLayerEngine();
         }
 
         public Iec101Server(Stream serialStream, LinkLayerParameters parameters = null)
@@ -452,9 +584,10 @@ namespace IEC60870.CS101;
             _linkLayerParameters = new LinkLayerParameters();
         }
 
-        _transport = new SerialTransceiverFT12(serialStream, _linkLayerParameters, DebugLog);
+            _transport = new SerialTransceiverFT12(serialStream, _linkLayerParameters, DebugLog);
             _initialized = false;
             _fileServer = new FileServer(this, GetAvailableFiles(), DebugLog);
+            EnsureLinkLayerEngine();
         }
 
         /// <summary>
@@ -471,9 +604,38 @@ namespace IEC60870.CS101;
             _linkLayerParameters = new LinkLayerParameters();
         }
 
-        _transport = new TcpServerLinkTransport(_linkLayerParameters, DebugLog);
+            _transport = new TcpServerLinkTransport(_linkLayerParameters, DebugLog);
+
+            // 每条新 TCP 链路建立时复位应用层状态。原实现只在主站主动发 RESET_REMOTE_LINK
+            // 时才间接清队列；主站若"换了实例但链路层仍在 AVAILABLE"，上一会话的残留应答
+            // 会被发给新会话，文件传输也会卡在上一轮的非空闲态。
+            ((TcpServerLinkTransport)_transport).NewLinkEstablished += ResetApplicationLayerState;
+
             _initialized = false;
             _fileServer = new FileServer(this, GetAvailableFiles(), DebugLog);
+            EnsureLinkLayerEngine();
+        }
+
+        /// <summary>文件服务内部状态（排障用；长跑失败信息里带上）。</summary>
+        internal string FileTransferDiagnostics
+        {
+            get
+            {
+                var file = _fileServer?.Diagnostics ?? "(no file server)";
+                file += $", fcbDrop={_linkLayer?.SecondaryFcbMismatchDrops ?? 0}"
+                     + $"({_linkLayer?.SecondaryFcbDropInfo})";
+
+                if (_transport is TcpServerLinkTransport tcp)
+                {
+                    return file
+                        + $", transport: sent={Interlocked.Read(ref tcp.SentFrames)}"
+                        + $", dropNoSession={Interlocked.Read(ref tcp.DroppedNoSession)}"
+                        + $", sendErr={Interlocked.Read(ref tcp.SendErrors)}"
+                        + $", dropNonActiveRx={Interlocked.Read(ref tcp.DroppedNonActiveReceive)}";
+                }
+
+                return file;
+            }
         }
 
         internal void SendASDU(ASDU asdu)
@@ -780,21 +942,22 @@ namespace IEC60870.CS101;
         {
             if (_initialized == false)
             {
-                _linkLayer = new LinkLayerEngine(_buffer, _linkLayerParameters, _transport, DebugLog);
+                // 引擎已在构造期创建（EnsureLinkLayerEngine），但 LinkLayerMode 允许在
+                // StartAsync 之前修改，主/次级链路层必须等模式最终确定后才装配。
+                EnsureLinkLayerEngine();
                 _linkLayer.LinkLayerMode = _linkLayerMode;
-
-                // 桥接原始报文事件：linkLayer 首次运行时创建，此后任意时刻订阅均能收到（lambda 动态读取订阅者）
-                _linkLayer.RawFrameReceived += f => RawFrameReceived?.Invoke(f);
-                _linkLayer.RawFrameSent += f => RawFrameSent?.Invoke(f);
 
                 if (_linkLayerMode == LinkLayerMode.BALANCED)
                 {
-                    PrimaryLinkLayerBalanced primaryLinkLayerBalanced = new PrimaryLinkLayerBalanced(_linkLayer, GetUserData, DebugLog);
+                    // 必须赋值给字段（而不是声明同名局部变量）：字段被 LinkLayerAddressOtherStation
+                    // 的 setter 用来在运行期同步对端地址，遮蔽成局部变量会让该 setter 永远空转。
+                    primaryLinkLayerBalanced = new PrimaryLinkLayerBalanced(_linkLayer, GetUserData, DebugLog);
                     primaryLinkLayerBalanced.LinkLayerAddressOtherStation = _linkLayerAddressOtherStation;
 
                     _linkLayer.SetPrimaryLinkLayer(primaryLinkLayerBalanced);
 
-                    _linkLayer.SetSecondaryLinkLayer(new SecondaryLinkLayerBalanced(_linkLayer, _linkLayerAddressOtherStation, HandleApplicationLayer, DebugLog));
+                    _linkLayer.SetSecondaryLinkLayer(new SecondaryLinkLayerBalanced(
+                        _linkLayer, _linkLayerAddressOtherStation, HandleApplicationLayer, DebugLog));
                 }
                 else
                 {
@@ -820,7 +983,12 @@ namespace IEC60870.CS101;
         /// 可追加插件、日志等配置。串口传输时忽略。</param>
         public async Task StartAsync(CancellationToken ct = default, Action<TouchSocketConfig> configureConfig = null)
         {
-            _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            // 与客户端对称：重复调用先释放旧 CTS，避免泄漏；无外部可取消 token 时不分配链接源。
+            _cts?.Dispose();
+            _cts = ct.CanBeCanceled
+                ? CancellationTokenSource.CreateLinkedTokenSource(ct)
+                : new CancellationTokenSource();
+            _fatalError = false;
 
             if (_port != null)
             {
@@ -844,7 +1012,7 @@ namespace IEC60870.CS101;
         {
             try
             {
-                while (ct.IsCancellationRequested == false)
+                while (ct.IsCancellationRequested == false && _fatalError == false)
                 {
                     await RunAsync(ct).ConfigureAwait(false);
                 }
@@ -854,7 +1022,13 @@ namespace IEC60870.CS101;
             }
             catch (Exception ex)
             {
+                // 循环异常终止后 StartAsync 会"正常返回"，调用方以为服务仍在运行。
+                // 必须置致命标志 + Warning 上报，并让 StartAsync 的返回 Task 进入 faulted，
+                // 否则现场只能看到"进程正常但无数据"（原实现连 DebugLog 都可能被静默）。
+                _fatalError = true;
+                Logger?.Warning("CS101 SLAVE: 收发循环异常终止：" + ex.Message);
                 DebugLog("Loop error: " + ex.Message);
+                throw;
             }
         }
 

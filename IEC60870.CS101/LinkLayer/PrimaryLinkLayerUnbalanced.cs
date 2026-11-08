@@ -73,11 +73,35 @@ namespace IEC60870.CS101;
             public BufferFrame nextMessage = null;
             private BufferFrame _lastSentASDU = null;
 
+            /// <summary>
+            /// 保护 <see cref="nextMessage"/> 的 "检查并置位" 原子性。
+            /// </summary>
+            /// <remarks>
+            /// <see cref="SendConfirmed"/> / <see cref="SendNoReply"/> 由用户线程调用
+            /// （<c>Iec101Client.SendASDU</c> 是同步公开 API），而
+            /// <c>RunStateMachine</c> 在收发循环线程里读取并置 null。
+            /// 原实现是裸字段的 "if (nextMessage != null) throw; nextMessage = ...;"——
+            /// 两个线程并发下发时后写覆盖先写（**遥控命令静默丢失**），
+            /// 或双方都读到 null 各写一次。电网遥控丢失属生产事故级。
+            /// </remarks>
+            public readonly object MessageGate = new object();
+
             public bool requireConfirmation = false;
 
             public bool resetCu = false;
             public bool requestClass2Data = false;
             public bool requestClass1Data = false;
+
+            /// <summary>
+            /// 已发出、正在等应答的请求帧类型（0 = 无）。
+            /// </summary>
+            /// <remarks>
+            /// 发送时就地清掉了 <see cref="requestClass1Data"/>/<see cref="requestClass2Data"/>，
+            /// 而超时重发分支原先又用这两个标志判断"该重发哪一帧" → 条件恒为 false，
+            /// 重发分支变成空操作：一次应答丢失就要等满 TimeoutRepeat 才会进 ERROR。
+            /// 必须单独记住"在途请求"的类型。
+            /// </remarks>
+            private FunctionCodePrimary _pendingRequestFc;
 
             private LinkLayerEngine _linkLayer;
 
@@ -326,6 +350,13 @@ namespace IEC60870.CS101;
 
                 var currentTime = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
+                // 已经收到应答（或等待被复位）→ 在途请求标记失效。
+                // 放在状态机入口统一清，避免在每个响应分支重复写。
+                if (!waitingForResponse)
+                {
+                    _pendingRequestFc = 0;
+                }
+
                 switch (primaryState)
                 {
                     case PrimaryLinkLayerState.TIMEOUT:
@@ -446,6 +477,7 @@ namespace IEC60870.CS101;
 
                                 _linkLayer.SendFixedFramePrimary(FunctionCodePrimary.REQUEST_USER_DATA_CLASS_1, _address, nextFcb, true);
 
+                                _pendingRequestFc = FunctionCodePrimary.REQUEST_USER_DATA_CLASS_1;
                                 requestClass1Data = false;
                             }
                             else
@@ -454,6 +486,7 @@ namespace IEC60870.CS101;
 
                                 _linkLayer.SendFixedFramePrimary(FunctionCodePrimary.REQUEST_USER_DATA_CLASS_2, _address, nextFcb, true);
 
+                                _pendingRequestFc = FunctionCodePrimary.REQUEST_USER_DATA_CLASS_2;
                                 requestClass2Data = false;
                             }
 
@@ -567,18 +600,26 @@ namespace IEC60870.CS101;
                             {
                                 _debugLog("[SLAVE " + _address + "] TIMEOUT: ASDU not confirmed");
 
-                                if (requestClass1Data)
+                                // 用"在途请求类型"重发；不能用已被清空的 requestClass1/2Data。
+                                if (_pendingRequestFc == FunctionCodePrimary.REQUEST_USER_DATA_CLASS_1)
                                 {
                                     _debugLog("[SLAVE " + _address + "] PLL - SEND FC 10 - REQ UD 1 [REPEAT]");
 
                                     _linkLayer.SendFixedFramePrimary(FunctionCodePrimary.REQUEST_USER_DATA_CLASS_1, _address, !nextFcb, true);
                                 }
-                                else if (requestClass2Data)
+                                else if (_pendingRequestFc == FunctionCodePrimary.REQUEST_USER_DATA_CLASS_2)
                                 {
 
                                     _debugLog("[SLAVE " + _address + "] PLL - SEND FC 11 - REQ UD 2 [REPEAT]");
 
                                     _linkLayer.SendFixedFramePrimary(FunctionCodePrimary.REQUEST_USER_DATA_CLASS_2, _address, !nextFcb, true);
+                                }
+                                else
+                                {
+                                    // 没有在途请求（例如状态被外部复位）：直接结束本轮等待，
+                                    // 不要空转到 TimeoutRepeat 才进 ERROR。
+                                    _debugLog("[SLAVE " + _address + "] TIMEOUT: no pending request, return to IDLE");
+                                    newState = PrimaryLinkLayerState.LINK_LAYERS_AVAILABLE;
                                 }
 
                                 lastSendTime = currentTime;
@@ -588,7 +629,15 @@ namespace IEC60870.CS101;
                         break;
 
                     case PrimaryLinkLayerState.SECONDARY_LINK_LAYER_BUSY:
-                        //TODO - reject new requests from application layer?
+                        // 同平衡侧：对端忙必须有退出路径，否则一次 NACK/DFC=1 会让主站
+                        // 永久静默（在线但无数据）。超时后回 ERROR 重新建立链路。
+                        if (currentTime > lastSendTime + _linkLayer.TimeoutRepeat)
+                        {
+                            _debugLog("[SLAVE " + _address + "] PLL - secondary busy timeout -> re-establish link");
+                            waitingForResponse = false;
+                            newState = PrimaryLinkLayerState.IDLE;
+                            SetState(LinkLayerState.ERROR);
+                        }
                         break;
 
                 }
@@ -664,17 +713,23 @@ namespace IEC60870.CS101;
         {
             var slave = GetSlaveConnection(slaveAddress);
 
-            if (slave != null)
+            // 地址未注册时静默丢弃，会把「忘了 AddSlave / SlaveAddress 与 AddSlave 不一致」
+            // 变成无声的数据丢失。这里与 GetStateOfSlave 保持一致：未注册地址直接报错。
+            if (slave == null)
+            {
+                throw new ArgumentException("No slave with this address found: " + slaveAddress, nameof(slaveAddress));
+            }
+
+            // 「检查空 + 置位」必须在同一临界区，否则并发下发会静默丢命令
+            lock (slave.MessageGate)
             {
                 if (slave.nextMessage != null)
-            {
-                throw new LinkLayerBusyException("Message pending");
-            }
-            else
                 {
-                    slave.nextMessage = message.Clone();
-                    slave.requireConfirmation = true;
+                    throw new LinkLayerBusyException("Message pending");
                 }
+
+                slave.nextMessage = message.Clone();
+                slave.requireConfirmation = true;
             }
         }
 
@@ -695,9 +750,12 @@ namespace IEC60870.CS101;
             {
                 var slave = GetSlaveConnection(slaveAddress);
 
-                if (slave != null)
+                if (slave == null)
                 {
-                    if (slave.IsMessageWaitingToSend())
+                    throw new ArgumentException("No slave with this address found: " + slaveAddress, nameof(slaveAddress));
+                }
+
+                if (slave.IsMessageWaitingToSend())
                 {
                     throw new LinkLayerBusyException("Message pending");
                 }
@@ -706,7 +764,6 @@ namespace IEC60870.CS101;
                         slave.nextMessage = message;
                         slave.requireConfirmation = false;
                     }
-                }
             }
         }
 

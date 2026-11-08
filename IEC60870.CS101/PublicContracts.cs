@@ -128,20 +128,3 @@ namespace IEC60870.CS101;
     /// <returns>true 表示已处理。</returns>
     public delegate bool ASDUHandler(object parameter, IClientConnection connection, ASDU asdu);
 
-    [Serializable]
-    public class ASDUQueueException : Exception
-    {
-        public ASDUQueueException()
-        {
-        }
-
-        public ASDUQueueException(string message)
-            : base(message)
-        {
-        }
-
-        public ASDUQueueException(string message, Exception innerException)
-            : base(message, innerException)
-        {
-        }
-    }

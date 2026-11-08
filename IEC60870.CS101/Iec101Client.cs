@@ -35,6 +35,9 @@ namespace IEC60870.CS101;
         private ISerialLinkTransport _transport;
         private bool _fatalError = false;
 
+        /// <summary>已 Dispose：禁止再次 StartAsync（传输/串口已释放，复活只会立刻异常）。</summary>
+        private volatile bool _disposed;
+
         /// <summary>
         /// 日志记录器（TouchSocket <see cref="ILog"/>）。默认 null（静默）；
         /// 链路层与文件服务的调试日志经由此输出。
@@ -71,18 +74,26 @@ namespace IEC60870.CS101;
         {
             if (_fatalError == false)
             {
-                await _linkLayer.RunAsync(ct).ConfigureAwait(false);
+                // 文件状态机先推进：本轮入队的段可在本轮的链路层状态机里立刻发出。
+                _fileClient?.HandleFileService();
 
-                if (_fileClient != null)
-            {
-                _fileClient.HandleFileService();
+                await _linkLayer.RunAsync(ct).ConfigureAwait(false);
             }
-        }
         }
 
         private void FatalErrorHandler(object sender, EventArgs eventArgs)
         {
+            if (_fatalError)
+            {
+                return;
+            }
+
             _fatalError = true;
+
+            // 致命错误必须以 Warning 级别可见（原先只在 DEBUG 日志里，生产采集 Info 级就完全看不到），
+            // 否则运维只能看到"进程正常但无数据"。
+            Logger?.Warning("CS101 MASTER: 链路致命错误（端口被拒/写失败），收发循环已停止。"
+                + "调用 StartAsync 可重新启动。");
         }
 
         public void AddPortDeniedHandler(EventHandler eventHandler)
@@ -96,13 +107,50 @@ namespace IEC60870.CS101;
         /// <param name="ct">取消令牌。</param>
         /// <param name="configureConfig">TCP 传输时可选的 TouchSocket 配置回调，在库默认配置（远程地址）之后执行，
         /// 可追加插件、日志等配置。串口传输时忽略。</param>
-        public Task StartAsync(CancellationToken ct = default, Action<TouchSocketConfig> configureConfig = null)
+        public async Task StartAsync(CancellationToken ct = default, Action<TouchSocketConfig> configureConfig = null)
         {
-            // 重复调用时先释放上一次创建的 CTS，避免泄漏（代码评审 #16）。无可取消外部 token 时不分配链接源。
-            _cts?.Dispose();
+            if (_disposed)
+            {
+                throw new ObjectDisposedException(nameof(Iec101Client));
+            }
+
+            // 重复调用必须先真正停掉上一轮循环：
+            // 原实现只 _cts?.Dispose()（不会取消令牌），旧循环的 ct.IsCancellationRequested
+            // 永远为 false → 两个收发循环同时读同一个串口/同一条 TCP 隧道，帧被切碎，
+            // 且旧 _loopTask 引用被覆盖、永远无法等待或回收。
+            var oldCts = _cts;
+            var oldLoop = _loopTask;
+
+            if (oldLoop != null)
+            {
+                oldCts?.Cancel();
+
+                try
+                {
+                    await Task.WhenAny(oldLoop, Task.Delay(5000)).ConfigureAwait(false);
+                }
+                catch
+                {
+                    /* 旧循环的异常与本次启动无关 */
+                }
+
+                if (!oldLoop.IsCompleted)
+                {
+                    throw new InvalidOperationException(
+                        "上一次收发循环未能在 5 秒内退出，拒绝启动第二个循环（会造成双读/帧错乱）");
+                }
+            }
+
+            oldCts?.SafeDispose();
+
             _cts = ct.CanBeCanceled
                 ? CancellationTokenSource.CreateLinkedTokenSource(ct)
                 : new CancellationTokenSource();
+
+            // 复位致命错误标志：否则一次写失败/端口被拒之后，RunLoopAsync 的循环条件
+            // 立即为假，主站永久静默停摆（只能重建对象），且 StartAsync 仍正常返回、
+            // 无事件、无 Warning —— 运维看到"进程正常但无数据"，无法自愈。
+            _fatalError = false;
 
             if (_port != null)
             {
@@ -114,19 +162,36 @@ namespace IEC60870.CS101;
             _port.DiscardInBuffer();
             }
 
-            _linkLayer.AddPortDeniedHandler(FatalErrorHandler);
+            // 注册一次即可（构造期的 InitializeLinkLayer 已做），重复 StartAsync 不得叠加。
+            // 原实现每次 StartAsync 都 Add 一次，且手动 RunAsync 路径从不注册 ——
+            // 致命错误守卫只落在一条驱动路径上。
 
-            if (_transport is TcpClientLinkTransport tcp)
-        {
-            return Task.Run(async () =>
+            // 启动语义统一为「立即返回」：内部循环跑在独立 Task 上，返回的 Task 仅代表
+            // 启动动作完成（TCP 则包含建连），不等待收发循环结束。
+            // 原实现串口路径直接 return RunLoopAsync(...)，await StartAsync() 会永久挂起；
+            // 而 CS103/CS104 的同名方法都是立即返回 —— 三库语义必须一致，
+            // 否则按 103/104 习惯写的 await StartAsync() 在 101 上就是启动期死锁。
+            // 循环内使用局部 token：原实现每轮读字段 _cts，重复启动时可能读到新 CTS
+            // 或已 Dispose 的旧令牌（CreateLinkedTokenSource 会抛 ObjectDisposedException，
+            // 被兜底 catch 吞掉后变成零延迟死循环）。
+            var loopToken = _cts.Token;
+
+            _loopTask = Task.Run(async () =>
+            {
+                if (_transport is TcpClientLinkTransport tcpTransport)
                 {
-                    await tcp.ConnectAsync(_cts.Token, configureConfig).ConfigureAwait(false);
-                    await RunLoopAsync(_cts.Token).ConfigureAwait(false);
-                }, _cts.Token);
+                    await tcpTransport.ConnectAsync(loopToken, configureConfig).ConfigureAwait(false);
+                }
+
+                await RunLoopAsync(loopToken).ConfigureAwait(false);
+            }, loopToken);
+
+            // 已发起即返回：调用方用 await StartAsync() 不会挂住。
+            return;
         }
 
-        return RunLoopAsync(_cts.Token);
-        }
+        /// <summary>后台收发循环的 Task（停止时可用于等待其退出）。</summary>
+        private Task _loopTask;
 
         /// <summary>
         /// 停止后台异步收发循环（同步取消，不阻塞）。
@@ -143,9 +208,28 @@ namespace IEC60870.CS101;
         /// </summary>
         public void Dispose()
         {
+            _disposed = true;
             Stop();
             _cts.SafeDispose();
             _cts = null;
+
+            // 等循环真正退出再释放传输：否则循环可能仍在 ReadFrameAsync/FlushSendsAsync 中，
+            // 与随后的 Close/Dispose 竞争（AsyncByteQueue 的信号量已释放 → ODE 被吞 → 空转）。
+            var loop = _loopTask;
+            if (loop != null)
+            {
+                try
+                {
+                    Task.WaitAny(new[] { loop }, TimeSpan.FromSeconds(5));
+                }
+                catch
+                {
+                    /* 取消即退出 */
+                }
+
+                _loopTask = null;
+            }
+
             _transport.SafeDispose();
             _transport = null;
             try
@@ -157,12 +241,17 @@ namespace IEC60870.CS101;
         catch { /* port already gone */ }
     }
 
-    private async Task RunLoopAsync(CancellationToken ct)
+        private async Task RunLoopAsync(CancellationToken ct)
         {
             try
             {
-                while (ct.IsCancellationRequested == false)
+                while (ct.IsCancellationRequested == false && _fatalError == false)
                 {
+                    // 文件传输是多帧过程：段与段之间没有对端报文触发，
+                    // 必须由本端的周期循环推进（与从站 Iec101Server 的 _fileServer.HandleFileTransmission 对称），
+                    // 否则主站在发完第一段后永远停在 SEND_SECTION 等不到下一段。
+                    _fileClient?.HandleFileService();
+
                     await _linkLayer.RunAsync(ct).ConfigureAwait(false);
                 }
             }
@@ -172,9 +261,16 @@ namespace IEC60870.CS101;
             catch (Exception ex)
             {
                 _fatalError = true;
+
+                // 生产环境 Logger 默认 null，DebugLog 完全静默 → 运维只能看到
+                // "进程正常但无数据"。非取消异常必须以 Warning 可见。
+                Logger?.Warning("CS101 MASTER: 收发循环异常终止：" + ex.Message + "（调用 StartAsync 可重启）");
                 DebugLog("Loop error: " + ex.Message);
             }
         }
+
+        /// <summary>文件客户端内部状态（排障用）。</summary>
+        internal string FileClientDiagnostics => _fileClient?.Diagnostics ?? "(no file client)";
 
         public int OwnAddress
         {
@@ -342,6 +438,10 @@ namespace IEC60870.CS101;
             _linkLayer.RawFrameReceived += f => RawFrameReceived?.Invoke(f);
             _linkLayer.RawFrameSent += f => RawFrameSent?.Invoke(f);
 
+            // 端口拒绝（写失败/被占用）是致命错误：构造期注册，保证单步 RunAsync
+            // 与后台 RunLoopAsync 两条驱动路径都生效（原先只在 StartAsync 里注册）。
+            _linkLayer.AddPortDeniedHandler(FatalErrorHandler);
+
             if (mode == LinkLayerMode.BALANCED)
             {
                 _linkLayer.DIR = true;
@@ -361,6 +461,15 @@ namespace IEC60870.CS101;
             }
         }
 
+        /// <summary>
+        /// 设置接收超时（毫秒）。转发给底层传输层（串口 / TCP 隧道），运行期可随时调整。
+        /// </summary>
+        /// <param name="messageTimeout">等待帧起始字符的最大时长（本轮无数据时的等待窗口）。</param>
+        /// <param name="characterTimeout">
+        /// <b>字符间超时</b>（character inter-byte timeout）：帧内相邻两个字节之间的最大间隔，
+        /// <b>不是整帧总时长</b>。9600 波特下每字节约 1.04ms，长帧的传输耗时会远超该值，
+        /// 但只要字节之间不断流就不会被判超时（见 <c>StreamByteSource</c>）。
+        /// </param>
         public void SetTimeouts(int messageTimeout, int characterTimeout)
         {
             _transport.SetTimeouts(messageTimeout, characterTimeout);
@@ -532,6 +641,16 @@ namespace IEC60870.CS101;
             {
                 lock (_userDataQueue)
                 {
+                    // 有界队列：链路长时间不可用时，应用侧周期发送（总召唤/对时/心跳）
+                    // 会持续入队而无人消费。原实现无上限，长跑必然 OOM；
+                    // 这里与非平衡分支的 LinkLayerBusyException 背压语义对齐，
+                    // 让调用方明确知道"链路忙、命令没进去"，而不是静默堆积。
+                    if (_userDataQueue.Count >= _userDataQueueMaxSize)
+                    {
+                        throw new LinkLayerBusyException(
+                            $"发送队列已满（{_userDataQueueMaxSize}），链路未就绪，命令未入队");
+                    }
+
                     BufferFrame frame = new BufferFrame(new byte[256], 0);
 
                     asdu.Encode(frame, _appLayerParameters);
@@ -540,6 +659,15 @@ namespace IEC60870.CS101;
                 }
             }
         }
+
+        /// <summary>平衡模式发送队列上限（超过即抛 <see cref="LinkLayerBusyException"/>）。</summary>
+        public int UserDataQueueMaxSize
+        {
+            get => _userDataQueueMaxSize;
+            set => _userDataQueueMaxSize = Math.Max(1, value);
+        }
+
+        private int _userDataQueueMaxSize = 1024;
 
         private BufferFrame DequeueUserData()
         {

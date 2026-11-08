@@ -32,10 +32,10 @@ namespace IEC60870.CS101;
     /// <summary>
     /// Encapsulates a IFileProvider object to add some state information
     /// </summary>
-    public class CS101n104File
+    internal class FileServerEntry
     {
 
-        public CS101n104File(IFileProvider file)
+        public FileServerEntry(IFileProvider file)
         {
             provider = file;
         }
@@ -51,9 +51,9 @@ namespace IEC60870.CS101;
     public class FilesAvailable
     {
 
-        private List<CS101n104File> _availableFiles = new List<CS101n104File>();
+        private List<FileServerEntry> _availableFiles = new List<FileServerEntry>();
 
-        internal CS101n104File GetFile(int ca, int ioa, NameOfFile nof)
+        internal FileServerEntry GetFile(int ca, int ioa, NameOfFile nof)
         {
             lock (_availableFiles)
             {
@@ -177,7 +177,7 @@ namespace IEC60870.CS101;
             lock (_availableFiles)
             {
 
-                _availableFiles.Add(new CS101n104File(file));
+                _availableFiles.Add(new FileServerEntry(file));
             }
 
         }
@@ -210,14 +210,18 @@ namespace IEC60870.CS101;
         /// <returns>the list of available files</returns>
         public List<IFileProvider> GetFiles()
         {
-            List<IFileProvider> files = new List<IFileProvider>();
-
-            foreach (var file in _availableFiles)
+            // 与 AddFile/RemoveFile/GetFile/SendDirectoy 一致，在锁内取快照，
+            // 避免并发增删时 InvalidOperationException 或读到中间状态。
+            lock (_availableFiles)
             {
-                files.Add(file.provider);
-            }
+                var files = new List<IFileProvider>(_availableFiles.Count);
+                foreach (var file in _availableFiles)
+                {
+                    files.Add(file.provider);
+                }
 
-            return files;
+                return files;
+            }
         }
 
     }
@@ -237,7 +241,7 @@ namespace IEC60870.CS101;
 
         private FilesAvailable _availableFiles;
 
-        private CS101n104File _selectedFile;
+        private FileServerEntry _selectedFile;
 
         private DebugLogger _logger;
 
@@ -267,10 +271,91 @@ namespace IEC60870.CS101;
 
         private IFileReceiver _fileReceiver = null;
 
+        // 诊断计数：只在排障时使用（长跑失败信息里带上，用于区分
+        // "SELECT 没到从站" / "从站拒绝了" / "从站回了但主站没处理"）。
+        private long _selectFileReceived;
+        private long _fileReadySent;
+        private long _unknownFileSelects;
+        private long _callFileReceived;
+        private long _unexpectedCallFile;
+        private long _resetCount;
+
+        internal string Diagnostics =>
+            $"state={_transferState}, selected={_selectedFile != null}, receiver={_fileReceiver != null}, "
+            + $"selects={Interlocked.Read(ref _selectFileReceived)}, fileReady={Interlocked.Read(ref _fileReadySent)}, "
+            + $"unknown={Interlocked.Read(ref _unknownFileSelects)}, calls={Interlocked.Read(ref _callFileReceived)}, "
+            + $"unexpectedCalls={Interlocked.Read(ref _unexpectedCallFile)}, resets={Interlocked.Read(ref _resetCount)}";
+
         public void SetFileReadyHandler(FileReadyHandler handler, object parameter)
         {
             _fileReadyHandler = handler;
             _fileReadyHandlerParameter = parameter;
+        }
+
+        /// <summary>
+        /// 链路重建时丢弃上一次会话残留的文件传输状态。
+        /// </summary>
+        /// <remarks>
+        /// 必须在"新链路建立"时调用。从站的 <see cref="FileServer"/> 是随
+        /// <c>Iec101Server</c> 长期存在的单实例，主站在传输中途断线（例如收完
+        /// 最后一段就断开、DEACTIVATE/最终 ACK 没发出去）时，状态机会停在
+        /// <c>WAITING_FOR_FILE_ACK</c> 一类非空闲态；这个状态没有任何"对端已换人"
+        /// 的自愈路径，新主站连上来发 SELECT FILE 会被当成"Unexpected SELECT FILE"
+        /// 静默忽略，直到 3 秒超时才恢复 —— 表现为重连后第一次文件传输必然超时。
+        ///
+        /// 超时路径只覆盖 <c>_selectedFile</c>/<c>_fileReceiver</c> 非空的组合；
+        /// 一旦两者都为空但状态仍非 IDLE，<see cref="HandleFileTransmission"/>
+        /// 的门槛会让超时检查整段跳过，状态就永久悬住。这里无条件复位到 IDLE。
+        /// </remarks>
+        internal void Reset()
+        {
+            Interlocked.Increment(ref _resetCount);
+            _logger?.Invoke("Link rebuilt - reset file transfer state");
+
+            if (_selectedFile != null)
+            {
+                var provider = _selectedFile.provider;
+                _selectedFile.selectedBy = null;
+                _selectedFile = null;
+
+                try
+                {
+                    provider.TransferComplete(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger("File provider TransferComplete threw: " + ex.Message);
+                }
+            }
+
+            if (_fileReceiver != null)
+            {
+                var receiver = _fileReceiver;
+                _fileReceiver = null;
+
+                try
+                {
+                    receiver.Finished(FileErrorCode.ABORTED_BY_REMOTE);
+                }
+                catch (Exception ex)
+                {
+                    _logger("File receiver Finished threw: " + ex.Message);
+                }
+            }
+
+            ResetTransferStats();
+            _transferState = FileServerState.UNSELECTED_IDLE;
+        }
+
+        /// <summary>只复位一次传输内的编号/偏移/校验和，不动状态机。</summary>
+        private void ResetTransferStats()
+        {
+            _currentSectionNumber = 0;
+            _currentSectionSize = 0;
+            _currentSectionOffset = 0;
+            _sectionChecksum = 0;
+            _fileChecksum = 0;
+            _lastSentTime = 0;
         }
 
         /// <summary>
@@ -398,6 +483,13 @@ namespace IEC60870.CS101;
                                 _fileReceiver.SegmentReceived(segment.NameOfSection, _currentSectionOffset, segment.LengthOfSegment, segment.SegmentData);
                             }
 
+                            // 与 FileClient 接收路径对称：累积段校验和，供 LAST SEGMENT 比对。
+                            // 原实现从不算，下载文件损坏无从发现。
+                            foreach (var octet in segment.SegmentData)
+                            {
+                                _sectionChecksum += octet;
+                            }
+
                             _currentSectionOffset += segment.LengthOfSegment;
                         }
                         else
@@ -427,15 +519,24 @@ namespace IEC60870.CS101;
                             if (lastSection.LSQ == LastSectionOrSegmentQualifier.SECTION_TRANSFER_WITHOUT_DEACT)
                             {
 
+                                // 校验段校验和：与 FileClient 接收路径对称，不符回否定确认
+                                // 并让主站重发该段，而不是无条件 POS_ACK 收下损坏数据。
+                                var checksumOk = lastSection.CHS == _sectionChecksum;
+                                var ackQualifier = checksumOk
+                                    ? AcknowledgeQualifier.POS_ACK_SECTION
+                                    : AcknowledgeQualifier.NEG_ACK_SECTION;
+                                var ackError = checksumOk ? FileError.DEFAULT : FileError.CHECKSUM_FAILED;
+
                                 ASDU sectionAck = new ASDU(_alParameters, CauseOfTransmission.FILE_TRANSFER, false, false, 0, asdu.Ca, false);
 
-                                sectionAck.AddInformationObject(new FileACK(_ioa, _nof, lastSection.NameOfSection, AcknowledgeQualifier.POS_ACK_SECTION, FileError.DEFAULT));
+                                sectionAck.AddInformationObject(new FileACK(_ioa, _nof, lastSection.NameOfSection, ackQualifier, ackError));
 
                                 _connection.SendASDU(sectionAck);
                                 _lastSentTime = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-                                _logger("Send section ACK");
+                                _logger(checksumOk ? "Send section ACK" : "checksum failed - send section NACK");
 
+                                _sectionChecksum = 0;
                                 _transferState = FileServerState.WAITING_FOR_SECTION_READY;
 
                             }
@@ -474,12 +575,19 @@ namespace IEC60870.CS101;
 
                                 _logger("Send file ACK");
 
-                                if (_fileReceiver != null)
-                            {
-                                _fileReceiver.Finished(FileErrorCode.SUCCESS);
-                            }
+                                // 下载结束：通知接收者后立即释放引用（原实现保留引用直到下一次
+                                // FILE_READY 或超时 —— receiver 可能持有 FileStream/大缓冲，
+                                // 长跑下表现为句柄与内存不随传输结束释放），并复位分段状态。
+                                var receiver = _fileReceiver;
+                                _fileReceiver = null;
 
-                            _transferState = FileServerState.UNSELECTED_IDLE;
+                                if (receiver != null)
+                                {
+                                    receiver.Finished(FileErrorCode.SUCCESS);
+                                }
+
+                                _transferState = FileServerState.UNSELECTED_IDLE;
+                                ResetTransferStats();
 
                                 _logger("Received file success");
                             }
@@ -487,12 +595,16 @@ namespace IEC60870.CS101;
                             {
                                 /* master aborted transfer */
 
-                                if (_fileReceiver != null)
-                            {
-                                _fileReceiver.Finished(FileErrorCode.ABORTED_BY_REMOTE);
-                            }
+                                var receiver = _fileReceiver;
+                                _fileReceiver = null;
 
-                            _transferState = FileServerState.UNSELECTED_IDLE;
+                                if (receiver != null)
+                                {
+                                    receiver.Finished(FileErrorCode.ABORTED_BY_REMOTE);
+                                }
+
+                                _transferState = FileServerState.UNSELECTED_IDLE;
+                                ResetTransferStats();
                             }
                             else
                             {
@@ -516,7 +628,7 @@ namespace IEC60870.CS101;
                     if (asdu.Cot == CauseOfTransmission.FILE_TRANSFER)
                     {
 
-                        if (_transferState != FileServerState.UNSELECTED_IDLE)
+                        if (_transferState != FileServerState.UNSELECTED_IDLE && _selectedFile != null)
                         {
 
                             var file = _selectedFile.provider;
@@ -539,6 +651,7 @@ namespace IEC60870.CS101;
                                     _selectedFile = null;
 
                                     _transferState = FileServerState.UNSELECTED_IDLE;
+                                    ResetTransferStats();
                                 }
                                 else
                                 {
@@ -563,6 +676,7 @@ namespace IEC60870.CS101;
                                     _selectedFile = null;
 
                                     _transferState = FileServerState.UNSELECTED_IDLE;
+                                    ResetTransferStats();
                                 }
                                 else
                                 {
@@ -678,6 +792,52 @@ namespace IEC60870.CS101;
                         if (sc.SCQ == SelectAndCallQualifier.SELECT_FILE)
                         {
 
+                            Interlocked.Increment(ref _selectFileReceived);
+                            // 非空闲态又收到 SELECT：说明上一笔传输已被对端放弃
+                            // （典型场景：主站收完最后一段就断线/重启，最终 ACK 没发出去，
+                            // 从站停在 WAITING_FOR_FILE_ACK；新主站连上来第一件事就是 SELECT）。
+                            // 合规主站不会在传输进行中再发 SELECT，所以这里必须"先收尾再服务"，
+                            // 而不是静默忽略让新主站等到 3 秒超时 —— 那样表现为
+                            // "重连后第一次文件传输偶发必失败"（长跑约 1/180 轮复现）。
+                            if (_transferState != FileServerState.UNSELECTED_IDLE)
+                            {
+                                _logger("SELECT FILE while busy (" + _transferState + ") - abort previous transfer");
+
+                                if (_selectedFile != null)
+                                {
+                                    var staleProvider = _selectedFile.provider;
+                                    _selectedFile.selectedBy = null;
+                                    _selectedFile = null;
+
+                                    try
+                                    {
+                                        staleProvider.TransferComplete(false);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        _logger("File provider TransferComplete threw: " + ex.Message);
+                                    }
+                                }
+
+                                if (_fileReceiver != null)
+                                {
+                                    var staleReceiver = _fileReceiver;
+                                    _fileReceiver = null;
+
+                                    try
+                                    {
+                                        staleReceiver.Finished(FileErrorCode.ABORTED_BY_REMOTE);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        _logger("File receiver Finished threw: " + ex.Message);
+                                    }
+                                }
+
+                                ResetTransferStats();
+                                _transferState = FileServerState.UNSELECTED_IDLE;
+                            }
+
                             if (_transferState == FileServerState.UNSELECTED_IDLE)
                             {
 
@@ -687,6 +847,7 @@ namespace IEC60870.CS101;
 
                                 if (file == null)
                                 {
+                                    Interlocked.Increment(ref _unknownFileSelects);
                                     asdu.Cot = CauseOfTransmission.UNKNOWN_INFORMATION_OBJECT_ADDRESS;
                                     _connection.SendASDU(asdu);
                                 }
@@ -699,6 +860,11 @@ namespace IEC60870.CS101;
                                     if (file.selectedBy == null)
                                     {
                                         file.selectedBy = this;
+
+                                        // 新传输从干净的分段/校验和状态开始。
+                                        // 原实现只在超时路径清零 _fileChecksum，成功结束后残留，
+                                        // 导致同一从站的第二次上传携带"上一文件 + 本文件"的校验和 → 必失败。
+                                        ResetTransferStats();
 
                                         fileReady.AddInformationObject(new FileReady(sc.ObjectAddress, sc.NOF, file.provider.GetFileSize(), true));
 
@@ -716,6 +882,7 @@ namespace IEC60870.CS101;
                                         _transferState = FileServerState.UNSELECTED_IDLE;
                                     }
 
+                                    Interlocked.Increment(ref _fileReadySent);
                                     _connection.SendASDU(fileReady);
 
 
@@ -733,17 +900,47 @@ namespace IEC60870.CS101;
 
                             _logger("Received DEACTIVATE FILE");
 
-                            if (_transferState != FileServerState.UNSELECTED_IDLE)
+                            // 主动复位，不区分方向：上传（_selectedFile）与下载（_fileReceiver）
+                            // 都可能收到主站的 DEACTIVATE。原实现只认 _selectedFile，
+                            // 下载方向会落入"Unexpected DEACTIVATE"分支 —— 状态与接收者都不清理，
+                            // 只能等 3 秒超时，期间新请求全部被拒。
+                            if (_transferState != FileServerState.UNSELECTED_IDLE
+                                || _selectedFile != null
+                                || _fileReceiver != null)
                             {
-
                                 if (_selectedFile != null)
                                 {
+                                    var provider = _selectedFile.provider;
                                     _selectedFile.selectedBy = null;
                                     _selectedFile = null;
+
+                                    try
+                                    {
+                                        provider.TransferComplete(false);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        _logger("File provider TransferComplete threw: " + ex.Message);
+                                    }
+                                }
+
+                                if (_fileReceiver != null)
+                                {
+                                    var receiver = _fileReceiver;
+                                    _fileReceiver = null;
+
+                                    try
+                                    {
+                                        receiver.Finished(FileErrorCode.ABORTED_BY_REMOTE);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        _logger("File receiver Finished threw: " + ex.Message);
+                                    }
                                 }
 
                                 _transferState = FileServerState.UNSELECTED_IDLE;
-
+                                ResetTransferStats();
                             }
                             else
                             {
@@ -755,6 +952,7 @@ namespace IEC60870.CS101;
                         {
 
                             _logger("Received CALL FILE");
+                            Interlocked.Increment(ref _callFileReceived);
 
                             if (_transferState == FileServerState.WAITING_FOR_FILE_CALL)
                             {
@@ -773,7 +971,9 @@ namespace IEC60870.CS101;
 
                                     _currentSectionNumber = 1;
                                     _currentSectionOffset = 0;
-                                    _currentSectionSize = _selectedFile.provider.GetSectionSize(0);
+                                    // 首段的长度必须在 CALL FILE 时就填对（0 基索引 = 段号 - 1）。
+                                    // 原实现只写了注释没有赋值，发出的 SECTION READY 长度恒为 0 或上一次传输的残留值。
+                                    _currentSectionSize = _selectedFile.provider.GetSectionSize(_currentSectionNumber - 1);
 
                                     sectionReady.AddInformationObject(new SectionReady(sc.ObjectAddress, _selectedFile.provider.GetNameOfFile(), _currentSectionNumber, _currentSectionSize, false));
 
@@ -789,7 +989,8 @@ namespace IEC60870.CS101;
                             }
                             else
                             {
-                                _logger("Unexpected FILE CALL message");
+                                _logger("Unexpected FILE CALL message, state=" + _transferState);
+                                Interlocked.Increment(ref _unexpectedCallFile);
                             }
 
 
@@ -826,7 +1027,7 @@ namespace IEC60870.CS101;
 
                                             ASDU sectionReady = new ASDU(_alParameters, CauseOfTransmission.FILE_TRANSFER, false, false, 0, asdu.Ca, false);
 
-                                            _currentSectionSize = _selectedFile.provider.GetSectionSize(0);
+                                            // 使用上面按 _currentSectionNumber - 1 算出的段长度；原实现写死索引 0 会使第 2 段起重发长度错误
 
                                             sectionReady.AddInformationObject(new SectionReady(sc.ObjectAddress, _selectedFile.provider.GetNameOfFile(), _currentSectionNumber, _currentSectionSize, false));
 
@@ -920,12 +1121,31 @@ namespace IEC60870.CS101;
 
         public void HandleFileTransmission()
         {
-
-
-            if (_transferState != FileServerState.UNSELECTED_IDLE)
+            // 上传（从站→主站，_selectedFile 驱动）与下载（主站→从站，_fileReceiver 驱动）
+            // 是两条对称路径。原实现的门槛只认 _selectedFile，把下载状态
+            // WAITING_FOR_SECTION_READY / RECEIVE_SECTION 完全排除在超时处理之外；
+            // 超时时也不通知 _fileReceiver、不清状态 —— 主站中途停发即永久卡在
+            // RECEIVE_SECTION（SetFileReadyHandler 转发修好后这条路径才可用，
+            // 但只接通了「启动/收段」这一半）。
+            // SEND_ABORT 原先是死状态：4 处赋值却没有处理分支，DEACTIVATE_FILE
+            // 从不发出，唯一出口是 3 秒超时。与 FileClient.AbortFileTransfer 对称，
+            // 从站侧也必须主动发 DEACTIVATE_FILE 并复位本端状态。
+            // 必须在 inUpload/inDownload 门槛【之前】处理：中止时 _selectedFile 与
+            // _fileReceiver 都可能已经为空（例如收到否定文件确认后），否则又会漏掉。
+            if (_transferState == FileServerState.SEND_ABORT)
             {
+                SendDeactivateAndReset();
+                return;
+            }
 
-                if (_transferState == FileServerState.TRANSMIT_SECTION)
+            var inUpload = _selectedFile != null;
+            var inDownload = _fileReceiver != null
+                && (_transferState == FileServerState.WAITING_FOR_SECTION_READY
+                    || _transferState == FileServerState.RECEIVE_SECTION);
+
+            if (_transferState != FileServerState.UNSELECTED_IDLE && (inUpload || inDownload))
+            {
+                if (_transferState == FileServerState.TRANSMIT_SECTION && inUpload)
                 {
 
                     if (_selectedFile != null)
@@ -1012,9 +1232,64 @@ namespace IEC60870.CS101;
                         _selectedFile = null;
                     }
 
+                    // 下载方向对称：必须通知接收者超时并释放，否则主站中途停发后
+                    // _fileReceiver 永远悬挂、状态永久停在 RECEIVE_SECTION。
+                    if (_fileReceiver != null)
+                    {
+                        _fileReceiver.Finished(FileErrorCode.TIMEOUT);
+                        _fileReceiver = null;
+                    }
+
+                    _sectionChecksum = 0;
+                    _fileChecksum = 0;
                     _transferState = FileServerState.UNSELECTED_IDLE;
                 }
 
             }
+        }
+
+        /// <summary>
+        /// 中止：主动发 DEACTIVATE_FILE（与 FileClient.AbortFileTransfer 对称），
+        /// 并复位上传/下载两侧的全部状态。
+        /// </summary>
+        private void SendDeactivateAndReset()
+        {
+            _logger("Abort file transfer - send DEACTIVATE_FILE");
+
+            try
+            {
+                var ioa = _selectedFile != null ? _selectedFile.provider.GetIOA() : 0;
+                var nof = _selectedFile != null
+                    ? _selectedFile.provider.GetNameOfFile()
+                    : NameOfFile.TRANSPARENT_FILE;
+                var ca = _selectedFile != null ? _selectedFile.provider.GetCA() : 1;
+
+                var deactivate = new ASDU(_alParameters, CauseOfTransmission.FILE_TRANSFER,
+                    false, false, 0, ca, false);
+                deactivate.AddInformationObject(new FileCallOrSelect(ioa, nof, 0,
+                    SelectAndCallQualifier.DEACTIVATE_FILE));
+                _connection.SendASDU(deactivate);
+            }
+            catch (Exception ex)
+            {
+                // 发送失败也要复位本地状态，不能让中止态悬住
+                _logger("Abort file transfer - send failed: " + ex.Message);
+            }
+
+            if (_selectedFile != null)
+            {
+                _selectedFile.selectedBy = null;
+                _selectedFile = null;
+            }
+
+            if (_fileReceiver != null)
+            {
+                _fileReceiver.Finished(FileErrorCode.ABORTED_BY_REMOTE);
+                _fileReceiver = null;
+            }
+
+            _sectionChecksum = 0;
+            _fileChecksum = 0;
+            _transferState = FileServerState.UNSELECTED_IDLE;
         }
     }

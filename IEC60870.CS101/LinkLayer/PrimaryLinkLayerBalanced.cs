@@ -171,6 +171,10 @@ namespace IEC60870.CS101;
                     if (_primaryState == PrimaryLinkLayerState.EXECUTE_REQUEST_STATUS_OF_LINK)
                     {
                         _debugLog("PLL - SEND RESET REMOTE LINK to address " + _linkLayerAddressOtherStation);
+
+                        // 同上：本端发起链路复位即约定 FCB 归零，发送侧序号必须同步复位。
+                        ResetSequenceState();
+
                         _linkLayer.SendFixedFramePrimary(FunctionCodePrimary.RESET_REMOTE_LINK, _linkLayerAddressOtherStation, false, false);
                         _lastSendTime = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                         _waitingForResponse = true;
@@ -217,6 +221,25 @@ namespace IEC60870.CS101;
             _sendLinkLayerTestFunction = true;
         }
 
+        /// <summary>
+        /// 复位本端发送侧序号状态（FCB 与重发表）。
+        /// </summary>
+        /// <remarks>
+        /// 必须在链路复位（RESET_REMOTE_LINK）/ 新连接建立时调用：对端在链路复位时把
+        /// 「期望的 FCB」重置为 1，本端若继续沿用上一轮会话的 FCB，则本端发出的第一帧
+        /// 会被对端判为 FCB 错误而**静默丢弃**（101 平衡模式靠 FCB 去重，宁可丢也不重复执行）。
+        /// 实测症状：反复重连后，第 2 轮起总召唤的 ACT_CON（从站推的第一帧）稳定丢失，
+        /// 数据帧与 ACT_TERM 正常 —— 因为只有跨会话的第一帧带着错误的 FCB。
+        /// </remarks>
+        internal void ResetSequenceState()
+        {
+            _nextFcb = true;
+            _lastSendASDU = null;
+            _waitingForResponse = false;
+            _originalSendTime = 0;
+            _lastSendTime = 0;
+        }
+
         public override void RunStateMachine()
         {
             var currentTime = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -259,6 +282,11 @@ namespace IEC60870.CS101;
                     else
                     {
                         _debugLog("PLL - SEND RESET REMOTE LINK to address " + _linkLayerAddressOtherStation);
+
+                        // 本端发起链路复位：双方约定 FCB 从头开始，发送侧序号也必须归位。
+                        // 否则复位后发往对端的第一帧会带着上一会话的 FCB，被对端当作重复帧
+                        // 静默丢弃（与「收到对端 RESET_REMOTE_LINK」那一侧是对称的两个半）。
+                        ResetSequenceState();
 
                         _linkLayer.SendFixedFramePrimary(FunctionCodePrimary.RESET_REMOTE_LINK, _linkLayerAddressOtherStation, false, false);
 
@@ -379,7 +407,17 @@ namespace IEC60870.CS101;
                     break;
 
                 case PrimaryLinkLayerState.SECONDARY_LINK_LAYER_BUSY:
-                    //TODO - reject new requests from application layer?
+                    // 对端忙（DFC=1 / NACK）后必须有退出路径：原实现是空 break，
+                    // 一次"装置启动瞬间回 NACK"就会让主站永久停在 BUSY，不再发送任何
+                    // ASDU、也不复位链路 —— 现场表现为"链路显示在线但永远没有数据"。
+                    // 超过 TimeoutRepeat 仍未转为空闲，就重新建立链路。
+                    if (currentTime > _lastSendTime + _linkLayer.TimeoutRepeat)
+                    {
+                        _debugLog("PLL - secondary busy timeout -> re-establish link");
+                        _waitingForResponse = false;
+                        newState = PrimaryLinkLayerState.IDLE;
+                        SetNewState(LinkLayerState.ERROR);
+                    }
                     break;
 
             }

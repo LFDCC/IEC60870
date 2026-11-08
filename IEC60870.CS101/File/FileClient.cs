@@ -63,6 +63,15 @@ namespace IEC60870.CS101;
         private long _timeout = 3000;
         private long _lastSentTime = 0;
 
+        /// <summary>当前正在请求的段号（来自从站的 SECTION READY）。</summary>
+        private byte _currentSectionNumber;
+
+        /// <summary>当前请求已重发次数；每次成功推进状态后清零。</summary>
+        private int _retries;
+
+        /// <summary>单个请求的最大重发次数（101 现场串口丢帧是常态，必须可重传）。</summary>
+        private int _maxRetries = 2;
+
         public FileClient(Iec101Client master, DebugLogger debugLog)
         {
             _master = master;
@@ -158,38 +167,146 @@ namespace IEC60870.CS101;
         }
     }
 
+        /// <summary>
+        /// 超时前重发当前请求（SELECT / CALL FILE / CALL SECTION / FILE READY）。
+        /// </summary>
+        /// <remarks>
+        /// 101 在串口上丢帧是常态：链路层的 ACK 只保证"链路帧到达"，不保证应用
+        /// 请求得到应答。原来一次丢帧就整笔文件传输失败（现场表现为"偶发文件取不到"）；
+        /// 这里做有界重发，超过次数才真正判失败并通知应用层。
+        /// 重发对从站是幂等的：忙状态收到 SELECT 会先收尾旧传输再服务新请求。
+        /// </remarks>
+        private bool TryRetryRequest()
+        {
+            if (_retries >= _maxRetries)
+            {
+                return false;
+            }
+
+            ASDU request;
+
+            switch (_state)
+            {
+                case FileClientState.WAITING_FOR_FILE_READY:
+                    request = NewAsdu(new FileCallOrSelect(_ioa, _nof, 0, SelectAndCallQualifier.SELECT_FILE));
+                    break;
+
+                case FileClientState.WAITING_FOR_SECTION_READY:
+                    request = NewAsdu(new FileCallOrSelect(_ioa, _nof, 0, SelectAndCallQualifier.REQUEST_FILE));
+                    break;
+
+                case FileClientState.RECEIVING_SECTION:
+                    // 已发出 CALL SECTION 但没等到段：重发一次请求
+                    request = NewAsdu(new FileCallOrSelect(_ioa, _nof, _currentSectionNumber, SelectAndCallQualifier.REQUEST_SECTION));
+                    break;
+
+                case FileClientState.WAITING_FOR_REQUEST_FILE:
+                    request = NewAsdu(new FileReady(_ioa, _nof,
+                        _fileProvider?.GetFileSize() ?? 0, true));
+                    break;
+
+                default:
+                    return false;
+            }
+
+            _retries++;
+
+            try
+            {
+                _master.SendASDU(request);
+                Trace($"Retry #{_retries} in {_state}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _debugLog("Retry send failed: " + ex.Message);
+                return false;
+            }
+        }
+
         private void ResetStateToIdle()
         {
+            Trace($"ResetToIdle from {_state} (caller={new System.Diagnostics.StackTrace(1, false).GetFrame(0)?.GetMethod()?.Name})");
+            _retries = 0;
             _fileReceiver = null;
             _fileProvider = null;
             _fileChecksum = 0;
             _state = FileClientState.IDLE;
         }
 
-        private void AbortFileTransfer(FileErrorCode errorCode)
+        // 排障计数（长跑失败信息里带上）
+        private long _fileReadyReceived;
+        private readonly System.Collections.Concurrent.ConcurrentQueue<string> _diagTrace =
+            new System.Collections.Concurrent.ConcurrentQueue<string>();
+
+        private void Trace(string message)
         {
-            var deactivateFile = NewAsdu(new FileCallOrSelect(_ioa, _nof, 0, SelectAndCallQualifier.DEACTIVATE_FILE));
+            _diagTrace.Enqueue($"{DateTime.Now:HH:mm:ss.fff} {message}");
 
-            _master.SendASDU(deactivateFile);
-
-            _lastSentTime = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-
-            if (_fileReceiver != null)
-        {
-            _fileReceiver.Finished(errorCode);
+            while (_diagTrace.Count > 8 && _diagTrace.TryDequeue(out _))
+            {
+            }
         }
 
-        ResetStateToIdle();
+        internal string Diagnostics =>
+            $"state={_state}, frReceived={Interlocked.Read(ref _fileReadyReceived)}, "
+            + $"receiver={_fileReceiver != null}, provider={_fileProvider != null}, "
+            + "trace=[" + string.Join(" | ", _diagTrace) + "]";
+
+        /// <summary>
+        /// 结束一次传输：**先复位内部状态，再通知应用层**。
+        /// </summary>
+        /// <remarks>
+        /// 顺序不能反。旧实现在 Success 分支里先调 <c>Finished(SUCCESS)</c>、后调
+        /// <c>ResetStateToIdle()</c>；而应用层在 <c>Finished</c> 回调里通常会立刻
+        /// 发起下一笔传输（连续取文件是常规用法）。调用线程随即执行的
+        /// <c>ResetStateToIdle()</c> 会把**新**传输的 state/receiver 清掉 ——
+        /// 表现为"同一链路连续传输，第 N 次必然超时且收不到任何字节"。
+        /// </remarks>
+        private void FinishReceiver(FileErrorCode code)
+        {
+            var receiver = _fileReceiver;
+
+            ResetStateToIdle();
+
+            receiver?.Finished(code);
+        }
+
+        private void AbortFileTransfer(FileErrorCode errorCode)
+        {
+            var receiver = _fileReceiver;
+            var provider = _fileProvider;
+
+            var deactivateFile = NewAsdu(new FileCallOrSelect(_ioa, _nof, 0, SelectAndCallQualifier.DEACTIVATE_FILE));
+
+            try
+            {
+                _master.SendASDU(deactivateFile);
+                _lastSentTime = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            }
+            catch (Exception ex)
+            {
+                // 发送失败（如链路层背压抛 LinkLayerBusyException）也必须走完清理，
+                // 否则 Finished/TransferComplete/ResetStateToIdle 全被跳过，只剩超时兜底。
+                _debugLog("Send DEACTIVATE failed: " + ex.Message);
+            }
+
+            // 失败清理必须与 HandleFileService 的超时块对称：接收者与提供者都要通知。
+            // 原实现只通知 _fileReceiver，随后 ResetStateToIdle 把 _fileProvider 置 null，
+            // 上传方永远拿不到 TransferComplete(false)。
+            ResetStateToIdle();
+
+            receiver?.Finished(errorCode);
+            provider?.TransferComplete(false);
         }
 
         private void FileUploadFailed()
         {
-            if (_fileProvider != null)
-        {
-            _fileProvider.TransferComplete(false);
-        }
+            var provider = _fileProvider;
 
-        ResetStateToIdle();
+            ResetStateToIdle();
+
+            provider?.TransferComplete(false);
         }
 
         public bool HandleFileAsdu(ASDU asdu)
@@ -266,18 +383,15 @@ namespace IEC60870.CS101;
                     }
                     else
                     {
-                        if (_fileReceiver != null)
-                    {
-                        _fileReceiver.Finished(FileErrorCode.PROTOCOL_ERROR);
-                    }
-
-                    ResetStateToIdle();
+                        FinishReceiver(FileErrorCode.PROTOCOL_ERROR);
                     }
 
                     break;
 
                 case TypeID.F_FR_NA_1: /* File ready */
 
+                    Interlocked.Increment(ref _fileReadyReceived);
+                    Trace($"FR received, state={_state}, ca={asdu.Ca}, neg={asdu.IsNegative}");
                     _debugLog("Received F_FR_NA_1 (file ready)");
 
                     if (_state == FileClientState.WAITING_FOR_FILE_READY)
@@ -293,6 +407,8 @@ namespace IEC60870.CS101;
 
                                 /* send call file */
 
+                                _retries = 0;   // 状态推进：重试计数清零
+
                                 var callFile = NewAsdu(new FileCallOrSelect(_ioa, _nof, 0, SelectAndCallQualifier.REQUEST_FILE));
                                 _master.SendASDU(callFile);
 
@@ -305,12 +421,7 @@ namespace IEC60870.CS101;
                             }
                             else
                             {
-                                if (_fileReceiver != null)
-                            {
-                                _fileReceiver.Finished(FileErrorCode.FILE_NOT_READY);
-                            }
-
-                            ResetStateToIdle();
+                                FinishReceiver(FileErrorCode.FILE_NOT_READY);
                             }
 
                         }
@@ -318,25 +429,25 @@ namespace IEC60870.CS101;
                         {
                             _debugLog("Unexpected CA, IOA, or NOF");
 
-                            if (_fileReceiver != null)
-                        {
-                            _fileReceiver.Finished(FileErrorCode.PROTOCOL_ERROR);
-                        }
-
-                        ResetStateToIdle();
+                            FinishReceiver(FileErrorCode.PROTOCOL_ERROR);
                         }
 
 
                     }
                     else if (_state == FileClientState.IDLE)
                     {
-
-                        _state = FileClientState.WAITING_FOR_SECTION_READY;
-
+                        // 没有在等文件就收到 FILE_READY：这是从站的主动上送（或上一笔
+                        // 传输的迟到应答）。绝不能只把状态改成 WAITING_FOR_SECTION_READY
+                        // 而不发 CALL FILE —— 那样既不会推进传输，又会把随后
+                        // RequestFile 设置的状态覆盖掉，主站只能空等超时。
+                        // 正确做法是忽略；需要拉取时由应用显式 RequestFile。
+                        _debugLog("Unexpected F_FR_NA_1 while idle - ignored");
                     }
                     else if (_state == FileClientState.WAITING_FOR_REQUEST_FILE)
                     {
-
+                        // 与同一 switch 的所有兄弟失败分支对称：必须发 DEACTIVATE_FILE
+                        // 并复位状态。原实现只调 TransferComplete(false) 就留在
+                        // WAITING_FOR_REQUEST_FILE，稍后超时又对同一 provider 再调一次。
                         if (asdu.IsNegative)
                         {
                             _debugLog("Slave rejected file download: " + asdu.Cot.ToString());
@@ -346,11 +457,8 @@ namespace IEC60870.CS101;
                             _debugLog("Unexpected file ready while trying to start file download");
                         }
 
-                        if (_fileProvider != null)
-                    {
-                        _fileProvider.TransferComplete(false);
+                        AbortFileTransfer(FileErrorCode.PROTOCOL_ERROR);
                     }
-                }
                     else
                     {
                         AbortFileTransfer(FileErrorCode.PROTOCOL_ERROR);
@@ -370,6 +478,10 @@ namespace IEC60870.CS101;
                         if (sc.NotReady == false)
                         {
                             _debugLog("Received SECTION READY(NoF=" + sc.NOF + ", NoS=" + sc.NameOfSection + ")");
+
+                            // 状态推进：重试计数清零，并记住段号（重发 CALL SECTION 时要用）
+                            _retries = 0;
+                            _currentSectionNumber = sc.NameOfSection;
 
                             var callSection = NewAsdu(new FileCallOrSelect(_ioa, _nof, sc.NameOfSection, SelectAndCallQualifier.REQUEST_SECTION));
                             _master.SendASDU(callSection);
@@ -394,12 +506,7 @@ namespace IEC60870.CS101;
                     }
                     else
                     {
-                        if (_fileReceiver != null)
-                    {
-                        _fileReceiver.Finished(FileErrorCode.PROTOCOL_ERROR);
-                    }
-
-                    ResetStateToIdle();
+                        FinishReceiver(FileErrorCode.PROTOCOL_ERROR);
                     }
 
                     break;
@@ -414,6 +521,9 @@ namespace IEC60870.CS101;
                         FileSegment segment = (FileSegment)asdu.GetElement(0);
 
                         _debugLog("Received segment (NoS=" + segment.NameOfSection + ", LoS=" + segment.LengthOfSegment + ")");
+
+                        // 收到数据即视为请求已生效，重试计数清零
+                        _retries = 0;
 
                         _sectionChecksum += CalculateChecksum(segment.SegmentData);
 
@@ -479,12 +589,7 @@ namespace IEC60870.CS101;
                         {
                             /* slave aborted transfer */
 
-                            if (_fileReceiver != null)
-                        {
-                            _fileReceiver.Finished(FileErrorCode.ABORTED_BY_REMOTE);
-                        }
-
-                        ResetStateToIdle();
+                            FinishReceiver(FileErrorCode.ABORTED_BY_REMOTE);
                         }
                         else if (lastSection.LSQ == LastSectionOrSegmentQualifier.FILE_TRANSFER_WITHOUT_DEACT)
                         {
@@ -499,12 +604,8 @@ namespace IEC60870.CS101;
 
                                 _debugLog("Send FILE ACK");
 
-                                if (_fileReceiver != null)
-                            {
-                                _fileReceiver.Finished(FileErrorCode.SUCCESS);
-                            }
-
-                            ResetStateToIdle();
+                                // 先复位内部状态再回调：回调里应用可能立刻发起下一笔传输
+                                FinishReceiver(FileErrorCode.SUCCESS);
                             }
                             else
                             {
@@ -615,10 +716,48 @@ namespace IEC60870.CS101;
 
             if (_state == FileClientState.SEND_SECTION)
             {
-                if (SendSegment() == false)
+                try
                 {
-                    SendLastSegment();
-                    _state = FileClientState.WAITING_FOR_SECTION_ACK;
+                    if (SendSegment() == false)
+                    {
+                        SendLastSegment();
+                        _state = FileClientState.WAITING_FOR_SECTION_ACK;
+                    }
+                }
+                catch (LinkLayerBusyException)
+                {
+                    // 链路层忙是暂时状态：保持 SEND_SECTION，下一轮重试，绝不把异常
+                    // 抛给调用方（Iec101Client.RunLoopAsync 的兜底 catch 会退出整个循环）。
+                    _debugLog("Link layer busy, retry segment next round");
+                }
+                catch (Exception ex)
+                {
+                    // 发送失败必须收敛状态：通知双方并回到 IDLE，否则文件状态永远
+                    // 停在 SEND_SECTION 且后台循环已死，只能等超时。
+                    _debugLog("Abort file transfer due to send failure: " + ex.Message);
+
+                    var provider = _fileProvider;
+                    var receiver = _fileReceiver;
+
+                    ResetStateToIdle();
+
+                    try
+                    {
+                        provider?.TransferComplete(false);
+                    }
+                    catch (Exception notifyEx)
+                    {
+                        _debugLog("TransferComplete(false) threw: " + notifyEx.Message);
+                    }
+
+                    try
+                    {
+                        receiver?.Finished(FileErrorCode.PROTOCOL_ERROR);
+                    }
+                    catch (Exception notifyEx)
+                    {
+                        _debugLog("Finished(PROTOCOL_ERROR) threw: " + notifyEx.Message);
+                    }
                 }
             }
 
@@ -627,19 +766,37 @@ namespace IEC60870.CS101;
             {
                 if (System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > _lastSentTime + _timeout)
                 {
+                    // 先尝试重发当前请求；重试次数用尽才真正判失败。
+                    if (TryRetryRequest())
+                    {
+                        _lastSentTime = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                        return;
+                    }
+
                     _debugLog("Abort file transfer due to timeout");
 
-                    if (_fileProvider != null)
-                {
-                    _fileProvider.TransferComplete(false);
-                }
+                    var provider = _fileProvider;
+                    var receiver = _fileReceiver;
 
-                if (_fileReceiver != null)
-                {
-                    _fileReceiver.Finished(FileErrorCode.TIMEOUT);
-                }
+                    ResetStateToIdle();
 
-                ResetStateToIdle();
+                    try
+                    {
+                        provider?.TransferComplete(false);
+                    }
+                    catch (Exception notifyEx)
+                    {
+                        _debugLog("TransferComplete(false) threw: " + notifyEx.Message);
+                    }
+
+                    try
+                    {
+                        receiver?.Finished(FileErrorCode.TIMEOUT);
+                    }
+                    catch (Exception notifyEx)
+                    {
+                        _debugLog("Finished(TIMEOUT) threw: " + notifyEx.Message);
+                    }
                 }
             }
 
@@ -647,6 +804,15 @@ namespace IEC60870.CS101;
 
         public void RequestFile(int ca, int ioa, NameOfFile nof, IFileReceiver fileReceiver)
         {
+            // 上一笔传输还没结束就发起新请求：原实现直接覆盖 _ca/_ioa/_fileReceiver，
+            // 旧接收者既收不到 Finished 也不会释放（持有流/大缓冲的应用会泄漏），
+            // 链路两端状态也会失去同步。这里先明确中止旧传输并通知其接收者。
+            if (_state != FileClientState.IDLE)
+            {
+                _debugLog("RequestFile called while busy - abort previous transfer first");
+                AbortFileTransfer(FileErrorCode.ABORTED_BY_REMOTE);
+            }
+
             _ca = ca;
             _ioa = ioa;
             _nof = nof;
@@ -654,15 +820,29 @@ namespace IEC60870.CS101;
 
             var selectFile = NewAsdu(new FileCallOrSelect(ioa, nof, 0, SelectAndCallQualifier.SELECT_FILE));
 
-            _master.SendASDU(selectFile);
-
+            // 必须先发布状态、再发帧。SendASDU 只是入队，链路线程可能在下一微秒就
+            // 发出请求并收到从站的 FILE_READY 并回调 HandleFileAsdu；若此时 _state
+            // 仍是上一轮的 IDLE，F_FR_NA_1 会走 "state == IDLE" 的错误分支
+            // （只改状态、不发 CALL FILE），随后这里再把状态覆盖成
+            // WAITING_FOR_FILE_READY —— 主站永远等不到第二个 FILE_READY，只能超时。
+            // 负载高时窗口被放大，长跑约 1/400 轮复现。
             _lastSentTime = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-
             _state = FileClientState.WAITING_FOR_FILE_READY;
+
+            _retries = 0;
+            Trace($"RequestFile ioa={ioa}, state now={_state}");
+
+            _master.SendASDU(selectFile);
         }
 
         public void SendFile(int ca, int ioa, NameOfFile nof, IFileProvider fileProvider)
         {
+            if (_state != FileClientState.IDLE)
+            {
+                _debugLog("SendFile called while busy - abort previous transfer first");
+                AbortFileTransfer(FileErrorCode.ABORTED_BY_REMOTE);
+            }
+
             _ca = ca;
             _ioa = ioa;
             _nof = nof;
@@ -670,10 +850,11 @@ namespace IEC60870.CS101;
 
             var fileReady = NewAsdu(new FileReady(ioa, nof, fileProvider.GetFileSize(), true));
 
-            _master.SendASDU(fileReady);
-
+            // 同上：先发布状态再发送，避免从站的应答先于状态赋值到达。
             _lastSentTime = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-
             _state = FileClientState.WAITING_FOR_REQUEST_FILE;
+            _retries = 0;
+
+            _master.SendASDU(fileReady);
         }
     }
