@@ -10,16 +10,26 @@ name: Package Push
 # We pack the four library projects explicitly (NOT the whole solution),
 # because the example/test projects are packable by default and would
 # otherwise produce ~18 unwanted .nupkg files.
+#
+# Publishing uses NuGet.org Trusted Publishing (OIDC): the job exchanges its
+# short-lived GitHub OIDC token for a temporary NuGet API key via NuGet/login.
+# The policy on nuget.org pins: owner=LFDCC, repo=IEC60870, workflow=nuget.yml,
+# glob=LFDCC.IEC60870.*. Manual runs (workflow_dispatch) skip the tag-gated
+# steps and only verify the OIDC login, without publishing anything.
 
 on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      id-token: write # required by NuGet/login to fetch the GitHub OIDC token
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,32 +44,41 @@ jobs:
             8.0.x
 
       - name: Verify commit exists in origin/main
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
           git merge-base --is-ancestor HEAD origin/main
 
       - name: Set VERSION variable from tag
+        if: startsWith(github.ref, 'refs/tags/')
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_ENV"
 
       - name: Test
+        if: startsWith(github.ref, 'refs/tags/')
         run: dotnet test tests-cs104/tests-cs104.csproj -c Release --nologo
         env:
           # 兜底：即便 6.0 运行时在当前 runner 上安装失败，net6.0 测试也能在 8.0 上运行
           DOTNET_ROLL_FORWARD: Major
 
       - name: Pack
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           dotnet pack IEC60870.Core/IEC60870.Core.csproj   -c Release /p:Version=${VERSION} -o artifacts
           dotnet pack IEC60870.CS101/IEC60870.CS101.csproj -c Release /p:Version=${VERSION} -o artifacts
           dotnet pack IEC60870.CS103/IEC60870.CS103.csproj -c Release /p:Version=${VERSION} -o artifacts
           dotnet pack IEC60870.CS104/IEC60870.CS104.csproj -c Release /p:Version=${VERSION} -o artifacts
 
+      # Get a short-lived NuGet API key (valid ~1 hour) via Trusted Publishing.
+      - name: NuGet login (OIDC → temporary API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
       - name: Push Core to NuGet
-        run: dotnet nuget push "artifacts/LFDCC.IEC60870.Core.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${NUGET_API_KEY} --skip-duplicate
-        env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        if: startsWith(github.ref, 'refs/tags/')
+        run: dotnet nuget push "artifacts/LFDCC.IEC60870.Core.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --skip-duplicate
 
       - name: Push CS101, CS103 & CS104 to NuGet
-        run: dotnet nuget push "artifacts/LFDCC.IEC60870.CS101.*.nupkg" "artifacts/LFDCC.IEC60870.CS103.*.nupkg" "artifacts/LFDCC.IEC60870.CS104.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${NUGET_API_KEY} --skip-duplicate
-        env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        if: startsWith(github.ref, 'refs/tags/')
+        run: dotnet nuget push "artifacts/LFDCC.IEC60870.CS101.*.nupkg" "artifacts/LFDCC.IEC60870.CS103.*.nupkg" "artifacts/LFDCC.IEC60870.CS104.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --skip-duplicate
