@@ -25,7 +25,12 @@ public class FileSegment : InformationObject
     private byte[] _data = null;
 
     /// <inheritdoc/>
-    public override int GetEncodedSize() => FixedPrefixSize;
+    /// <remarks>
+    /// 必须包含段数据长度（IOA 由编码器单独计入）。原实现只返回固定前缀 4 字节，
+    /// 使 ASDU 的空间核算严重低估：`AsByteArray()` 按错误尺寸分配缓冲区后越界，
+    /// 一个 249 字节的段会算出 ~13 字节的输出缓冲。
+    /// </remarks>
+    public override int GetEncodedSize() => FixedPrefixSize + (_data?.Length ?? 0);
 
     /// <inheritdoc/>
     public override TypeID Type => TypeID.F_SG_NA_1;
