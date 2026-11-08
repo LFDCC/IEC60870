@@ -42,9 +42,6 @@ internal sealed class IecApdu : IFixedHeaderRequestInfo
     /// <summary>帧总字节数（含起始字节与 APCI，即 0x68 头之后长度 + 2）。</summary>
     private int _length;
 
-    /// <summary>是否已解析 APCI 控制域。</summary>
-    private bool _controlParsed;
-
     /// <summary>帧类型（I/S/U）。</summary>
     internal ApduKind Kind;
 
@@ -87,7 +84,6 @@ internal sealed class IecApdu : IFixedHeaderRequestInfo
         _length = total;
         BodyLength = total - 2; // 负载 = 4 字节 APCI + ASDU
 
-        _controlParsed = false;
         return true;
     }
 
@@ -104,7 +100,6 @@ internal sealed class IecApdu : IFixedHeaderRequestInfo
             ParseControl(body.Slice(0, ControlFieldLength));
         }
 
-        _controlParsed = true;
 
         // I 帧：拷贝 ASDU 负载（供 AsduView 零拷贝视图；AsduView 需在回调期间存活）
         // body 布局：4 字节控制域 + ASDU 数据

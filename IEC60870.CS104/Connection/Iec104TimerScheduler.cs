@@ -32,7 +32,7 @@ internal sealed class Iec104TimerScheduler : IDisposable
     private readonly Func<int> _delayProvider;
 
     /// <summary>在共享调度器中的注册句柄；null 表示已注销/未启用。</summary>
-    private SharedTimeoutScheduler.Entry _entry;
+    private SharedTimeoutScheduler.TimeoutEntry _entry;
 
     private bool _disposed;
 
@@ -71,7 +71,11 @@ internal sealed class Iec104TimerScheduler : IDisposable
         _entry = null;
         if (entry != null)
         {
-            SharedTimeoutScheduler.Instance.Unregister(entry);
+            // 必须注销到该 entry 真正所属的调度器实例。
+            // 原实现用 SharedTimeoutScheduler.Instance：一旦发生过 ForceShutdown
+            // 并创建新实例，旧 entry 会把新实例的 _liveCount 减到 0，
+            // 误关仍有活跃连接的调度器，使 T1/T2/T3 永久停摆。
+            entry.Owner.Unregister(entry);
         }
     }
 

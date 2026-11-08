@@ -9,7 +9,7 @@ namespace IEC60870.CS104;
 /// IEC 60870-5-104 服务端每连接会话。由 <see cref="Iec104Server"/> 自动创建，
 /// 协议状态机与定时循环聚合在共享的 <see cref="ApduEndpoint"/>（服务端角色）。
 /// </summary>
-public sealed class Iec104Session : TcpSessionClient, IIec104Session, IApduSink
+public sealed class Iec104Session : TcpSessionClient, IIec104Session, IIec104ApduSink
 {
     private ApduEndpoint _endpoint;
     private Iec104Server _server;
@@ -72,9 +72,9 @@ public sealed class Iec104Session : TcpSessionClient, IIec104Session, IApduSink
 
     #endregion 构造
 
-    #region IApduSink
+    #region IIec104ApduSink
 
-    ValueTask IApduSink.SendAsync(ReadOnlyMemory<byte> apdu, CancellationToken cancellationToken)
+    ValueTask IIec104ApduSink.SendAsync(ReadOnlyMemory<byte> apdu, CancellationToken cancellationToken)
     {
         // 下行原始报文（有订阅者才分配拷贝，无订阅者零开销）
         if (RawFrameSent != null)
@@ -85,9 +85,9 @@ public sealed class Iec104Session : TcpSessionClient, IIec104Session, IApduSink
         return new ValueTask(base.SendAsync(apdu, cancellationToken));
     }
 
-    bool IApduSink.IsConnected => Online;
+    bool IIec104ApduSink.IsConnected => Online;
 
-    #endregion IApduSink
+    #endregion IIec104ApduSink
 
     /// <summary>向该会话对端发送一个 ASDU（I 帧）。</summary>
     public async Task SendAsync(ASDU asdu, CancellationToken cancellationToken = default)
@@ -140,13 +140,13 @@ public sealed class Iec104Session : TcpSessionClient, IIec104Session, IApduSink
     protected override Task OnTcpConnected(ConnectedEventArgs e)
     {
         _server = (Iec104Server)Service;
-        _endpoint = new ApduEndpoint(_server.ApciParameters, _server.Parameters, this);
+        _endpoint = new ApduEndpoint(_server.ApciParameters, _server.Parameters, this, _server.TypeHandlers);
         _endpoint.Logger = Logger;
         _endpoint.Rebuild(default, conn =>
         {
             conn.AsduReceived += _server.RaiseAsduReceived(this);
             conn.EventHandler += ev => _server.RaiseConnectionEvent(this, ev);
-        }, () => CloseAsync("timeout"));
+        }, reason => CloseAsync("104 " + reason), OnConnectionFailed);
 
         _server.RegisterSession(this);
         return base.OnTcpConnected(e);
@@ -159,12 +159,32 @@ public sealed class Iec104Session : TcpSessionClient, IIec104Session, IApduSink
         {
             if (!await _endpoint.HandleReceivedAsync(apdu).ConfigureAwait(false))
             {
-                await CloseAsync("protocol error").ConfigureAwait(false);
+                // 协议错误由端点统一处理（派发 ConnectionClosed + 异步关闭传输）。
+                // 不在此同步 CloseAsync：收包回调内同步关闭会拆到适配器中途，
+                // 实测导致 socket 仍报在线、Closed 事件不再触发（客户端侧同样问题，
+                // 见 examples/104/cs104-stress-500/STRESS-TEST-REPORT.md §2.1）。
+                var detail = _endpoint.Connection.LastProtocolErrorDetail;
+                Logger?.Warning("CS104 session: protocol error -> closing session"
+                    + (string.IsNullOrEmpty(detail) ? string.Empty : " (" + detail + ")"));
                 return;
             }
         }
 
         await base.OnTcpReceived(e).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 连接失效后的宿主清理：不等 TouchSocket 的 <c>OnTcpClosed</c>（实测部分关闭路径不触发）。
+    /// 必须幂等：<see cref="OnTcpClosed"/> 正常触发时会再调一次。
+    /// </summary>
+    private void OnConnectionFailed()
+    {
+        _server?.UnregisterSession(this);
+
+        // 与 OnTcpClosed 的 FinalizeSession 等价（含 _cts 释放）：失效路径同样必须
+        // 释放共享调度器注册、状态机与生命周期 CTS。原先只 CancelLife + CleanupConnection，
+        // 少一步 _cts.Dispose()，且 OnTcpClosed 不触发时该 CTS 永不释放。
+        _endpoint?.FinalizeSession();
     }
 
     /// <inheritdoc/>

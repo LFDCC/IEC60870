@@ -14,7 +14,7 @@ using TouchSocket.Core;
 
 namespace IEC60870.CS104;
     /// <summary>
-    /// IEC 60870-5-104 APCI 层异步状态机。传输层无关，通过 <see cref="IApduSink"/> 发送字节。
+    /// IEC 60870-5-104 APCI 层异步状态机。传输层无关，通过 <see cref="IIec104ApduSink"/> 发送字节。
     /// 纯 <see cref="ValueTask"/> + <see cref="CancellationToken"/>，无独立线程、无阻塞 I/O。
     /// </summary>
     /// <remarks>
@@ -37,7 +37,22 @@ namespace IEC60870.CS104;
     {
         private readonly APCIParameters _apci;
         private readonly ApplicationLayerParameters _al;
-        private readonly IApduSink _sink;
+        private readonly IIec104ApduSink _sink;
+
+        /// <summary>
+        /// ASDU 类型处理器注册表（可为 null = 使用全局 <c>Default</c>）。
+        /// </summary>
+        /// <remarks>
+        /// 必须由连接持有并暴露给上层：<see cref="AsduView.GetElement(int, AsduTypeHandlerRegistry)"/>
+        /// 的注册表是**调用方传入**的，接收路径原先从不注入，导致
+        /// <c>Iec104Client.TypeHandlers</c> / <c>Iec104Server.TypeHandlers</c>
+        /// 成了死配置 —— 用户注册了私有类型（如许继 166/168），
+        /// 解码时仍走 Default 抛 "Unknown ASDU type id"，现场极难定位。
+        /// </remarks>
+        private readonly AsduTypeHandlerRegistry _typeHandlers;
+
+        /// <summary>本连接使用的类型处理器注册表（null 表示用全局默认）。</summary>
+        public AsduTypeHandlerRegistry TypeHandlers => _typeHandlers;
 
         // ── 定时器常量（构造时由 APCIParameters 秒值预计算，消除散落的 *1000 乘法）──
         internal readonly int T1Ms;
@@ -77,16 +92,90 @@ namespace IEC60870.CS104;
 
         private readonly object _kLock = new object();
 
-        private bool _active;
+        private volatile bool _active;
         private bool _disposed;
         private bool _closeNotified;                       // 保证 ConnectionClosed 仅派发一次
         private ConnectionCloseReason _closeReason = ConnectionCloseReason.Unknown;
 
-        /// <summary>是否检查序列号（默认 true）。</summary>
+        /// <summary>连接已被判定失效（协议错误 / 发送失败 / 超时）。失效后不再收发，仅等宿主关闭传输。</summary>
+        private volatile bool _failed;
+
+        /// <summary>失效通知宿主（由 <see cref="ApduEndpoint"/> 注入）：请其关闭传输层。</summary>
+        private Action<ConnectionCloseReason> _fatalHandler;
+
+        /// <summary>
+        /// 是否检查序列号（默认 true）。
+        /// 设为 false 时旁路 k 窗口流控（不占用发送槽位、不登记/释放窗口条目）——
+        /// 此时没有可信的对端 N(R) 来释放窗口，若仍占槽位会在发满 K 帧后永久阻塞；
+        /// 接收侧仍按收到的 I 帧计数发送 S 确认，不影响 w/T2 语义。
+        /// </summary>
         public bool CheckSequenceNumbers { get; set; } = true;
 
-        /// <summary>数据传输是否已激活（收到/发送 STARTDT_CON 后）。</summary>
-        public bool IsActive => _active;
+        /// <summary>
+        /// 由宿主（<see cref="ApduEndpoint"/>）注入的失效回调：连接判定失效时请宿主关闭传输层。
+        /// </summary>
+        internal void SetFatalHandler(Action<ConnectionCloseReason> handler) => _fatalHandler = handler;
+
+        /// <summary>
+        /// 判定本连接已无可挽回地失效：置非激活、记录原因、派发一次
+        /// <see cref="ApduConnectionEvent.ConnectionClosed"/>，并请宿主关闭传输层。
+        /// </summary>
+        /// <param name="reason">失效原因（协议错误 / IO 错误 / 超时）。</param>
+        /// <remarks>
+        /// <para>
+        /// <b>为什么不能只依赖传输层的关闭回调</b>：<see cref="ApduConnectionEvent.ConnectionClosed"/>
+        /// 原先只在宿主的 socket 关闭回调（<c>OnTcpClosed</c>）里派发。实测在「协议错误 →
+        /// 收包回调内关闭连接」这条路径上，TouchSocket 的 Closed 事件**不会触发**，
+        /// 于是原因记了、事件没人派发、<see cref="IsActive"/> 也仍为 true —— 应用层看到一条
+        /// "在线"但所有下发都失败的僵尸链路（500 装置压测下 7% 的链路中招，见
+        /// examples/104/cs104-stress-500/STRESS-TEST-REPORT.md §2.1）。
+        /// </para>
+        /// <para>
+        /// 本方法把「状态 + 事件」与「传输关闭」解耦：前者同步完成（应用层立刻可感知），
+        /// 后者交给宿主异步执行，因此可从发送失败等任意上下文安全调用。
+        /// 幂等：重复调用只派发一次事件，但每次都确保传输关闭被请求。
+        /// </para>
+        /// </remarks>
+        internal void FailConnection(ConnectionCloseReason reason)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _failed = true;
+            _active = false;
+            NotifyClosed(reason);
+
+            try
+            {
+                _fatalHandler?.Invoke(reason);
+            }
+            catch (Exception ex)
+            {
+                // 宿主关闭动作失败不应掩盖原始故障（调用方随后仍会收到原始发送异常）
+                System.Diagnostics.Debug.WriteLine("FailConnection fatal handler error: " + ex);
+            }
+        }
+
+
+        /// <summary>数据传输是否已激活（收到/发送 STARTDT_CON 后，且连接未失效/未释放）。</summary>
+        public bool IsActive => _active && !_disposed;
+
+        /// <summary>
+        /// 最近一次协议错误的细节（如 <c>NR out of range: 6</c>）。仅用于日志与排障，
+        /// 不参与协议判定；空字符串表示尚无协议错误。
+        /// </summary>
+        /// <remarks>
+        /// 此前协议错误路径没有任何日志，现场只能看到 <see cref="CloseReason"/> 变成一个枚举值，
+        /// 无法判断是 N(S) 不匹配、N(R) 越界还是 ASDU 过短 —— 压测定位时只能靠临时插桩。
+        /// </remarks>
+        internal string LastProtocolErrorDetail { get; private set; } = string.Empty;
+
+        /// <summary>
+        /// 记录一条诊断细节。供宿主在订阅者回调异常等「非协议错误」但需要复用的排障信息场景使用。
+        /// </summary>
+        internal void RecordProtocolErrorDetail(string detail) => LastProtocolErrorDetail = detail;
 
         /// <summary>收到 ASDU 时的同步事件（零拷贝视图，仅在回调期间有效，支持多订阅者）。</summary>
         public event AsduViewHandler AsduReceived;
@@ -101,11 +190,16 @@ namespace IEC60870.CS104;
         /// <param name="alParameters">应用层参数。</param>
         /// <param name="sink">传输层发送出口。</param>
         public ApduConnection(APCIParameters apciParameters, ApplicationLayerParameters alParameters,
-            IApduSink sink)
+            IIec104ApduSink sink, AsduTypeHandlerRegistry typeHandlers = null)
         {
             _apci = apciParameters ?? throw new ArgumentNullException(nameof(apciParameters));
             _al = alParameters ?? throw new ArgumentNullException(nameof(alParameters));
             _sink = sink ?? throw new ArgumentNullException(nameof(sink));
+            _typeHandlers = typeHandlers;
+
+            // 跨字段关系（T0<T1<T3、显式 W<K）在使用处校验：setter 无法可靠校验，
+            // 且 K 的错误取值若留到 new KWindow 处只会抛不带信息的异常（K=1e6 更会先分配 16MB）。
+            _apci.Validate();
 
             _window = new KWindow(_apci.K);
             T1Ms = _apci.T1 * 1000;
@@ -127,6 +221,13 @@ namespace IEC60870.CS104;
         /// <returns>false 表示序列号/协议错误,传输层应关闭连接。</returns>
         internal bool ProcessApdu(IecApdu apdu)
         {
+            // 已判定失效的连接不再解析后续帧：宿主关闭传输是异步的，期间仍可能有帧到达，
+            // 继续按协议解释只会再报一次协议错误、并误导排障。
+            if (_failed)
+            {
+                return true;
+            }
+
             switch (apdu.Kind)
             {
                 case ApduKind.Information:
@@ -161,12 +262,14 @@ namespace IEC60870.CS104;
                 // 校验 N(S)：必须等于我方期望的接收序列号
                 if (frameSendSeq != _window.NextRecvSeq)
             {
+                LastProtocolErrorDetail = $"NS mismatch: got={frameSendSeq} expect={_window.NextRecvSeq}";
                 return false;
             }
 
             // 校验对端 N(R)，并从 k 缓冲移除已确认帧
             if (!CheckAndRemoveConfirmed(frameRecvSeq))
             {
+                LastProtocolErrorDetail = $"NR out of range: NR={frameRecvSeq} nextSendSeq={_window.NextSendSeq} unacked={_window.UnackedCount}";
                 return false;
             }
 
@@ -174,17 +277,38 @@ namespace IEC60870.CS104;
                 _unconfirmedReceived++;
             }
 
-            // 同步分发给用户（零拷贝视图，多订阅者）。用户回调在锁外执行，避免重入死锁。
+            // ASDU 完整性校验先于激活判定：过短的 ASDU（头部不全）即使在非激活状态
+            // 也属于协议错误，必须报告，避免对端持续发送损坏帧。
             if (asdu.Length > 0)
             {
-                var view = new AsduView(asdu, _al);
-                // 过短的 ASDU（头部不全）属协议错误，直接关闭连接，避免用户回调 IndexOutOfRange
+                var view = new AsduView(asdu, _al);                // 过短的 ASDU（头部不全）属协议错误，直接关闭连接，避免用户回调 IndexOutOfRange
                 if (!view.IsValid)
-            {
-                return false;
-            }
+                {
+                    LastProtocolErrorDetail = $"ASDU too short: len={asdu.Length}";
+                    return false;
+                }
 
-            AsduReceived?.Invoke(in view);
+                // 数据传输未激活（STARTDT_CON 之前 / STOPDT_CON 之后）时按协议丢弃 I 帧：
+                // 不向业务派发 AsduReceived，避免停机期间把在途/重发的报文当作新数据入库。
+                // 注意 N(S) 已在锁内推进、_unconfirmedReceived 已计数，PumpAsync 仍会
+                // 按 w/T2 发送 S 确认，防止对端因未获确认而重传风暴。
+                if (_active)
+                {
+                    // 同步分发给用户（零拷贝视图，多订阅者）。用户回调在锁外执行，避免重入死锁。
+                    // 必须隔离订阅者异常：本方法在 TouchSocket 收包管线内同步调用，
+                    // 异常会跳过后续的 PumpAsync（S 确认没发出去）并冒泡到传输层，
+                    // 行为不可预期；CS103 早已隔离，属对称缺口。
+                    try
+                    {
+                        AsduReceived?.Invoke(in view);
+                    }
+                    catch (Exception ex)
+                    {
+                        // 记录到诊断字段（宿主在协议错误日志里已经会读它），
+                        // 且绝不再向外传播 —— 订阅者故障不能杀死链路。
+                        LastProtocolErrorDetail = $"ASDU callback error (TI={view.TypeId} CA={view.Ca}): {ex.Message}";
+                    }
+                }
             }
 
             ResetT3Timeout(now);
@@ -197,6 +321,7 @@ namespace IEC60870.CS104;
         {
             if (!CheckAndRemoveConfirmed(frameRecvSeq))
         {
+            LastProtocolErrorDetail = $"S-frame NR out of range: NR={frameRecvSeq} nextSendSeq={_window.NextSendSeq} unacked={_window.UnackedCount}";
             return false;
         }
 
@@ -207,7 +332,14 @@ namespace IEC60870.CS104;
         /// <summary>处理收到的 U 帧（控制帧）。</summary>
         public void OnUFrame(byte uFunction)
         {
-            _uMessageTimeout = 0;
+            // 只在收到「期待的确认」时清零 U 帧 T1 超时。
+            // 原实现第一句无条件 _uMessageTimeout = 0：对端持续发任意 U 帧
+            // （TESTFR_ACT / 重复 STARTDT_ACT）即可把 STARTDT_CON 的 T1 截止
+            // 时刻反复抹掉，握手失败判定被无限推迟，与 T0/T1 语义不符。
+            if (uFunction is ApduCodec.TestFrCon or ApduCodec.StartDtCon or ApduCodec.StopDtCon)
+            {
+                _uMessageTimeout = 0;
+            }
 
             if (uFunction == ApduCodec.TestFrAct)
             {
@@ -276,8 +408,17 @@ namespace IEC60870.CS104;
                 Raise(ApduConnectionEvent.Deactivated);
             }
 
-            // w 阈值：达到未确认上限则立即发 S 确认
-            if (_unconfirmedReceived >= _apci.W)
+            // w 阈值：达到未确认上限则立即发 S 确认。
+            // _unconfirmedReceived 由接收线程在 _kLock 下写入，此处也需在
+            // _kLock 下取快照（CheckTimeoutsAsync 已按此约定），避免可见性问题
+            // 让 S 确认被推迟到 T2 才补发。
+            bool shouldAck;
+            lock (_kLock)
+            {
+                shouldAck = _unconfirmedReceived >= _apci.W;
+            }
+
+            if (shouldAck)
             {
                 await SendSAckAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -295,21 +436,32 @@ namespace IEC60870.CS104;
         /// 构建路径采用「预留-回填」模式：<see cref="ValueByteBlock"/>（池化，零堆分配）
         /// 预留整帧内存，ASDU 经 <c>Encode(ref AsduWriter,...)</c> 直写负载区
         /// （span 直写、无中间 Frame 对象、每 IO 一次虚调用）；6 字节 APCI 头先占位，
-        /// 在分配 N(S) 的短临界区内回填（序列号与帧字节原子确定），随后经 IApduSink 发送。
+        /// 在分配 N(S) 的短临界区内回填（序列号与帧字节原子确定），随后经 IIec104ApduSink 发送。
         /// </remarks>
         public async ValueTask<int> SendAsduAsync(ASDU asdu, CancellationToken cancellationToken)
         {
             if (asdu == null)
-        {
-            throw new ArgumentNullException(nameof(asdu));
-        }
+            {
+                throw new ArgumentNullException(nameof(asdu));
+            }
 
-        // k 窗口背压：占一个在途未确认槽位（窗口满则异步等待确认，见 AcquireSendSlotAsync）。
-        await AcquireSendSlotAsync(cancellationToken).ConfigureAwait(false);
+            // 已失效连接优先给出可诊断的 OCE（保持既有语义：FailConnection/Dispose 后
+            // 调用方按 OperationCanceledException 处理），再区分「未激活」。
+            ThrowIfFailed();
 
-            // 持有 k 槽后，若后续步骤（获取发送锁 / 写入 sink / 登记 k 缓冲）抛异常，必须归还槽位——
-            // 该 I 帧并未成功发送/确认，否则许可会永久泄漏（直到 GC），窗口逐步收窄直至死锁。
-            // 调用方取消（cancellationToken）与非取消型发送失败（如 sink 抛异常）均需归还。
+            // 数据传输未激活（未收到 STARTDT_CON，或已收到 STOPDT_CON）时拒绝发送：
+            // 否则 STOPDT 之后仍会把 I 帧推给对端，违反协议状态机。
+            if (!_active)
+            {
+                throw new InvalidOperationException("数据传输未启动（未收到 STARTDT_CON）");
+            }
+
+            // 关闭序列号校验时旁路 k 流控（见 AcquireSendSlotAsync）：不占槽位、不登记窗口。
+            var trackWindow = CheckSequenceNumbers;
+            var slotHeld = await AcquireSendSlotAsync(trackWindow, cancellationToken).ConfigureAwait(false);
+
+            // 持有 k 槽后，若后续步骤抛异常，必须归还槽位；序号歧义由 FailedConnection 处理（见下方 catch）。
+            bool seqTaken = false;
             try
             {
                 await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -328,10 +480,22 @@ namespace IEC60870.CS104;
                         var total = ApduCodec.ApciLength + writer.Position;
                         byteBlock.Advance(total);
 
-                        // 分配 N(S) 并回填 APCI 头（短临界区，不 await）
+                        // 分配 N(S) + 登记 k 缓冲 + 回填 APCI 头，必须在同一个短临界区里完成：
+                        // 登记【不能】推迟到 await _sink.SendAsync 之后。否则在「序号已分配、
+                        // 帧未登记」这个窗口里，窗口看似为空（unacked=0）而 _nextSendSeq 已推进，
+                        // 此时对端回一个合法的冗余确认 N(R)=已分配序号-1 就会被 Ack 判为越界
+                        // → 自造协议错误 → 高负载下大批链路被无故关闭（500 装置压测下 9%）。
+                        // 两者同锁，接收线程的 Ack 就不会看到这个中间态。
                         lock (_kLock)
                         {
                             seqUsed = _window.TakeSendSeq();
+                            seqTaken = true;
+                            // 关闭序列号校验时不登记窗口：窗口永远不会有 Ack 来释放条目，
+                            // 登记只会让 UnackedCount/HasUnacked 失真并触发无意义的 T1 判定。
+                            if (trackWindow)
+                            {
+                                _window.RegisterSent(seqUsed, Now);
+                            }
                             ApduCodec.WriteIFormatHeader(memory.Span.Slice(0, ApduCodec.ApciLength),
                                 seqUsed, _window.NextRecvSeq, total - ApduCodec.ApciLength);
 
@@ -339,8 +503,8 @@ namespace IEC60870.CS104;
                             _t2Triggered = false;
                         }
 
-                        // 实际发送（可能抛 OCE/IO 异常）。只有发送成功才登记 k 缓冲，
-                        // 保证异常路径下窗口条目与 k 槽一致（无幻影条目、不会多释放槽位）。
+                        // 实际发送（可能抛 OCE/IO 异常）。帧已在窗口登记；异常路径不回退
+                        // 序号（无法确知帧是否上线），而是判定连接失效，见下方 catch。
                         await _sink.SendAsync(byteBlock.Memory.Slice(0, total), cancellationToken).ConfigureAwait(false);
                     }
                     finally
@@ -348,12 +512,8 @@ namespace IEC60870.CS104;
                         byteBlock.Dispose();
                     }
 
-                    // 发送成功：登记到 k 缓冲。条目 SeqNo 存 N(S)+1，与对端 N(R) 语义一致（见 KWindow.RegisterSent）。
-                    lock (_kLock)
-                    {
-                        _window.RegisterSent(seqUsed, Now);
-                    }
-
+                    // 帧已成功上线（发送前已登记窗口），后续异常不再回退序号
+                    seqTaken = false;
                     ResetT3Timeout(Now);
                     return seqUsed;
                 }
@@ -364,7 +524,23 @@ namespace IEC60870.CS104;
             }
             catch (Exception)
             {
-                ReleaseSlots(1);
+                // N(S) 已分配但发送抛异常：「抛异常」并不等于「帧没上线」——底层
+                // （TouchSocket ProtectedSendAsync）完全可能在字节已写入发送管道之后才失败。
+                // 此时对端会确认一个我方未登记的序号，本地任意猜测（回退或保留 N(S)）
+                // 都会与对端失步，104 规范下序号歧义不可恢复 ⇒ 只能判定连接失效。
+                // 原实现在此处回退 N(S)，正是压测中 7% 链路进入「僵尸」状态的触发源
+                // （见 examples/104/cs104-stress-500/STRESS-TEST-REPORT.md §2.1）。
+                if (seqTaken)
+                {
+                    FailConnection(ConnectionCloseReason.IoError);
+                }
+
+                // 仅在确实占用过槽位时归还（关闭序列号校验时旁路流控，未占槽位）。
+                if (slotHeld)
+                {
+                    ReleaseSlots(1);
+                }
+
                 throw;
             }
         }
@@ -376,8 +552,11 @@ namespace IEC60870.CS104;
         /// </summary>
         public async ValueTask<int> SendEncodedAsduAsync(ReadOnlyMemory<byte> asduBody, CancellationToken cancellationToken)
         {
-            await AcquireSendSlotAsync(cancellationToken).ConfigureAwait(false);
+            // 与 SendAsduAsync 对称：关闭序列号校验时旁路 k 流控（不占槽位、不登记窗口）。
+            var trackWindow = CheckSequenceNumbers;
+            var slotHeld = await AcquireSendSlotAsync(trackWindow, cancellationToken).ConfigureAwait(false);
 
+            bool seqTaken = false;
             try
             {
                 await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -396,6 +575,13 @@ namespace IEC60870.CS104;
                         lock (_kLock)
                         {
                             seqUsed = _window.TakeSendSeq();
+                            seqTaken = true;
+                            // 关闭序列号校验时不登记窗口：窗口永远不会有 Ack 来释放条目，
+                            // 登记只会让 UnackedCount/HasUnacked 失真并触发无意义的 T1 判定。
+                            if (trackWindow)
+                            {
+                                _window.RegisterSent(seqUsed, Now);
+                            }
                             ApduCodec.WriteIFormatHeader(memory.Span.Slice(0, ApduCodec.ApciLength),
                                 seqUsed, _window.NextRecvSeq, total - ApduCodec.ApciLength);
 
@@ -403,6 +589,7 @@ namespace IEC60870.CS104;
                             _t2Triggered = false;
                         }
 
+                        // 同 SendAsduAsync：窗口已在发送前登记，异常路径不回退序号而是判定连接失效。
                         await _sink.SendAsync(byteBlock.Memory.Slice(0, total), cancellationToken).ConfigureAwait(false);
                     }
                     finally
@@ -410,11 +597,7 @@ namespace IEC60870.CS104;
                         byteBlock.Dispose();
                     }
 
-                    lock (_kLock)
-                    {
-                        _window.RegisterSent(seqUsed, Now);
-                    }
-
+                    seqTaken = false;
                     ResetT3Timeout(Now);
                     return seqUsed;
                 }
@@ -425,7 +608,17 @@ namespace IEC60870.CS104;
             }
             catch (Exception)
             {
-                ReleaseSlots(1);
+                // 同 SendAsduAsync：序号已分配即存在歧义，只能判定连接失效（不回退 N(S)）
+                if (seqTaken)
+                {
+                    FailConnection(ConnectionCloseReason.IoError);
+                }
+
+                if (slotHeld)
+                {
+                    ReleaseSlots(1);
+                }
+
                 throw;
             }
         }
@@ -440,17 +633,43 @@ namespace IEC60870.CS104;
         /// 待槽位转移给它时立即归还（<see cref="KWindow.ReleaseSlots"/> 链式推进给后续等待者），
         /// 再抛出 <see cref="OperationCanceledException"/>——槽位永不泄漏，代价仅一次转移跳。
         /// </remarks>
-        private async ValueTask AcquireSendSlotAsync(CancellationToken cancellationToken)
+        /// <summary>
+        /// 已失效连接拒绝新的发送。三条发送路径（I 帧 / U 帧 / S 确认帧）共用，
+        /// 保证语义一致：给出可诊断原因，而不是让底层抛 "writer completed" 之类异常。
+        /// </summary>
+        private void ThrowIfFailed()
         {
+            if (_failed)
+            {
+                throw new OperationCanceledException("connection failed: " + _closeReason);
+            }
+        }
+
+        /// <returns>
+        /// true 表示已占用一个 k 窗口槽位（调用方负责在失败路径归还）；
+        /// false 表示关闭了序列号校验（<see cref="CheckSequenceNumbers"/> == false）而旁路了流控，
+        /// 未占槽位，调用方<b>不得</b>归还。
+        /// </returns>
+        private async ValueTask<bool> AcquireSendSlotAsync(bool trackWindow, CancellationToken cancellationToken)
+        {
+            ThrowIfFailed();
+
+            // 关闭序列号校验时旁路 k 流控：窗口永远不会被对端 N(R) 推进（也不登记发送条目），
+            // 若仍占槽位，发满 K 帧后这里会永久等待 —— 无超时、无异常、无日志。
+            if (!trackWindow)
+            {
+                return false;
+            }
+
             TaskCompletionSource<bool> waiter;
             lock (_kLock)
             {
                 if (_window.TryAcquireSlot())
-            {
-                return;
-            }
+                {
+                    return true;
+                }
 
-            waiter = _window.EnqueueWaiter();
+                waiter = _window.EnqueueWaiter();
             }
 
             try
@@ -468,6 +687,8 @@ namespace IEC60870.CS104;
                 ReleaseSlots(1);
                 throw new OperationCanceledException(cancellationToken);
             }
+
+            return true;
         }
 
         /// <summary>
@@ -513,10 +734,25 @@ namespace IEC60870.CS104;
 
         private async ValueTask SendUAsync(byte[] uFrame, CancellationToken cancellationToken)
         {
+            // 与两条 I 帧发送路径对称：已失效连接直接拒绝，传输写失败必须判定连接失效。
+            // 否则 STARTDT_CON/TESTFR_CON 写失败时异常会冒进 OnTcpReceived（无 catch），
+            // 而超时循环里的 TESTFR_ACT 写失败会被调度器当「瞬态异常」吞成 Continue，
+            // 形成无事件、无状态变化、无清理的死链轮询。
+            ThrowIfFailed();
+
             await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await _sink.SendAsync(uFrame, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await _sink.SendAsync(uFrame, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    FailConnection(ConnectionCloseReason.IoError);
+                    throw;
+                }
+
                 ResetT3Timeout(Now);
             }
             finally
@@ -527,6 +763,8 @@ namespace IEC60870.CS104;
 
         private async ValueTask SendSAckAsync(CancellationToken cancellationToken)
         {
+            ThrowIfFailed();
+
             // 从池租借 6 字节缓冲（避免每条 S 确认的热路径堆分配），发送完成后归还。
             var buf = ArrayPool<byte>.Shared.Rent(ApduCodec.ApciLength);
             int nr;
@@ -542,7 +780,15 @@ namespace IEC60870.CS104;
             await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await _sink.SendAsync(buf.AsMemory(0, ApduCodec.ApciLength), cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await _sink.SendAsync(buf.AsMemory(0, ApduCodec.ApciLength), cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    FailConnection(ConnectionCloseReason.IoError);
+                    throw;
+                }
             }
             finally
             {
@@ -659,10 +905,12 @@ namespace IEC60870.CS104;
         /// </summary>
         private bool CheckAndRemoveConfirmed(int seqNo)
         {
+            // 关闭序列号校验时直接返回且不触碰窗口：发送路径也不登记（RegisterSent），
+            // 因此这里若调用 KWindow.Ack 会基于空窗口误判 N(R) 越界或误释放槽位。
             if (!CheckSequenceNumbers)
-        {
-            return true;
-        }
+            {
+                return true;
+            }
 
         int freedCount;
             lock (_kLock)
@@ -694,7 +942,7 @@ namespace IEC60870.CS104;
         /// 通知订阅方连接已断开（非主动）。由传输层在收到远端关闭/超时/协议错误后调用；
         /// 主动 <see cref="Iec104Client.DisconnectAsync"/> / <see cref="Iec104Server.StopAsync"/> 不应调用本方法。
         /// </summary>
-        /// <param name="reason">断开原因；若此前已通过 <see cref="MarkCloseReason"/> 标记了更具体的原因则忽略本参数。</param>
+        /// <param name="reason">断开原因；已由 <see cref="FailConnection"/> 记录时忽略本参数。</param>
         /// <remarks>
         /// 幂等：仅首次调用会派发 <see cref="ApduConnectionEvent.ConnectionClosed"/>（之后即使重复关闭或 Dispose 也不会重复通知）。
         /// 若已 Dispose 则无操作。
@@ -712,27 +960,28 @@ namespace IEC60870.CS104;
         }
 
         _closeNotified = true;
+            // 断开即非激活：IsActive 必须与 ConnectionClosed 事件一致，否则应用层
+            // 会看到「已收到断开事件但 IsActivated 仍为 true」的矛盾状态。
+            _active = false;
             Raise(ApduConnectionEvent.ConnectionClosed);
         }
 
-        /// <summary>
-        /// 预先标记断开原因。由超时 / 协议错误检测路径在底层 socket 关闭回调（<c>OnTcpClosed</c>）之前调用，
-        /// 使最终派发的 <see cref="ConnectionClosed"/> 携带准确原因。仅在尚未派发、且尚未标记过时生效。
-        /// </summary>
-        internal void MarkCloseReason(ConnectionCloseReason reason)
-        {
-            if (_closeNotified || _closeReason != ConnectionCloseReason.Unknown)
-        {
-            return;
-        }
+        // 已删除 MarkCloseReason（旧「先记原因、等 OnTcpClosed 再派发」机制的残留）。
+        // 该机制正是僵尸链路的成因：底层关闭回调不触发时事件永远不派发。
+        // 现在统一由 FailConnection → NotifyClosed(reason) 一次性完成。
 
-        _closeReason = reason;
-        }
-
+        /// <summary>U 帧握手成功（收到 STARTDT_CON / STOPDT_CON）：唤醒等待者为成功。</summary>
         private static void Signal(ref TaskCompletionSource<bool> field)
         {
             var waiter = Interlocked.Exchange(ref field, null);
             waiter?.TrySetResult(true);
+        }
+
+        /// <summary>连接终止（Dispose）：唤醒等待者为取消，绝不能让调用方误以为握手成功。</summary>
+        private static void CancelWaiter(ref TaskCompletionSource<bool> field)
+        {
+            var waiter = Interlocked.Exchange(ref field, null);
+            waiter?.TrySetCanceled();
         }
 
         public void Dispose()
@@ -745,18 +994,30 @@ namespace IEC60870.CS104;
             }
 
             _disposed = true;
+                _active = false;
+                _failed = true;
 
                 // 窗口终结：置 disposed（后续 TryAcquireSlot 抛 OCE）并取出全部 k 窗口
                 // 等待者，锁外统一取消唤醒（抛 OCE，不悬挂）。
                 _window.Dispose();
             }
 
-            // 唤醒 U 帧握手等待者
-            Signal(ref _startDtConWaiter);
-            Signal(ref _stopDtConWaiter);
+            // 唤醒 U 帧握手等待者：必须以「取消」而非「成功」唤醒。
+            // 原实现用 TrySetResult(true)，于是连接在等 STARTDT_CON 期间被 Dispose
+            // （协议错误 / 对端断开 / DisconnectAsync / 重连）时，
+            // StartDataTransferAsync 会正常返回成功 → Iec104Client 置
+            // _dataTransferStarted=true → 之后 StartDataTransferAsync 变成 no-op，
+            // 应用以为链路已激活，实际 STARTDT 从未完成（与 296-297 行修的
+            // "标志卡住"是同一类故障，方向相反）。
+            CancelWaiter(ref _startDtConWaiter);
+            CancelWaiter(ref _stopDtConWaiter);
 
-            // 发送串行化锁：此时不可能有发送方仍在持锁（Dispose 由连接终止路径调用），
-            // 释放以归还 SemaphoreSlim 内部资源（未触碰 WaitHandle 时为零成本）。
-            _sendLock.Dispose();
+            // 发送串行化锁：不 Dispose。
+            // CleanupConnection() 由 RequestTransportClose 的 Task.Run、OnTcpClosed、
+            // Rebuild、SafetyDispose 从任意线程调用，此时应用线程可能正卡在
+            // await _sink.SendAsync(...) 且持有本锁。SemaphoreSlim.Dispose() 之后
+            // finally 里的 Release() 必抛 ObjectDisposedException，**覆盖原始发送异常**；
+            // WaitAsync 打到已 Dispose 的信号量抛 ODE 而非 OCE，按 OCE 写的重连逻辑全部走错分支。
+            // SemaphoreSlim 未触碰 WaitHandle 时无未托管资源，不 Dispose 无泄漏。
         }
     }

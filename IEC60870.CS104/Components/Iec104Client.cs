@@ -21,7 +21,7 @@ namespace IEC60870.CS104;
 /// </code>
 /// 标准命令动词（总召唤/时钟同步/控制命令等）为扩展方法，见 <see cref="Iec104MasterExtension"/>。
 /// </remarks>
-public sealed class Iec104Client : TcpClient, IIec104Master, IApduSink
+public sealed class Iec104Client : TcpClient, IIec104Master, IIec104ApduSink
 {
     private readonly string _host;
     private readonly int _port;
@@ -161,7 +161,7 @@ public sealed class Iec104Client : TcpClient, IIec104Master, IApduSink
         _sslOption = sslOption;
         Autostart = autostart;
         Protocol = new Protocol(Iec60870Utility.Iec104);
-        _endpoint = new ApduEndpoint(_apci, _al, this);
+        _endpoint = new ApduEndpoint(_apci, _al, this, TypeHandlers);
     }
 
     /// <summary>用 <see cref="Iec104Options"/> 构造客户端（Options 对象模式）。</summary>
@@ -180,23 +180,23 @@ public sealed class Iec104Client : TcpClient, IIec104Master, IApduSink
         Autostart = snapshot.Autostart;
         CommandConfirmationTimeout = snapshot.CommandConfirmationTimeout;
         Protocol = new Protocol(Iec60870Utility.Iec104);
-        _endpoint = new ApduEndpoint(_apci, _al, this);
+        _endpoint = new ApduEndpoint(_apci, _al, this, TypeHandlers);
     }
 
     #endregion 构造
 
-    #region IApduSink
+    #region IIec104ApduSink
 
-    ValueTask IApduSink.SendAsync(ReadOnlyMemory<byte> apdu, CancellationToken cancellationToken)
+    ValueTask IIec104ApduSink.SendAsync(ReadOnlyMemory<byte> apdu, CancellationToken cancellationToken)
     {
         // 下行原始报文（有订阅者才分配拷贝，无订阅者零开销）
         RawFrameSent?.Invoke(apdu.ToArray());
         return new ValueTask(base.SendAsync(apdu, cancellationToken));
     }
 
-    bool IApduSink.IsConnected => Online;
+    bool IIec104ApduSink.IsConnected => Online;
 
-    #endregion IApduSink
+    #endregion IIec104ApduSink
 
     #region 连接生命周期
 
@@ -211,6 +211,8 @@ public sealed class Iec104Client : TcpClient, IIec104Master, IApduSink
     {
         // 重连/重复调用：端点统一释放上一次连接遗留的 CTS / 状态机 / 定时器，避免资源泄漏。
         // closeAsync 供调度器在 T1/TESTFR 致命超时后回调（等效于旧 Task.Run 循环的关闭路径）。
+        // onFailed 是「断开后必须执行」的宿主清理：不依赖 TouchSocket 的 OnTcpClosed
+        // （实测该回调在部分关闭路径下不触发），保证挂起的命令确认等待者被及时唤醒。
         _endpoint.Rebuild(cancellationToken, conn =>
         {
             // 把连接前已订阅的事件转发到新建连接（支持"先订阅后连接"）
@@ -225,7 +227,7 @@ public sealed class Iec104Client : TcpClient, IIec104Master, IApduSink
             }
             // 内置控制命令确认匹配器（多播订阅，不干扰用户订阅；无挂起命令时为空转）
             conn.AsduReceived += OnConfirmationAsdu;
-        }, () => CloseAsync("timeout"));
+        }, reason => CloseAsync("104 " + reason), OnConnectionFailed);
 
         _dataTransferStarted = false;
 
@@ -261,7 +263,10 @@ public sealed class Iec104Client : TcpClient, IIec104Master, IApduSink
 
         if (Autostart)
         {
-            await StartDataTransferAsync(cancellationToken).ConfigureAwait(false);
+            // T0 覆盖「TCP 握手 + STARTDT 完成」全过程（APCIParameters 定义）。
+            // 原实现用原始 cancellationToken，STARTDT_CON 迟迟不来时 ConnectAsync
+            // 不受 T0 约束；现统一用 connectTimeout.Token。
+            await StartDataTransferAsync(connectTimeout.Token).ConfigureAwait(false);
         }
 
         // 定时器循环已内建于 ApduEndpoint（Iec104TimerScheduler，单 Timer 自调度），
@@ -302,11 +307,16 @@ public sealed class Iec104Client : TcpClient, IIec104Master, IApduSink
         }
     }
 
-    /// <summary>发送 STOPDT_ACT 并等待 STOPDT_CON。</summary>
-    public Task StopDataTransferAsync(CancellationToken cancellationToken = default)
+    /// <summary>发送 STOPDT_ACT 并等待 STOPDT_CON。成功后复位激活标志，允许再次 STARTDT 重新激活。</summary>
+    public async Task StopDataTransferAsync(CancellationToken cancellationToken = default)
     {
         using var link = _endpoint.LinkScoped(cancellationToken);
-        return _endpoint.Connection.StopDataTransferAsync(link.Token).AsTask();
+        await _endpoint.Connection.StopDataTransferAsync(link.Token).AsTask().ConfigureAwait(false);
+
+        // 与 StartDataTransferAsync 的失败复位对称：STOPDT_CON 已把状态机置为非激活，
+        // 若不复位标志，再次 StartDataTransferAsync 会被 _dataTransferStarted 守卫
+        // 静默 no-op，链路永久无法重新激活。
+        _dataTransferStarted = false;
     }
 
     #endregion 连接生命周期
@@ -314,10 +324,15 @@ public sealed class Iec104Client : TcpClient, IIec104Master, IApduSink
     #region 发送
 
     /// <summary>发送一个 ASDU（I 帧）。k 窗口满时异步背压等待，不阻塞线程。</summary>
+    /// <exception cref="InvalidOperationException">尚未连接（未调用 <see cref="ConnectAsync"/>）时抛出，
+    /// 而不是 NRE —— 调用方需要能区分「忘了连接」与库缺陷。</exception>
     public async Task SendAsync(ASDU asdu, CancellationToken cancellationToken = default)
     {
+        var connection = _endpoint.Connection
+            ?? throw new InvalidOperationException("连接未建立：请先调用 ConnectAsync");
+
         using var link = _endpoint.LinkScoped(cancellationToken);
-        await _endpoint.Connection.SendAsduAsync(asdu, link.Token).ConfigureAwait(false);
+        await connection.SendAsduAsync(asdu, link.Token).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -366,12 +381,43 @@ public sealed class Iec104Client : TcpClient, IIec104Master, IApduSink
         {
             if (!await _endpoint.HandleReceivedAsync(apdu).ConfigureAwait(false))
             {
-                await CloseAsync("protocol error").ConfigureAwait(false);
+                // 协议错误已由端点统一处理（派发 ConnectionClosed + 异步关闭传输）。
+                // 此处【不能】再同步 CloseAsync("protocol error")：在 TouchSocket 收包回调
+                // 内部同步关闭会走到适配器拆解的中途，实测导致套接字仍报 Online、
+                // TouchSocket 的 Closed 事件不再触发 —— 链路已死，但应用层既收不到
+                // ConnectionClosed、IsActivated 也仍为 true（僵尸链路，见压测报告 §2.1）。
+                LogProtocolError();
                 return;
             }
         }
 
         await base.OnTcpReceived(e).ConfigureAwait(false);
+    }
+
+    /// <summary>协议错误日志（含具体分支原因，便于现场自证）。</summary>
+    private void LogProtocolError()
+    {
+        var detail = _endpoint.Connection?.LastProtocolErrorDetail;
+
+        Logger?.Warning("CS104 client: protocol error -> closing connection"
+            + (string.IsNullOrEmpty(detail) ? string.Empty : " (" + detail + ")"));
+    }
+
+    /// <summary>
+    /// 连接失效后的宿主清理：与 <see cref="OnTcpClosed"/> 里的 <see cref="CleanupAsync"/>
+    /// **完全等价**（含释放调度器/状态机），不依赖 TouchSocket 的 <c>OnTcpClosed</c>。
+    /// 必须幂等：<c>OnTcpClosed</c> 正常触发时会再调一次。
+    /// </summary>
+    private void OnConnectionFailed()
+    {
+        // 取消生命周期令牌，让定时器循环与 k 窗口背压退出（不等 OnTcpClosed）
+        _endpoint.CancelLife();
+        _confirmationTracker.CompleteAllCanceled();
+
+        // 关键：失效路径也必须释放共享调度器注册与状态机。
+        // 只做上面两步是「修一半」：OnTcpClosed 不触发时（本次修复的前提场景），
+        // SharedTimeoutScheduler 的 _liveCount 不会递减、Timer 不关、_sendLock 不释放。
+        _endpoint.CleanupConnection();
     }
 
     /// <inheritdoc/>
@@ -405,6 +451,30 @@ public sealed class Iec104Client : TcpClient, IIec104Master, IApduSink
         await DisconnectAsync().ConfigureAwait(false);
         _endpoint.FinalizeSession();
         base.Dispose();
+    }
+
+    /// <summary>
+    /// 同步 <c>Dispose()</c> 兜底：<see cref="TcpClient"/> 的同步释放只走基类
+    /// <c>SafetyDispose</c>（关闭传输），不会经过 <see cref="DisposeAsync"/>，
+    /// 因此 <c>using (var client = new Iec104Client(...))</c> 原先会泄漏
+    /// <see cref="_endpoint"/>（生命周期 CTS、连接状态机、共享调度器注册）。
+    /// 这里补上与 <see cref="DisposeAsync"/> 等价的端点终结（幂等）。
+    /// </summary>
+    protected override void SafetyDispose(bool disposing)
+    {
+        if (disposing)
+        {
+            try
+            {
+                _endpoint?.FinalizeSession();
+            }
+            catch
+            {
+                // Dispose 约定：释放路径不得抛出
+            }
+        }
+
+        base.SafetyDispose(disposing);
     }
 
     #endregion 断开与清理

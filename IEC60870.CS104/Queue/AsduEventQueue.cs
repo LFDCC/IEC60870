@@ -25,6 +25,12 @@ internal sealed class AsduEventQueue
     private readonly LinkedList<byte[]> _items = new();
     private readonly SemaphoreSlim _notEmpty = new(0);
 
+    /// <summary>
+    /// 队列已作废标志（<see cref="Clear"/> 后置位）。作废后 <see cref="DequeueAsync"/>
+    /// 返回 null 表示"无数据"，由排空循环退出，而不是抛异常。
+    /// </summary>
+    private bool _completed;
+
     public AsduEventQueue(int maxSize, EnqueueMode enqueueMode)
     {
         if (maxSize <= 0)
@@ -66,6 +72,11 @@ internal sealed class AsduEventQueue
                 {
                     case EnqueueMode.REMOVE_OLDEST:
                         _items.RemoveFirst();
+                        // 同时收回被淘汰元素对应的许可：否则每淘汰一条就多出一个
+                        // "有许可、无元素"的幽灵许可，消费者取到它会走到下面的空队分支
+                        // 并抛 InvalidOperationException（默认 REMOVE_OLDEST 下队列一满就触发，
+                        // 排空循环随即永久死亡）。Wait(0) 非阻塞，锁内调用安全。
+                        _notEmpty.Wait(0);
                         break;
                     case EnqueueMode.IGNORE:
                         return false;
@@ -95,33 +106,52 @@ internal sealed class AsduEventQueue
         _notEmpty.Release();
     }
 
-    /// <summary>异步取出队头快照；队列空时挂起等待。</summary>
+    /// <summary>
+    /// 异步取出队头快照；队列空时挂起等待。
+    /// </summary>
+    /// <returns>队头快照；当队列已被 <see cref="Clear"/> 作废时返回 <c>null</c>（表示"无数据"，调用方应退出消费循环）。</returns>
+    /// <remarks>
+    /// 许可（SemaphoreSlim）在本设计中是"可能有一条数据"的信号，不保证与元素严格一对一：
+    /// <see cref="EnqueueMode.REMOVE_OLDEST"/> 淘汰与 <see cref="Clear"/> 归还许可都会留下
+    /// "多余许可"。因此取到许可但队列为空时消费掉该许可并重新等待，而不是抛
+    /// <see cref="InvalidOperationException"/> —— 后者会让排空循环永久死亡（原缺陷：队列一满
+    /// 或 Clear 竞态即触发）。
+    /// </remarks>
     public async Task<byte[]> DequeueAsync(CancellationToken cancellationToken)
     {
-        await _notEmpty.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-        lock (_gate)
+        while (true)
         {
-            var node = _items.First;
+            await _notEmpty.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-            if (node == null)
+            lock (_gate)
             {
-                // 理论上不可达：每个入队都对应一次 Release。防御性归还许可。
-                _notEmpty.Release();
-                cancellationToken.ThrowIfCancellationRequested();
-                throw new InvalidOperationException("事件队列许可与内容不一致");
-            }
+                if (_completed)
+                {
+                    // Clear() 之后队列已作废：返回"无数据"，不得抛异常。
+                    return null;
+                }
 
-            _items.RemoveFirst();
-            return node.Value;
+                var node = _items.First;
+
+                if (node == null)
+                {
+                    // 多余许可（REMOVE_OLDEST 淘汰 / Clear 竞态）：消费之，继续等待真实数据。
+                    continue;
+                }
+
+                _items.RemoveFirst();
+                return node.Value;
+            }
         }
     }
 
-    /// <summary>清空队列并归还全部等待许可（服务端停止时调用）。</summary>
+    /// <summary>清空队列并归还全部等待许可（服务端停止时调用）。此后 <see cref="DequeueAsync"/> 返回 null。</summary>
     public void Clear()
     {
         lock (_gate)
         {
+            _completed = true;
+
             var drained = _items.Count;
             _items.Clear();
 

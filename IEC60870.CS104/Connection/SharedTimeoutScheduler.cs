@@ -53,14 +53,26 @@ internal sealed class SharedTimeoutScheduler : IDisposable
     {
         get
         {
-            if (_instance != null)
+            // Volatile.Read：_instance 由 Unregister 在 SingletonGate 内写 null、
+            // 由本方法在 SingletonGate 内写实例；无屏障的双检在弱内存序架构
+            // （ARM64）上可能读到已释放实例的陈旧引用。
+            var current = Volatile.Read(ref _instance);
+            if (current != null)
             {
-                return _instance;
+                return current;
             }
 
             lock (SingletonGate)
             {
-                return _instance ??= new SharedTimeoutScheduler();
+                var existing = Volatile.Read(ref _instance);
+                if (existing != null)
+                {
+                    return existing;
+                }
+
+                var created = new SharedTimeoutScheduler();
+                Volatile.Write(ref _instance, created);
+                return created;
             }
         }
     }
@@ -71,7 +83,7 @@ internal sealed class SharedTimeoutScheduler : IDisposable
         public readonly object Gate = new object();
 
         /// <summary>该分片的最小堆，元素为注册句柄。</summary>
-        public readonly List<Entry> Heap = new List<Entry>();
+        public readonly List<TimeoutEntry> Heap = new List<TimeoutEntry>();
     }
 
     private readonly Shard[] _shards;
@@ -82,6 +94,16 @@ internal sealed class SharedTimeoutScheduler : IDisposable
 
     /// <summary>当前存活（已注册未注销）的连接数，用于单例释放。</summary>
     private int _liveCount;
+
+    /// <summary>当前存活注册数（诊断/测试用；连接清理是否完整可由此断言）。单例未创建时为 0。</summary>
+    internal static int LiveCount
+    {
+        get
+        {
+            var instance = _instance;
+            return instance == null ? 0 : Volatile.Read(ref instance._liveCount);
+        }
+    }
 
     /// <summary>已释放（最后一个连接注销后置位，之后所有操作静默忽略）。</summary>
     private volatile bool _shutdown;
@@ -108,7 +130,7 @@ internal sealed class SharedTimeoutScheduler : IDisposable
     /// 一个连接在调度器中的注册句柄。持有超时检查委托与致命回调；
     /// <see cref="Unregister"/> 必须且只能由宿主调用一次（<see cref="Dispose"/> 等价）。
     /// </summary>
-    public sealed class Entry : IDisposable
+    public sealed class TimeoutEntry : IDisposable
     {
         internal readonly Func<CancellationToken, ValueTask<Iec104TimerScheduler.SchedulerAction>> Check;
         internal readonly Action OnFatal;
@@ -134,7 +156,7 @@ internal sealed class SharedTimeoutScheduler : IDisposable
         /// <summary>下一次检查的绝对时刻（Environment.TickCount64 毫秒）。</summary>
         internal long Deadline;
 
-        internal Entry(SharedTimeoutScheduler owner, Shard shard,
+        internal TimeoutEntry(SharedTimeoutScheduler owner, Shard shard,
             Func<CancellationToken, ValueTask<Iec104TimerScheduler.SchedulerAction>> check,
             Func<int> delayProvider,
             Action onFatal,
@@ -167,7 +189,7 @@ internal sealed class SharedTimeoutScheduler : IDisposable
     /// <param name="onFatal">致命超时回调（宿主：标记 CloseReason + 关闭连接）。</param>
     /// <param name="cancellationToken">检查使用的取消令牌（连接生命周期令牌）。</param>
     /// <param name="initialDelayMs">首次检查延迟（毫秒，至少 1）。</param>
-    public Entry Register(
+    public TimeoutEntry Register(
         Func<CancellationToken, ValueTask<Iec104TimerScheduler.SchedulerAction>> check,
         Func<int> delayProvider,
         Action onFatal,
@@ -178,27 +200,49 @@ internal sealed class SharedTimeoutScheduler : IDisposable
         if (delayProvider == null) throw new ArgumentNullException(nameof(delayProvider));
         if (onFatal == null) throw new ArgumentNullException(nameof(onFatal));
 
+        // 实例已关闭：拒绝注册。原实现会静默返回一个 arm=false 的 entry ——
+        // 调用方以为定时器已在跑，实际 T1/T2/T3 永不触发（僵尸链路的来源之一）。
+        // 抛异常让调用方（ApduEndpoint.Rebuild）拿到明确失败，而不是静默降级。
+        if (_shutdown)
+        {
+            throw new ObjectDisposedException(nameof(SharedTimeoutScheduler),
+                "共享超时调度器已关闭，不能注册新连接（应通过 Instance 获取新实例）");
+        }
+
         // 分片按注册序号轮转：相邻连接错开分片，避免同批建连全落在同一片。
         var idx = (int)(Interlocked.Increment(ref _nextId) & ShardMask);
         var shard = _shards[idx];
-        var entry = new Entry(this, shard, check, delayProvider, onFatal, cancellationToken);
+        var entry = new TimeoutEntry(this, shard, check, delayProvider, onFatal, cancellationToken);
         Interlocked.Increment(ref _liveCount);
 
         var due = Environment.TickCount64 + Math.Max(1, initialDelayMs);
 
-        bool arm;
-        lock (shard.Gate)
+        lock (SingletonGate)
         {
-            entry.Generation++;
-            entry.Deadline = due;
-            HeapPush(shard, entry);
-            arm = !_shutdown;
+            // 锁外检查 + 此处再检查：Unregister 把 _liveCount 减到 0 时会在
+            // SingletonGate 内关闭本实例（_shutdown=true）并清空所有分片堆。
+            // 若在两次检查之间入堆，就会出现「entry 在堆里但永不 arm」——
+            // 该连接的 T1/T2/T3 永不运行（僵尸链路），且 _liveCount 已被加一，
+            // 实例再也无法归零释放。
+            //
+            // 整个「检查 + 入堆」放在 SingletonGate 内（ShutdownInternal 的唯一入口
+            // 也持该锁），彻底排除「入堆后、arm 前被关闭清堆」的窗口。
+            lock (shard.Gate)
+            {
+                if (_shutdown)
+                {
+                    Interlocked.Decrement(ref _liveCount);
+                    throw new ObjectDisposedException(nameof(SharedTimeoutScheduler),
+                        "共享超时调度器已关闭，不能注册新连接（应通过 Instance 获取新实例）");
+                }
+
+                entry.Generation++;
+                entry.Deadline = due;
+                HeapPush(shard, entry);
+            }
         }
 
-        if (arm)
-        {
-            ArmTimer();
-        }
+        ArmTimer();
 
         return entry;
     }
@@ -206,7 +250,7 @@ internal sealed class SharedTimeoutScheduler : IDisposable
     /// <summary>
     /// 取消注册（连接关闭/重建时调用）。幂等：重复调用无副作用。
     /// </summary>
-    public void Unregister(Entry entry)
+    public void Unregister(TimeoutEntry entry)
     {
         if (entry == null)
         {
@@ -232,12 +276,31 @@ internal sealed class SharedTimeoutScheduler : IDisposable
             entry.Dequeued = false;
         }
 
-        // 引用计数：最后一个连接注销后释放单例，避免物理 Timer 常驻。
-        // 注意：Register 里 Interlocked.Increment(_liveCount) 在返回前完成，
-        // 若此处减到 0 说明没有在飞的新注册，ForceShutdown 安全。
+        // 引用计数：最后一个连接注销后释放物理 Timer，避免常驻。
+        //
+        // 原实现无条件调静态 ForceShutdown()，存在两个真实且严重的竞态：
+        //  ① 最后一个 Unregister 把计数减到 0 的同时，另一线程正在 Instance+Register
+        //     （计数又变 1）；随后 ForceShutdown 关掉定时器并清空所有分片堆，
+        //     刚注册的 entry 被清成 HeapIndex=-1 且 arm=false → 该连接的 T1/T2/T3
+        //     **永久不运行**，半开 TCP 永远不会被判死、不派发 ConnectionClosed、
+        //     客户端永不重连，而且全程无日志（典型的"僵尸链路"）。
+        //  ② 旧实例的 _liveCount 归零会关掉**当前**单例（计数是实例字段、
+        //     ForceShutdown 是全局操作），可一次性掐掉所有在线连接的定时器。
+        //
+        // 现在：自减后仅在「本实例仍是当前单例」且计数确实归零时才关闭**本实例**，
+        // 期间持 SingletonGate，与 Instance 的创建互斥；若已被新实例取代则什么都不做。
         if (Interlocked.Decrement(ref _liveCount) <= 0)
         {
-            ForceShutdown();
+            lock (SingletonGate)
+            {
+                // 双重确认：持锁后重新读计数，避免与并发的 Register 竞争
+                // （Register 在锁外 Interlocked.Increment，必须再查一次）。
+                if (Volatile.Read(ref _liveCount) <= 0 && ReferenceEquals(_instance, this))
+                {
+                    _instance = null;
+                    ShutdownInternal();
+                }
+            }
         }
     }
 
@@ -245,7 +308,7 @@ internal sealed class SharedTimeoutScheduler : IDisposable
     /// 重排某连接的下一次检查时刻。由宿主在检查完成后按
     /// <see cref="ApduConnection.GetSuggestedDelayMs"/> 调用。
     /// </summary>
-    public void Reschedule(Entry entry, int delayMs)
+    public void Reschedule(TimeoutEntry entry, int delayMs)
     {
         if (entry == null || _shutdown)
         {
@@ -336,7 +399,7 @@ internal sealed class SharedTimeoutScheduler : IDisposable
 
         try
         {
-            var due = new List<(Entry, long)>();
+            var due = new List<(TimeoutEntry, long)>();
 
             for (var i = 0; i < _shards.Length; i++)
             {
@@ -373,7 +436,7 @@ internal sealed class SharedTimeoutScheduler : IDisposable
         ArmTimer();
     }
 
-    private async Task RunOneAsync(Entry entry, long gen)
+    private async Task RunOneAsync(TimeoutEntry entry, long gen)
     {
         Iec104TimerScheduler.SchedulerAction action;
         try
@@ -434,7 +497,7 @@ internal sealed class SharedTimeoutScheduler : IDisposable
     //  最小堆（按 Deadline 升序）
     // ═══════════════════════════════════════════════════════════════
 
-    private static void HeapPush(Shard shard, Entry e)
+    private static void HeapPush(Shard shard, TimeoutEntry e)
     {
         shard.Heap.Add(e);
         e.HeapIndex = shard.Heap.Count - 1;
@@ -550,7 +613,19 @@ internal sealed class SharedTimeoutScheduler : IDisposable
     /// </summary>
     public void Dispose()
     {
-        ShutdownInternal();
+        // 必须在 SingletonGate 内先摘掉单例引用再关闭：若调用方 using 的是
+        // 当前单例，仅 ShutdownInternal() 会把 _instance 留成一个已关闭实例，
+        // 后续 Instance 访问返回它并按「已关闭」处理（新连接永远无法注册）。
+        // 与 Unregister 归零路径保持一致的关闭顺序。
+        lock (SingletonGate)
+        {
+            if (ReferenceEquals(_instance, this))
+            {
+                _instance = null;
+            }
+
+            ShutdownInternal();
+        }
     }
 
     private void ShutdownInternal()

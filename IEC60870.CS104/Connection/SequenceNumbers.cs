@@ -27,4 +27,7 @@ internal static class SequenceNumbers
     /// <summary><paramref name="value"/> 递增 1（模 32768）。</summary>
     public static int Increment(int value)
         => (value + 1) % Modulus;
+
+    // 已删除 Decrement：它只被「发送失败回退 N(S)」使用，而该做法不安全
+    // （见 KWindow 中的说明与 ApduConnection.FailConnection）。
 }

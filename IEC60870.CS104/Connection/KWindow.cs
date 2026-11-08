@@ -27,6 +27,12 @@ namespace IEC60870.CS104;
 /// 取消的调用方留在队列中，待槽位转移给它时由宿主归还并链式推进，槽位永不泄漏。
 /// <see cref="Dispose"/> 唤醒全部等待者（取消），不悬挂。
 /// </para>
+/// <para>
+/// <b>旁路模式</b>：宿主 <see cref="ApduConnection"/> 在 <c>CheckSequenceNumbers=false</c> 时
+/// 完全旁路本窗口（不调用 <see cref="TryAcquireSlot"/>/<see cref="RegisterSent"/>，
+/// <see cref="Ack"/> 也不被调用）：此时没有可信的 N(R) 推进窗口，
+/// 若仍登记条目/占用槽位，发满 K 帧后将永久阻塞。
+/// </para>
 /// </remarks>
 internal sealed class KWindow
 {
@@ -89,6 +95,11 @@ internal sealed class KWindow
         _nextSendSeq = SequenceNumbers.Increment(_nextSendSeq);
         return seq;
     }
+
+    // 已删除 RollbackSendSeq：发送异常后回退 N(S) 是**不安全**的 ——
+    // 「sink 抛异常」并不等于「帧没上线」（底层可能在字节已写入发送管道后才失败）。
+    // 此时对端会确认一个我方未登记的序号，回退或保留都与对端失步；104 规范下序号歧义
+    // 不可恢复，正确做法是判定连接失效（ApduConnection.FailConnection）。
 
     /// <summary>接收侧推进：登记已收 N(S)=<paramref name="recvSeq"/> 的 I 帧，返回我方应回的 N(R)。</summary>
     public int AdvanceRecvSeq(int recvSeq)

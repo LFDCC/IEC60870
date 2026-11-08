@@ -14,7 +14,7 @@ namespace IEC60870.CS104;
     /// APDU 字节推给底层（TouchSocket 的 TcpClient / TcpSessionClient 等），
     /// 与具体 socket 实现解耦。
     /// </summary>
-    public interface IApduSink
+    public interface IIec104ApduSink
     {
         /// <summary>
         /// 异步发送一个完整 APDU。<paramref name="apdu"/> 的内存在方法返回（await 完成）后可被复用/归还。
