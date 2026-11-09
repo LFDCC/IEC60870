@@ -79,6 +79,17 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         run: dotnet nuget push "artifacts/LFDCC.IEC60870.Core.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --skip-duplicate
 
-      - name: Push CS101, CS103 & CS104 to NuGet
+      # 每个包单独一步：多包合并成一条 push 命令时，中间某个包失败可能被
+      # 后续包的成功掩盖（v6.1.1 实测：CS104 未发布，job 仍显示 success）。
+      # 拆开后任何包失败都会让该步骤/job 明确失败。
+      - name: Push CS101 to NuGet
         if: startsWith(github.ref, 'refs/tags/')
-        run: dotnet nuget push "artifacts/LFDCC.IEC60870.CS101.*.nupkg" "artifacts/LFDCC.IEC60870.CS103.*.nupkg" "artifacts/LFDCC.IEC60870.CS104.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --skip-duplicate
+        run: dotnet nuget push "artifacts/LFDCC.IEC60870.CS101.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --skip-duplicate
+
+      - name: Push CS103 to NuGet
+        if: startsWith(github.ref, 'refs/tags/')
+        run: dotnet nuget push "artifacts/LFDCC.IEC60870.CS103.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --skip-duplicate
+
+      - name: Push CS104 to NuGet
+        if: startsWith(github.ref, 'refs/tags/')
+        run: dotnet nuget push "artifacts/LFDCC.IEC60870.CS104.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --skip-duplicate
