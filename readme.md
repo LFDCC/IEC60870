@@ -237,10 +237,10 @@ Packages are produced with `dotnet pack` and published to NuGet.org by the
 GitHub Actions workflow on version tags (`v*.*.*`). To publish manually:
 
 ```bash
-dotnet pack IEC60870.Core/IEC60870.Core.csproj   -c Release -p:Version=6.1.1 -o artifacts
-dotnet pack IEC60870.CS101/IEC60870.CS101.csproj -c Release -p:Version=6.1.1 -o artifacts
-dotnet pack IEC60870.CS103/IEC60870.CS103.csproj -c Release -p:Version=6.1.1 -o artifacts
-dotnet pack IEC60870.CS104/IEC60870.CS104.csproj -c Release -p:Version=6.1.1 -o artifacts
+dotnet pack IEC60870.Core/IEC60870.Core.csproj   -c Release -p:Version=6.1.2 -o artifacts
+dotnet pack IEC60870.CS101/IEC60870.CS101.csproj -c Release -p:Version=6.1.2 -o artifacts
+dotnet pack IEC60870.CS103/IEC60870.CS103.csproj -c Release -p:Version=6.1.2 -o artifacts
+dotnet pack IEC60870.CS104/IEC60870.CS104.csproj -c Release -p:Version=6.1.2 -o artifacts
 dotnet nuget push "artifacts/*.nupkg" --source https://api.nuget.org/v3/index.json --api-key <YOUR_API_KEY>
 ```
 

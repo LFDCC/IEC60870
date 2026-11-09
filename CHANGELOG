@@ -1,6 +1,20 @@
 IEC60870.NETAsync — Changelog
 =============================
 
+Changes to version 6.1.2
+------------------------
+- fix(CS104): `Iec104Server.ApplyLoggerToGroups` 用 `_singleGroup?.Logger = log` 给
+  null 条件访问表达式赋值。该语法是 Roslyn 的 **preview 特性**：SDK 10 +
+  `LangVersion=latest` 下能编过，其它 SDK/LangVersion 直接报 `CS8652`
+  （源码在部分开发环境中无法构建）。改为显式 null 判断后赋值，行为不变。
+- ci(nuget): 每个包**单独一步**推送。`dotnet nuget push A B C` 一条命令推多个包时，
+  中间某个包失败可能被后续包的成功掩盖（job 仍显示 success）。拆开后任何包失败
+  都会明确变红。
+- ci(nuget): `workflow_dispatch` 增加 `version` / `package` 输入——在**不移动 tag**
+  的前提下，用同一条 Trusted Publishing（OIDC）通道补发单个包；`version` 留空时
+  仍只做 OIDC 登录冒烟检查，不发布任何东西。
+- test: 310 项全部通过（Debug / Release）。
+
 Changes to version 6.1.1
 ------------------------
 - feat(protocol, CS101): **补齐广播（地址 255/65535，FC=4 无应答）**。原先
