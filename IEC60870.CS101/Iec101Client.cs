@@ -800,6 +800,35 @@ namespace IEC60870.CS101;
             EnqueueUserData(asdu);
         }
 
+        /// <summary>
+        /// 发送广播报文（链路地址 255/65535，FC=4 USER_DATA_NO_REPLY）：所有从站执行、均不应答。
+        /// </summary>
+        /// <param name="asdu">要广播的应用层报文（典型是广播对时 C_CS_NA_1）。</param>
+        /// <exception cref="ArgumentNullException"><paramref name="asdu"/> 为 null。</exception>
+        /// <exception cref="NotSupportedException">平衡链路模式不支持广播（平衡模式没有广播地址语义）。</exception>
+        /// <exception cref="LinkLayerBusyException">已有一条广播在等待发送（广播不排队，避免过期命令无限堆积）。</exception>
+        /// <remarks>
+        /// 广播是总线级、无确认的链路服务：链路层会在总线空闲时**只发一次**，
+        /// 不占用从站 FCB、不等 ACK、不重发；从站执行后不回任何报文。
+        /// </remarks>
+        public void SendBroadcast(ASDU asdu)
+        {
+            if (asdu == null)
+            {
+                throw new ArgumentNullException(nameof(asdu));
+            }
+
+            if (_linkLayerUnbalanced == null)
+            {
+                throw new NotSupportedException("广播仅在非平衡（UNBALANCED）链路模式下可用");
+            }
+
+            var frame = new BufferFrame(new byte[256], 0);
+            asdu.Encode(frame, _appLayerParameters);
+
+            _linkLayerUnbalanced.SendNoReply(_linkLayer.GetBroadcastAddress(), frame);
+        }
+
         public ApplicationLayerParameters GetApplicationLayerParameters()
         {
             return _appLayerParameters;

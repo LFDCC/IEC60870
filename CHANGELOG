@@ -3,6 +3,19 @@ IEC60870.NETAsync — Changelog
 
 Changes to version 6.1.0
 ------------------------
+- feat(protocol, CS101): **补齐广播（地址 255/65535，FC=4 无应答）**。原先
+  `SendNoReply` 只把帧存进 `_nextBroadcastMessage`，状态机从不发送，第二次广播还抛
+  "Broadcast message pending" —— 死代码加半实现。现在：
+  * 新增 `Iec101Client.SendBroadcast(ASDU)`（平衡模式抛 `NotSupportedException`，
+    平衡链路没有广播地址语义）；
+  * 广播在**外层轮转状态机之前**按总线级发送一次（不能放进按从站轮转的状态机，
+    否则会按从站数重复发送），且仅在"无在途事务/无待发报文"时发送，避免插进
+    一问一答之间造成应答碰撞；
+  * 从站侧：广播帧期间 `SendASDU` 统一丢弃应答，即使业务处理器调了 `SendACT_CON`
+    也不会回应（101 从站不得应答广播）；无应答型单播用户数据（FC=4）也不再
+    错误地按 FC=3 发送并等一个不会来的 ACK；
+  * 回归测试：从站恰好收到一次、不回任何报文、主站不进入等 ACK 状态、广播后
+    点对点总召唤仍正常；两处修复均做过"回退即失败"验证。
 - fix(protocol, CS101): **串口字符超时覆盖整帧读取窗口（致命）**。`StreamByteSource.ReadAsync`
   用一个 `CancelAfter(characterTimeout)` 包住"读满整帧"的循环，默认 50ms；
   9600 波特每字节约 1.04ms → **帧体 >48 字节的合法帧必然被判超时丢弃**（总召唤响应、
@@ -119,7 +132,7 @@ Changes to version 6.1.0
   `CS104LifecycleTests`（3 项）、`CS101SerialTimeoutTests`（6 项，含"100 字节帧在
   9600 波特下不被误杀"）、`CS103ProtocolHardeningTests`（6 项）、
   `CS104ProtocolHardeningTests`（10 项）、`CoreFileSegmentTests`（2 项）。
-  全量 **308 项全部通过**（Debug 与 Release 均验证）。
+  全量 **310 项全部通过**（Debug 与 Release 均验证）。
 - feat(CS103): **new `LFDCC.IEC60870.CS103` package** — IEC 60870-5-103
   (DL/T 667-1999) protective-equipment stack, `net6.0`, native FT1.2 framing
   (no APCI). Master and slave, **serial (RS-485/RS-232) and TCP**, plus a generic

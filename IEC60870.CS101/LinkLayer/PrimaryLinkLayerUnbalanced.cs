@@ -42,6 +42,9 @@ namespace IEC60870.CS101;
 
         private BufferFrame _nextBroadcastMessage = null;
 
+        /// <summary>保护 <see cref="_nextBroadcastMessage"/>：用户线程入队、链路线程取走发送。</summary>
+        private readonly object _broadcastGate = new object();
+
         private IClientLinkLayerCallbacks _callbacks = null;
 
         private LinkLayerStateChanged _stateChanged = null;
@@ -503,20 +506,38 @@ namespace IEC60870.CS101;
 
                                 if (asdu != null)
                                 {
+                                    if (requireConfirmation)
+                                    {
+                                        _debugLog("[SLAVE " + _address + "] PLL - SEND FC 03 - USER DATA CONFIRMED");
 
-                                    _debugLog("[SLAVE " + _address + "] PLL - SEND FC 03 - USER DATA CONFIRMED");
+                                        _linkLayer.SendVariableLengthFramePrimary(FunctionCodePrimary.USER_DATA_CONFIRMED, _address, nextFcb, true, asdu);
 
-                                    _linkLayer.SendVariableLengthFramePrimary(FunctionCodePrimary.USER_DATA_CONFIRMED, _address, nextFcb, true, asdu);
+                                        _lastSentASDU = nextMessage;
+                                        nextMessage = null;
 
-                                    _lastSentASDU = nextMessage;
-                                    nextMessage = null;
+                                        nextFcb = !nextFcb;
+                                        lastSendTime = currentTime;
+                                        originalSendTime = currentTime;
+                                        waitingForResponse = true;
 
-                                    nextFcb = !nextFcb;
-                                    lastSendTime = currentTime;
-                                    originalSendTime = currentTime;
-                                    waitingForResponse = true;
+                                        newState = PrimaryLinkLayerState.EXECUTE_SERVICE_SEND_CONFIRM;
+                                    }
+                                    else
+                                    {
+                                        // 无应答型用户数据（FC=4）：不翻转 FCB、不等 ACK、
+                                        // 不进入 SEND_CONFIRM，否则会等一个永远不来的确认，
+                                        // 超时后把健康链路判成故障。原实现忽略
+                                        // requireConfirmation，一律按 FC=3 发送。
+                                        _debugLog("[SLAVE " + _address + "] PLL - SEND FC 04 - USER DATA NO REPLY");
 
-                                    newState = PrimaryLinkLayerState.EXECUTE_SERVICE_SEND_CONFIRM;
+                                        _linkLayer.SendVariableLengthFramePrimary(FunctionCodePrimary.USER_DATA_NO_REPLY, _address, false, false, asdu);
+
+                                        nextMessage = null;
+                                        _lastSentASDU = null;
+                                        lastSendTime = currentTime;
+
+                                        // 保持 LINK_LAYERS_AVAILABLE，可继续发下一条
+                                    }
                                 }
                             }
                         }
@@ -724,15 +745,17 @@ namespace IEC60870.CS101;
         {
             if (slaveAddress == _linkLayer.GetBroadcastAddress())
             {
-                if (_nextBroadcastMessage != null)
-            {
-                throw new LinkLayerBusyException("Broadcast message pending");
+                // 广播帧是总线级的，用户线程写入、链路线程取走发送，必须加锁。
+                lock (_broadcastGate)
+                {
+                    if (_nextBroadcastMessage != null)
+                    {
+                        throw new LinkLayerBusyException("Broadcast message pending");
+                    }
+
+                    _nextBroadcastMessage = message;
+                }
             }
-            else
-            {
-                _nextBroadcastMessage = message;
-            }
-        }
             else
             {
                 var slave = GetSlaveConnection(slaveAddress);
@@ -833,6 +856,13 @@ namespace IEC60870.CS101;
 
         public override void RunStateMachine()
         {
+            // 广播优先：总线级、一次性、不等应答。发送成功时本轮不再推进点对点状态机，
+            // 避免把广播插进某个从站的一问一答事务之间（RS-485 上会造成应答碰撞/从站误解帧）。
+            if (TrySendBroadcast())
+            {
+                return;
+            }
+
             // 驱动所有已注册从站的链路层状态机
 
             if (_slaveConnections.Count > 0)
@@ -856,9 +886,55 @@ namespace IEC60870.CS101;
         }
         }
 
-        public override void SendLinkLayerTestFunction()
+        /// <summary>
+        /// 尝试发送待发的广播帧（总线级、FC=4 USER_DATA_NO_REPLY、不等应答）。
+        /// </summary>
+        /// <remarks>
+        /// 广播没有 FCB/应答语义：必须在总线空闲时**只发一次**，且不能进入
+        /// <c>EXECUTE_SERVICE_SEND_CONFIRM</c>（否则会等一个永远不会来的 ACK，
+        /// 超时后误判链路故障）。状态机是"每轮推进一个从站"的轮转结构，
+        /// 因此广播只能放在外层、轮转之前发，否则会按从站数重复发送。
+        /// </remarks>
+        /// <returns>本轮已发出广播时返回 <c>true</c>，调用方跳过点对点状态机。</returns>
+        private bool TrySendBroadcast()
         {
+            BufferFrame message;
+
+            lock (_broadcastGate)
+            {
+                message = _nextBroadcastMessage;
+                if (message == null)
+                {
+                    return false;
+                }
+
+                // 总线忙：任一从站有在途事务或待发报文时先不发广播，
+                // 避免插进一问一答之间造成应答碰撞。
+                foreach (var connection in _slaveConnections)
+                {
+                    if (connection.waitingForResponse || (connection.nextMessage != null))
+                    {
+                        return false;
+                    }
+                }
+
+                _nextBroadcastMessage = null;
+            }
+
+            _debugLog("PLL - SEND BROADCAST FC 04 (no reply)");
+
+            _linkLayer.SendVariableLengthFramePrimary(
+                FunctionCodePrimary.USER_DATA_NO_REPLY,
+                _linkLayer.GetBroadcastAddress(),
+                false,
+                false,
+                message);
+
+            return true;
         }
+
+        public override void SendLinkLayerTestFunction()
+        {        }
 
         public void SetLinkLayerStateChanged(LinkLayerStateChanged callback, object parameter)
         {

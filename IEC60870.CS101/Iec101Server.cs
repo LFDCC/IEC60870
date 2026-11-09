@@ -197,7 +197,24 @@ namespace IEC60870.CS101;
 
         bool IServerApplicationLayer.HandleReceivedData(byte[] msg, bool isBroadcast, int userDataStart, int userDataLength)
         {
-            return HandleApplicationLayer(0, msg, userDataStart, userDataLength);
+            if (!isBroadcast)
+            {
+                return HandleApplicationLayer(0, msg, userDataStart, userDataLength);
+            }
+
+            // 广播：正常派发给业务（所有从站都执行），但期间禁止任何应答。
+            // 用 try/finally 保证异常路径也恢复标志。
+            var previous = _suppressBroadcastResponses;
+            _suppressBroadcastResponses = true;
+
+            try
+            {
+                return HandleApplicationLayer(0, msg, userDataStart, userDataLength);
+            }
+            finally
+            {
+                _suppressBroadcastResponses = previous;
+            }
         }
 
         void IServerApplicationLayer.ResetCUReceived(bool onlyFcb)
@@ -245,6 +262,13 @@ namespace IEC60870.CS101;
 
         private long _class1Dropped;
         private long _class2Dropped;
+
+        /// <summary>
+        /// 正在派发一帧广播：期间产生的一切应答都必须丢弃。
+        /// 101 从站收到广播（地址 255/65535）执行后不得回任何报文，
+        /// 否则总线上的响应会与其他从站/主站的事务碰撞。
+        /// </summary>
+        private bool _suppressBroadcastResponses;
 
         /// <summary>
         /// 因队列满被丢弃的应答帧数（1 类 / 2 类）。非零说明主站取数长期跟不上，
@@ -640,6 +664,14 @@ namespace IEC60870.CS101;
 
         internal void SendASDU(ASDU asdu)
         {
+            if (_suppressBroadcastResponses)
+            {
+                // 广播期间不回应：业务处理器即使调了 SendACT_CON/SendASDU 也必须丢弃，
+                // 这是"从站不得应答广播"的协议要求，不能只靠调用方自觉。
+                DebugLog("Broadcast frame: suppress slave response (TI=" + asdu.TypeId + ")");
+                return;
+            }
+
             EnqueueUserDataClass1(asdu);
         }
 
