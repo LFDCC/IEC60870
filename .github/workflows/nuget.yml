@@ -14,14 +14,35 @@ name: Package Push
 # Publishing uses NuGet.org Trusted Publishing (OIDC): the job exchanges its
 # short-lived GitHub OIDC token for a temporary NuGet API key via NuGet/login.
 # The policy on nuget.org pins: owner=LFDCC, repo=IEC60870, workflow=nuget.yml,
-# glob=LFDCC.IEC60870.*. Manual runs (workflow_dispatch) skip the tag-gated
-# steps and only verify the OIDC login, without publishing anything.
+# glob=LFDCC.IEC60870.*.
+#
+# Manual runs (workflow_dispatch):
+#   * version 留空  -> 只验证 OIDC 登录，不发布任何包（冒烟检查）；
+#   * version=6.1.1, package=CS104 -> 用同一条 OIDC 通道只补发指定包
+#     （用于"某个包上传失败"的补发，不需要移动 tag）。
+# 手动补发请在 **main 分支** 上触发：workflow 文件取自所选 ref。
 
 on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "要发布的版本号（如 6.1.1）。留空 = 只验证 OIDC 登录，不发布"
+        required: false
+        default: ""
+      package:
+        description: "要发布的包（version 为空时忽略）"
+        required: false
+        type: choice
+        default: all
+        options:
+          - all
+          - Core
+          - CS101
+          - CS103
+          - CS104
 
 jobs:
   build:
@@ -49,19 +70,26 @@ jobs:
           git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
           git merge-base --is-ancestor HEAD origin/main
 
-      - name: Set VERSION variable from tag
-        if: startsWith(github.ref, 'refs/tags/')
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_ENV"
+      - name: Set VERSION variable
+        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.version != ''
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "发布版本: ${VERSION}"
 
       - name: Test
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.version != ''
         run: dotnet test tests-cs104/tests-cs104.csproj -c Release --nologo
         env:
           # 兜底：即便 6.0 运行时在当前 runner 上安装失败，net6.0 测试也能在 8.0 上运行
           DOTNET_ROLL_FORWARD: Major
 
       - name: Pack
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.version != ''
         run: |
           dotnet pack IEC60870.Core/IEC60870.Core.csproj   -c Release /p:Version=${VERSION} -o artifacts
           dotnet pack IEC60870.CS101/IEC60870.CS101.csproj -c Release /p:Version=${VERSION} -o artifacts
@@ -76,20 +104,28 @@ jobs:
           user: ${{ secrets.NUGET_USER }}
 
       - name: Push Core to NuGet
-        if: startsWith(github.ref, 'refs/tags/')
+        if: >
+          (startsWith(github.ref, 'refs/tags/') || github.event.inputs.version != '') &&
+          (startsWith(github.ref, 'refs/tags/') || github.event.inputs.package == 'all' || github.event.inputs.package == 'Core')
         run: dotnet nuget push "artifacts/LFDCC.IEC60870.Core.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --skip-duplicate
 
       # 每个包单独一步：多包合并成一条 push 命令时，中间某个包失败可能被
       # 后续包的成功掩盖（v6.1.1 实测：CS104 未发布，job 仍显示 success）。
       # 拆开后任何包失败都会让该步骤/job 明确失败。
       - name: Push CS101 to NuGet
-        if: startsWith(github.ref, 'refs/tags/')
+        if: >
+          (startsWith(github.ref, 'refs/tags/') || github.event.inputs.version != '') &&
+          (startsWith(github.ref, 'refs/tags/') || github.event.inputs.package == 'all' || github.event.inputs.package == 'CS101')
         run: dotnet nuget push "artifacts/LFDCC.IEC60870.CS101.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --skip-duplicate
 
       - name: Push CS103 to NuGet
-        if: startsWith(github.ref, 'refs/tags/')
+        if: >
+          (startsWith(github.ref, 'refs/tags/') || github.event.inputs.version != '') &&
+          (startsWith(github.ref, 'refs/tags/') || github.event.inputs.package == 'all' || github.event.inputs.package == 'CS103')
         run: dotnet nuget push "artifacts/LFDCC.IEC60870.CS103.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --skip-duplicate
 
       - name: Push CS104 to NuGet
-        if: startsWith(github.ref, 'refs/tags/')
+        if: >
+          (startsWith(github.ref, 'refs/tags/') || github.event.inputs.version != '') &&
+          (startsWith(github.ref, 'refs/tags/') || github.event.inputs.package == 'all' || github.event.inputs.package == 'CS104')
         run: dotnet nuget push "artifacts/LFDCC.IEC60870.CS104.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --skip-duplicate
