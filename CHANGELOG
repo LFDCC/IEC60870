@@ -1,7 +1,7 @@
 IEC60870.NETAsync — Changelog
 =============================
 
-Changes to version 6.1.0
+Changes to version 6.1.1
 ------------------------
 - feat(protocol, CS101): **补齐广播（地址 255/65535，FC=4 无应答）**。原先
   `SendNoReply` 只把帧存进 `_nextBroadcastMessage`，状态机从不发送，第二次广播还抛
@@ -273,7 +273,7 @@ Changes to version 6.1.0
     reads the w counter under `_kLock`; CS101 `FileServer` no longer dereferences
     `_selectedFile` in receive state and uses the correct section index on
     negative section retransmission; `FilesAvailable.GetFiles()` takes its lock.
-  * Build/docs: all four packages aligned to 6.1.0; readme framework/package
+  * Build/docs: all four packages aligned to 6.1.1; readme framework/package
     count/manual-pack commands corrected; `release_script.sh` and CI include
     CS103 and now run `dotnet test` before packing; sln `Release|Any CPU`
     configuration for `cs101-slave-balanced` fixed.
