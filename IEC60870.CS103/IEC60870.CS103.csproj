@@ -29,7 +29,7 @@
        解除依赖后 103 是真正独立的协议包，也消除了 ASDU/Asdu、
        CP56Time2a/Cp56Time2a 这类只差大小写的近似名风险。 -->
   <ItemGroup>
-    <InternalsVisibleTo Include="tests-cs104" />
+    <InternalsVisibleTo Include="IEC60870.Tests" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="TouchSocket" Version="4.3.10" />

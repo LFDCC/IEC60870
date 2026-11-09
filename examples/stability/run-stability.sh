@@ -10,7 +10,7 @@
 #   ./run-stability.sh 600        # 每个用例 10 分钟
 #
 # 结果：
-#   tests-cs104/StabilityEnduranceTests.cs 的三条用例
+#   tests/StabilityEnduranceTests.cs 的三条用例
 #   logs/stability-{101,103,104}.log
 #   脚本最后打印三份日志的结论行，任一失败则退出码非 0。
 
@@ -19,7 +19,7 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DURATION="${1:-120}"
 LOG_DIR="$ROOT/examples/stability/logs"
-PROJECT="$ROOT/tests-cs104/tests-cs104.csproj"
+PROJECT="$ROOT/tests/IEC60870.Tests.csproj"
 
 mkdir -p "$LOG_DIR"
 

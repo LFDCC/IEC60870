@@ -83,7 +83,7 @@ jobs:
 
       - name: Test
         if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.version != ''
-        run: dotnet test tests-cs104/tests-cs104.csproj -c Release --nologo
+        run: dotnet test tests/IEC60870.Tests.csproj -c Release --nologo
         env:
           # 兜底：即便 6.0 运行时在当前 runner 上安装失败，net6.0 测试也能在 8.0 上运行
           DOTNET_ROLL_FORWARD: Major

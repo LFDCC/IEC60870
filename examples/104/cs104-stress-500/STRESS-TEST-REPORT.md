@@ -55,7 +55,7 @@ C_SE_NA_1  值 0.5f:  旧读 raw[9]=0xFF → 误判 select;  新读 raw[11]=0x00
 
 ### 1.3 回归测试
 
-`tests-cs104/CodeReviewRegressionTests.cs` 新增 3 个测试（全部经“编码→线字节→AsduView”端到端断言）：
+`tests/CodeReviewRegressionTests.cs` 新增 3 个测试（全部经“编码→线字节→AsduView”端到端断言）：
 
 - `ReadSelectBit_C_SE_NA_1_MatchesSendSide_WhenValueLowByteHasBit7Set` —— 复现 `0.5f` 场景，收发一致；
 - `ReadSelectBit_SendReceiveAgree_ForAllControlTypes` —— **14 种控制命令 × 预发/执行**全网；
@@ -308,7 +308,7 @@ dotnet .../cs104-stress-500.dll --devices 10000 --port 20000 --duration 20 \
 dotnet .../cs104-stress-500.dll --bench --bench-iterations 3000000
 
 # 回归测试
-dotnet test tests-cs104/tests-cs104.csproj -c Release
+dotnet test tests/IEC60870.Tests.csproj -c Release
 ```
 
 **随附数据**：`results/` 下含 `metrics-500devices-fixed.json`、`scale-{1000..20000}.json`、

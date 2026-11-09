@@ -38,7 +38,7 @@ create_release_folder()
 	cp -rf IEC60870.CS103 $FOLDER_NAME
 	cp -rf IEC60870.CS104 $FOLDER_NAME
 	cp -rf examples $FOLDER_NAME
-	cp -rf tests-cs104 $FOLDER_NAME
+	cp -rf tests $FOLDER_NAME
 	cp -rf CHANGELOG $FOLDER_NAME
 	cp -rf LICENSE $FOLDER_NAME
 	cp -rf IEC60870.sln $FOLDER_NAME

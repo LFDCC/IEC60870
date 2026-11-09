@@ -27,7 +27,7 @@
   </ItemGroup>
   <ItemGroup>
     <!-- 与 CS103/CS104 一致：让测试项目能直接验证 internal 的链路层引擎 -->
-    <InternalsVisibleTo Include="tests-cs104" />
+    <InternalsVisibleTo Include="IEC60870.Tests" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="TouchSocket" Version="4.3.10" />

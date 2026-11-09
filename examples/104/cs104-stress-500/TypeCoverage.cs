@@ -6,7 +6,7 @@
  *  factory that builds a "server response" ASDU for the commands the master
  *  fleet pushes at the simulated devices.
  *
- *  The factory mirrors tests-cs104/EncodeRoundtripTests.cs (which already covers
+ *  The factory mirrors tests/EncodeRoundtripTests.cs (which already covers
  *  the full built-in set) so that every value object here is known to round-trip
  *  through the library's own encoder/decoder.
  */

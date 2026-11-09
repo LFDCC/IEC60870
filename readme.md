@@ -222,7 +222,7 @@ IEC60870.CS101/       IEC 60870-5-101 link layer (net6.0)
 IEC60870.CS103/       IEC 60870-5-103 stack (net6.0) — FT1.2 over serial & TCP
 IEC60870.CS104/       IEC 60870-5-104 transport (net6.0)
 examples/             runnable client / server / sample projects
-tests-cs104/          NUnit end-to-end tests for CS101 / CS103 / CS104
+tests/          NUnit end-to-end tests for CS101 / CS103 / CS104
 ```
 
 ## Building

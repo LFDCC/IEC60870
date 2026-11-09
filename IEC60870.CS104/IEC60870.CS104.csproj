@@ -26,7 +26,7 @@
     <ProjectReference Include="..\IEC60870.Core\IEC60870.Core.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <InternalsVisibleTo Include="tests-cs104" />
+    <InternalsVisibleTo Include="IEC60870.Tests" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="TouchSocket" Version="4.3.10" />
