@@ -71,26 +71,49 @@ namespace IEC60870.CS104.Tests
             SharedTimeoutScheduler.ForceShutdown();
         }
 
-        /// <summary>已关闭的调度器实例必须拒绝注册（而不是返回永不触发的 entry）。</summary>
+        /// <summary>
+        /// 在已关闭的实例上注册：必须**透明转交**到活动实例并真的被调度，
+        /// 既不能返回永不触发的 entry（僵尸链路），也不能抛异常拖垮调用方。
+        /// </summary>
+        /// <remarks>
+        /// 真实竞态（CI 上已复现）：一个连接断开把 _liveCount 减到 0 关闭实例，
+        /// 同时另一个连接正在 <c>Instance.Register</c>。此前实现直接抛
+        /// ObjectDisposedException，而 Iec104TimerScheduler 的构造函数并不捕获它，
+        /// 表现为"偶发重连失败"。现在 Instance 不再返回已关闭实例，
+        /// Register 在竞态命中时转交活动实例。
+        /// </remarks>
         [Test]
-        public void 共享调度器_已关闭实例_注册必须抛异常()
+        public async Task 共享调度器_已关闭实例_注册必须转交活动实例()
         {
             SharedTimeoutScheduler.ForceShutdown();
 
-            var scheduler = SharedTimeoutScheduler.Instance;
-            var entry = scheduler.Register(
+            var closed = SharedTimeoutScheduler.Instance;
+            var first = closed.Register(
                 _ => new ValueTask<Iec104TimerScheduler.SchedulerAction>(Iec104TimerScheduler.SchedulerAction.Stop),
                 () => 10, () => { }, CancellationToken.None, 10);
-            scheduler.Unregister(entry);      // 计数归零 → 关闭该实例
+            closed.Unregister(first);      // 计数归零 → 关闭该实例
 
-            Assert.Throws<ObjectDisposedException>(() =>
-                scheduler.Register(
-                    _ => new ValueTask<Iec104TimerScheduler.SchedulerAction>(Iec104TimerScheduler.SchedulerAction.Stop),
-                    () => 10, () => { }, CancellationToken.None, 10),
-                "已关闭的调度器必须拒绝注册 —— 原实现静默返回 arm=false 的 entry，"
-                + "调用方以为定时器在跑，实际永不触发");
+            Assert.That(closed.IsShutdown, Is.True, "前置条件：该实例已被关闭");
+
+            var ticks = 0;
+            var entry = closed.Register(
+                _ =>
+                {
+                    Interlocked.Increment(ref ticks);
+                    return new ValueTask<Iec104TimerScheduler.SchedulerAction>(Iec104TimerScheduler.SchedulerAction.Continue);
+                },
+                () => 10, () => { }, CancellationToken.None, 10);
+
+            await Task.Delay(150).ConfigureAwait(false);
+
+            var alive = Volatile.Read(ref ticks) > 0;
+            entry.Owner.Unregister(entry);
 
             SharedTimeoutScheduler.ForceShutdown();
+
+            Assert.That(alive, Is.True,
+                "在已关闭实例上注册必须转交到活动实例并真的被调度："
+                + "既不能静默返回 arm=false 的僵尸 entry，也不能抛异常让调用方失败");
         }
 
         // ══════════════════════════════════════════════════════════

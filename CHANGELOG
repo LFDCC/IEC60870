@@ -3,6 +3,15 @@ IEC60870.NETAsync — Changelog
 
 Changes to version 6.1.2
 ------------------------
+- fix(CS104): **共享超时调度器：并发注册/注销竞态导致偶发 `ObjectDisposedException`**。
+  一个连接断开把 `_liveCount` 减到 0 关闭调度器实例的同时，另一个连接正在
+  `SharedTimeoutScheduler.Instance.Register(...)`（`Iec104TimerScheduler` 构造函数），
+  此前会直接抛 ODE —— 而该构造函数并不捕获它，现场表现为**偶发重连失败**
+  （CI v6.1.2 首发正是撞上这条用例）。现在：
+  * `Instance` 不再返回已关闭的实例；
+  * `Register` 命中竞态时**透明转交**到当前活动实例（有转交次数上限），
+    既不会静默返回永不触发的僵尸 entry，也不会把异常抛给调用方。
+  新增确定性用例覆盖该交错；改动做过"回退即失败"验证。
 - fix(CS104): `Iec104Server.ApplyLoggerToGroups` 用 `_singleGroup?.Logger = log` 给
   null 条件访问表达式赋值。该语法是 Roslyn 的 **preview 特性**：SDK 10 +
   `LangVersion=latest` 下能编过，其它 SDK/LangVersion 直接报 `CS8652`

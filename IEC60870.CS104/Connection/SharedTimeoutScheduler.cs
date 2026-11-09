@@ -56,8 +56,12 @@ internal sealed class SharedTimeoutScheduler : IDisposable
             // Volatile.Read：_instance 由 Unregister 在 SingletonGate 内写 null、
             // 由本方法在 SingletonGate 内写实例；无屏障的双检在弱内存序架构
             // （ARM64）上可能读到已释放实例的陈旧引用。
+            //
+            // 已关闭的实例不得再被返回：否则调用方会在"取到 Instance 之后、
+            // 真正 Register 之前"被并发注销关掉实例，拿到 ObjectDisposedException
+            // （CI 实测：一个连接断开把计数减到 0 的同时另一个正在重连）。
             var current = Volatile.Read(ref _instance);
-            if (current != null)
+            if (current != null && !current._shutdown)
             {
                 return current;
             }
@@ -65,7 +69,7 @@ internal sealed class SharedTimeoutScheduler : IDisposable
             lock (SingletonGate)
             {
                 var existing = Volatile.Read(ref _instance);
-                if (existing != null)
+                if (existing != null && !existing._shutdown)
                 {
                     return existing;
                 }
@@ -195,19 +199,25 @@ internal sealed class SharedTimeoutScheduler : IDisposable
         Action onFatal,
         CancellationToken cancellationToken,
         int initialDelayMs)
+        => RegisterCore(check, delayProvider, onFatal, cancellationToken, initialDelayMs, depth: 0);
+
+    /// <summary>
+    /// 注册实现。本实例可能在与"最后一个连接注销"并发时被关闭：
+    /// 此时**不能**抛异常让调用方（<see cref="Iec104TimerScheduler"/> 构造函数）失败，
+    /// 也不能返回永不触发的 entry（僵尸链路）。做法是透明转交当前活动实例重试。
+    /// </summary>
+    /// <param name="depth">转交次数，防止极端情况下无限递归。</param>
+    private TimeoutEntry RegisterCore(
+        Func<CancellationToken, ValueTask<Iec104TimerScheduler.SchedulerAction>> check,
+        Func<int> delayProvider,
+        Action onFatal,
+        CancellationToken cancellationToken,
+        int initialDelayMs,
+        int depth)
     {
         if (check == null) throw new ArgumentNullException(nameof(check));
         if (delayProvider == null) throw new ArgumentNullException(nameof(delayProvider));
         if (onFatal == null) throw new ArgumentNullException(nameof(onFatal));
-
-        // 实例已关闭：拒绝注册。原实现会静默返回一个 arm=false 的 entry ——
-        // 调用方以为定时器已在跑，实际 T1/T2/T3 永不触发（僵尸链路的来源之一）。
-        // 抛异常让调用方（ApduEndpoint.Rebuild）拿到明确失败，而不是静默降级。
-        if (_shutdown)
-        {
-            throw new ObjectDisposedException(nameof(SharedTimeoutScheduler),
-                "共享超时调度器已关闭，不能注册新连接（应通过 Instance 获取新实例）");
-        }
 
         // 分片按注册序号轮转：相邻连接错开分片，避免同批建连全落在同一片。
         var idx = (int)(Interlocked.Increment(ref _nextId) & ShardMask);
@@ -216,6 +226,7 @@ internal sealed class SharedTimeoutScheduler : IDisposable
         Interlocked.Increment(ref _liveCount);
 
         var due = Environment.TickCount64 + Math.Max(1, initialDelayMs);
+        var pushed = false;
 
         lock (SingletonGate)
         {
@@ -232,19 +243,32 @@ internal sealed class SharedTimeoutScheduler : IDisposable
                 if (_shutdown)
                 {
                     Interlocked.Decrement(ref _liveCount);
-                    throw new ObjectDisposedException(nameof(SharedTimeoutScheduler),
-                        "共享超时调度器已关闭，不能注册新连接（应通过 Instance 获取新实例）");
                 }
-
-                entry.Generation++;
-                entry.Deadline = due;
-                HeapPush(shard, entry);
+                else
+                {
+                    entry.Generation++;
+                    entry.Deadline = due;
+                    HeapPush(shard, entry);
+                    pushed = true;
+                }
             }
         }
 
-        ArmTimer();
+        if (pushed)
+        {
+            ArmTimer();
+            return entry;
+        }
 
-        return entry;
+        // 本实例已被并发注销关闭（真实竞态：一个连接断开把计数减到 0，另一个正在重连）。
+        // 转交到当前活动实例；Instance 不会返回已关闭的实例，因此最多再转交一次。
+        if (depth >= 4)
+        {
+            throw new ObjectDisposedException(nameof(SharedTimeoutScheduler),
+                "共享超时调度器反复被并发关闭，无法注册新连接");
+        }
+
+        return Instance.RegisterCore(check, delayProvider, onFatal, cancellationToken, initialDelayMs, depth + 1);
     }
 
     /// <summary>
