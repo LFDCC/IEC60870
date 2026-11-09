@@ -11,8 +11,6 @@ namespace IEC60870.CS101;
 
     internal interface IPrimaryLinkLayerUnbalanced
     {
-        void ResetCU(int slaveAddress);
-
         /// <summary>
         /// 判断该通道（从站连接）当前能否发送新的应用层报文
         /// </summary>
@@ -88,7 +86,6 @@ namespace IEC60870.CS101;
 
             public bool requireConfirmation = false;
 
-            public bool resetCu = false;
             public bool requestClass2Data = false;
             public bool requestClass1Data = false;
 
@@ -656,16 +653,6 @@ namespace IEC60870.CS101;
          * IPrimaryLinkLayerUnbalanced
          ********************************/
 
-
-        public void ResetCU(int slaveAddress)
-        {
-            var slave = GetSlaveConnection(slaveAddress);
-
-            if (slave != null)
-        {
-            slave.resetCu = true;
-        }
-    }
 
         public bool IsChannelAvailable(int slaveAddress)
         {

@@ -40,8 +40,6 @@ namespace IEC60870.CS101;
         USER_DATA_CONFIRMED = 3,
         USER_DATA_NO_REPLY = 4,
         RESET_FCB = 7,
-        /* CS103 专用 */
-        REQUEST_FOR_ACCESS_DEMAND = 8,
         REQUEST_LINK_STATUS = 9,
         REQUEST_USER_DATA_CLASS_1 = 10,
         REQUEST_USER_DATA_CLASS_2 = 11

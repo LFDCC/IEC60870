@@ -26,10 +26,4 @@ public static class Iec60870Utility
 
     /// <summary>IEC 60870-5-104 协议标识。</summary>
     public const string Iec104 = nameof(Iec104);
-
-    /// <summary>IEC 60870-5-103 串口（FT1.2）协议标识。</summary>
-    public const string Iec103 = nameof(Iec103);
-
-    /// <summary>IEC 60870-5-103 over TCP 隧道协议标识（FT1.2 帧直接由 TCP 承载，无 APCI）。</summary>
-    public const string Iec103OverTcp = nameof(Iec103OverTcp);
 }

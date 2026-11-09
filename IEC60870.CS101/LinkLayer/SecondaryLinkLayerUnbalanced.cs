@@ -99,7 +99,7 @@ namespace IEC60870.CS101;
                 case FunctionCodePrimary.RESET_FCB:
                     _debugLog("SLL - RESET FCB");
                     {
-                        /* CS103 使用 */
+                        /* 复位帧计数位：FCV=0 且 FCB=0 */
 
                         /* 校验 FCV=0 */
                         if ((fcv) || (fcb))
