@@ -371,8 +371,17 @@ public sealed class Iec104Server : TcpService<Iec104Session>, IIec104Slave
             return;
         }
 
-        _singleGroup?.Logger = log;
-        _catchAllGroup?.Logger = log;
+        // 不能写成 `_singleGroup?.Logger = log`：对 null 条件访问表达式赋值属于
+        // Roslyn 的 preview 特性（CS8652），常规 LangVersion 下直接编译失败。
+        if (_singleGroup != null)
+        {
+            _singleGroup.Logger = log;
+        }
+
+        if (_catchAllGroup != null)
+        {
+            _catchAllGroup.Logger = log;
+        }
 
         lock (_userGroups)
         {
