@@ -1,12 +1,13 @@
-// 许继(Xuji)私有 ASDU 类型示例 —— TypeID 166 / 168 + 私有 IOA
+// 许继(Xuji)私有 ASDU 类型示例 —— TypeID 166 / 168 + 单元公共地址(CA)拼装
 //
 // 说明：
 //   IEC 60870-5-104 的标准 TypeID 为 1..127；128..170 为制造厂私有区。
-//   许继(许继电气)保护装置在私有区定义了若干私有 ASDU 类型，并用「私有 IOA」
-//   （非标准连续序号，而是带语义的 24 位地址）来寻址。
+//   许继(许继电气)保护装置在私有区定义了若干私有 ASDU 类型，用 24 位信息体地址(IOA)寻址。
+//   注意：166 / 168 的 IOA 具体语义规约未作定义，须查装置的装置信息表 / 点表，
+//   因此本示例一律用普通 int 承载，不做任何「分段」解释（分段若用错比裸数值更危险）。
 //
 //   本示例演示如何：
-//     1) 用 24 位私有 IOA 打包「区号/组号/条目序号」(XujiPrivateIoa)；
+//     1) 用 XujiCa 拼出许继的单元公共地址(CA) = 扇区(低字节) + 装置地址(高字节)；
 //     2) 实现私有 TypeID 166 / 168 的 InformationObject + IPrivateIOFactory；
 //     3) 通过 PrivateInformationObjectTypes 注册，使其在收发双向可被编解码；
 //     4) 在客户端/服务端通过 AsduReceived 回调拿到原始字节后重建 ASDU 并用
@@ -37,16 +38,29 @@
 //   · IEC60870.Core.InformationObjects.StartEvent   (1 字节: 选相/启动相位 GS/SL1/SL2/SL3)
 //   · IEC60870.Core.Quality.QualityDescriptorP       (1 字节: 保护设备质量位 IV/NT/SB/BL/EI…)
 //
+// ============================================================================
+// 单元公共地址 CA —— 许继私有规则（许继104规约 §3.14 表18 原文）
+// ============================================================================
+//   「COMADDR低字节 = 公共地址；COMADDR高字节 = 装置地址（下同）。」
+//   许继现场把低字节那一段叫「扇区」，装置工程师给的接入参数就是
+//   「扇区 + 装置地址」两个数——缺一个都拼不出装置认可的 CA（裸用其中一个，
+//   装置会回 COT=46「未知公共地址」或直接忽略，总召唤/遥控都过不去）。
+//        ca = (装置地址 << 8) | 扇区             需 SizeOfCA = 2（库默认即 2）
+//   自发上送的遥信/遥测，装置地址通常为 0；对某一具体装置下遥控时才填它的装置地址。
+//   注意与信息体地址(IOA)区分：CA 在 ASDU 头，回答「哪个单元/哪个装置」；
+//   IOA 在载荷里，回答「具体哪个点」。
+//
 // 用法（典型）：
 //   // 发送：把 float[] 打包成 FaultData
 //   var faultBytes = XujiPrivateTypes.EncodeFaultValues(new[] { 12.5f, -3.14f, 0.0f, 100.25f });
 //   var io = new XujiType166Object(
-//       new XujiPrivateIoa(1,2,3).ToObjectAddress(),
+//       ioa: 0x010203,                                // 信息体地址：分段含义查装置信息表
 //       new SingleEvent(qual1: 0x02),                 // ES=<2>动作 (也可用 .State 属性)
 //       new CP16Time2a(protectionTimeMs: 3590),       // 保护动作时间
 //       new CP56Time2a(ts7, 0),                       // 7 字节时标(也可 new CP56Time2a(DateTime))
 //       faultBytes);
-//   var asdu = new ASDU(params, CauseOfTransmission.SPONTANEOUS, false, false, 0, 1, false);
+//   int ca = new XujiCa(sector: 1, device: 0).ToCommonAddress();   // 许继 CA = 装置地址<<8 | 扇区
+//   var asdu = new ASDU(params, CauseOfTransmission.SPONTANEOUS, false, false, 0, ca, false);
 //   asdu.AddInformationObject(io);
 //   await server.BroadcastAsync(asdu);
 //
@@ -68,34 +82,38 @@ using IEC60870.Core;
 namespace cs104_private_ioa.Xuji
 {
     /// <summary>
-    /// 许继私有 IOA：24 位地址拆分为 区号(1B) | 组号(1B) | 条目序号(1B)。
-    /// 框架原生用 3 字节(SizeOfIOA=3)小端写入 objectAddress，因此只要把语义地址
-    /// 打包成 int 交给 InformationObject，Encode/Decode 会自动按 3 字节 IOA 处理。
+    /// 许继 104 的单元公共地址(CA / COMADDR)：2 字节，由「扇区」+「装置地址」两段拼成。
+    /// 规约原文（§3.14 表18）：<c>COMADDR低字节 = 公共地址；COMADDR高字节 = 装置地址</c>。
+    /// 许继现场把低字节那一段叫「扇区」，接入参数就是「扇区 + 装置地址」两个数。
+    /// <para>
+    /// 库的 CA 是小端写出的（低字节在前），所以 <see cref="ToCommonAddress"/> 得到的
+    /// <c>(Device &lt;&lt; 8) | Sector</c> 落线正好是「扇区在前、装置地址在后」，与规约一致。
+    /// 需配合 <c>ApplicationLayerParameters.SizeOfCA = 2</c>（库默认即 2）。
+    /// </para>
     /// </summary>
-    public readonly struct XujiPrivateIoa
+    public readonly struct XujiCa
     {
-        public byte Zone { get; }   // 区号 / 装置区 (bits 16..23)
-        public byte Group { get; }  // 组号 / 功能组 (bits 8..15)
-        public byte Index { get; }  // 条目序号 (bits 0..7)
+        /// <summary>扇区 —— 规约里的「公共地址」，占 CA 低字节。</summary>
+        public byte Sector { get; }
 
-        public XujiPrivateIoa(byte zone, byte group, byte index)
+        /// <summary>装置地址 —— 占 CA 高字节。自发上送通常为 0，下遥控时为目标装置地址。</summary>
+        public byte Device { get; }
+
+        public XujiCa(byte sector, byte device)
         {
-            Zone = zone;
-            Group = group;
-            Index = index;
+            Sector = sector;
+            Device = device;
         }
 
-        /// <summary>打包为 24 位整数，可直接作为 InformationObject 的 objectAddress。</summary>
-        public int ToObjectAddress() => (Zone << 16) | (Group << 8) | Index;
+        /// <summary>打包为 ASDU 公共地址（2 字节）。</summary>
+        public int ToCommonAddress() => (Device << 8) | Sector;
 
-        /// <summary>从 24 位整数解析出语义地址。</summary>
-        public static XujiPrivateIoa Parse(int address)
-            => new XujiPrivateIoa(
-                (byte)((address >> 16) & 0xff),
-                (byte)((address >> 8) & 0xff),
-                (byte)(address & 0xff));
+        /// <summary>从 ASDU 公共地址还原出「扇区 / 装置地址」。</summary>
+        public static XujiCa Parse(int commonAddress)
+            => new((byte)(commonAddress & 0xFF), (byte)((commonAddress >> 8) & 0xFF));
 
-        public override string ToString() => $"Zone={Zone} Group={Group} Index={Index} (0x{ToObjectAddress():X6})";
+        public override string ToString()
+            => $"扇区={Sector} 装置地址={Device} (CA=0x{ToCommonAddress():X4})";
     }
 
     // ------------------------------------------------------------------------
@@ -110,6 +128,10 @@ namespace cs104_private_ioa.Xuji
     public class XujiType166Object : InformationObject, IPrivateIOFactory
     {
         public const int MaxFaultCount = 48;
+
+        /// <summary>信息体地址 3 字节(SizeOfIOA=3)，上限 0xFFFFFF。</summary>
+        public const int MaxObjectAddress = 0xFFFFFF;
+
         private const int HeaderSize = 1 + 2 + 7 + 1;  // SingleEvent + CP16Time2a + CP56Time2a + N
 
         /// <summary>qual1: IV NT SB BL EI 0 ES —— 用现成 SingleEvent 表示
@@ -133,8 +155,6 @@ namespace cs104_private_ioa.Xuji
         /// </summary>
         public byte[] FaultData { get; }
 
-        public XujiPrivateIoa PrivateIoa => XujiPrivateIoa.Parse(ObjectAddress);
-
         // ---- 构造 ----
 
         public XujiType166Object() : base(0)
@@ -146,7 +166,7 @@ namespace cs104_private_ioa.Xuji
         }
 
         /// <summary>发送用构造器。</summary>
-        /// <param name="ioa">私有 IOA, 可用 <see cref="XujiPrivateIoa.ToObjectAddress"/> 打包。</param>
+        /// <param name="ioa">信息体地址（3 字节，0..0xFFFFFF）。分段含义须查装置信息表。</param>
         /// <param name="singleEvent">qual1, 用 <c>new SingleEvent(0x02)</c> 或设置其 QDP/State。</param>
         /// <param name="elapsedTime">保护动作时间, 用 <c>new CP16Time2a(ms)</c>。</param>
         /// <param name="timestamp">7 字节时标, 用 <c>new CP56Time2a(bytes, 0)</c> 或 <c>new CP56Time2a(DateTime)</c>。</param>
@@ -154,6 +174,11 @@ namespace cs104_private_ioa.Xuji
         public XujiType166Object(int ioa, SingleEvent singleEvent, CP16Time2a elapsedTime, CP56Time2a timestamp, byte[] faultData)
             : base(ioa)
         {
+            if ((uint)ioa > MaxObjectAddress)
+            {
+                throw new ArgumentOutOfRangeException(nameof(ioa), ioa, "信息体地址为 3 字节，取值范围 0..0xFFFFFF");
+            }
+
             if (faultData == null || faultData.Length % 4 != 0)
             {
                 throw new ArgumentException("faultData length must be a multiple of 4", nameof(faultData));
@@ -246,6 +271,10 @@ namespace cs104_private_ioa.Xuji
     public class XujiType168Object : InformationObject, IPrivateIOFactory
     {
         public const int MaxFaultCount = 48;
+
+        /// <summary>信息体地址 3 字节(SizeOfIOA=3)，上限 0xFFFFFF。</summary>
+        public const int MaxObjectAddress = 0xFFFFFF;
+
         private const int HeaderSize = 1 + 1 + 2 + 7 + 1;  // SPE + QDP + CP16Time2a + CP56Time2a + N
 
         /// <summary>qual1 选相结果: GC CL1 CL2 CL3 —— 用现成 StartEvent 表示
@@ -273,8 +302,6 @@ namespace cs104_private_ioa.Xuji
         public bool Bl => QDP.Blocked;
         public bool Ei => QDP.ElapsedTimeInvalid;
 
-        public XujiPrivateIoa PrivateIoa => XujiPrivateIoa.Parse(ObjectAddress);
-
         public XujiType168Object() : base(0)
         {
             SPE = new StartEvent();
@@ -285,7 +312,7 @@ namespace cs104_private_ioa.Xuji
         }
 
         /// <summary>发送用构造器。</summary>
-        /// <param name="ioa">私有 IOA, 可用 <see cref="XujiPrivateIoa.ToObjectAddress"/> 打包。</param>
+        /// <param name="ioa">信息体地址（3 字节，0..0xFFFFFF）。分段含义须查装置信息表。</param>
         /// <param name="spe">qual1 选相结果, 用 <c>new StartEvent(0x0B)</c> 或设置其 GS/SL1..SL3。</param>
         /// <param name="qdp">qual2 质量位, 用 <c>new QualityDescriptorP(0x88)</c>。</param>
         /// <param name="elapsedTime">保护动作时间, 用 <c>new CP16Time2a(ms)</c>。</param>
@@ -294,6 +321,11 @@ namespace cs104_private_ioa.Xuji
         public XujiType168Object(int ioa, StartEvent spe, QualityDescriptorP qdp, CP16Time2a elapsedTime, CP56Time2a timestamp, byte[] faultData)
             : base(ioa)
         {
+            if ((uint)ioa > MaxObjectAddress)
+            {
+                throw new ArgumentOutOfRangeException(nameof(ioa), ioa, "信息体地址为 3 字节，取值范围 0..0xFFFFFF");
+            }
+
             if (faultData == null || faultData.Length % 4 != 0)
             {
                 throw new ArgumentException("faultData length must be a multiple of 4", nameof(faultData));
