@@ -142,9 +142,6 @@ public sealed class Iec103Options
     /// <summary>未识别 ASDU 处理策略，默认 <see cref="Iec103UnknownTypePolicy.Log"/>。</summary>
     public Iec103UnknownTypePolicy UnknownTypePolicy { get; private set; } = Iec103UnknownTypePolicy.Log;
 
-    /// <summary>是否启用后台读循环（主站连接后自动启动）。默认 true。</summary>
-    public bool AutoStartReceiveLoop { get; private set; } = true;
-
     /// <summary>设置链路层参数。</summary>
     public Iec103Options UseLinkParameters(Action<Iec103LinkParameters> configure)
     {
@@ -160,13 +157,6 @@ public sealed class Iec103Options
         return this;
     }
 
-    /// <summary>设置是否自动启动接收循环。</summary>
-    public Iec103Options UseAutoStartReceiveLoop(bool enabled = true)
-    {
-        AutoStartReceiveLoop = enabled;
-        return this;
-    }
-
     /// <summary>
     /// 复制当前配置（含 <see cref="Link"/> 的深拷贝）。
     /// </summary>
@@ -179,7 +169,6 @@ public sealed class Iec103Options
         var clone = new Iec103Options
         {
             UnknownTypePolicy = UnknownTypePolicy,
-            AutoStartReceiveLoop = AutoStartReceiveLoop,
         };
 
         clone.Link.CopyFrom(Link);

@@ -290,10 +290,9 @@ public sealed class Iec103Client : IIec103Master
             _parser.Reset();
             _transactions.End();
 
-            if (_options.AutoStartReceiveLoop)
-            {
-                _receiveLoop = Task.Run(() => ReceiveLoopAsync(_lifetimeCts.Token));
-            }
+            // 接收循环必须常开：所有请求（RequestClass*/总召/定值…）都靠它把应答
+            // 读出来并完成事务，关掉它只会让每个请求静默超时。
+            _receiveLoop = Task.Run(() => ReceiveLoopAsync(_lifetimeCts.Token));
 
             RaiseLinkEvent(new Iec103LinkEvent(Iec103LinkEventKind.Connected, _transport.EndPoint));
             Logger?.Info($"103 主站已连接 {_transport.EndPoint}");
