@@ -29,9 +29,10 @@ internal sealed class LinkTransaction103
 
     /// <summary>本事务期待的链路地址；<c>null</c> 表示不校验地址。</summary>
     /// <remarks>
-    /// 默认不校验：事务在 <c>ExecuteLinkServiceAsync</c> 里建立，而链路地址
-    /// 要到 lambda 内才由 <c>engine.Address = ca</c> 设定，建立时拿不到正确值。
-    /// TCP 单连接与 RS-485 地址过滤已在传输/链路层保证，无需在事务层重复。
+    /// 一条通道下挂多台装置（各自链路地址不同）时，必须校验：装置 A 超时后迟到的
+    /// 应答若被装置 B 的事务收下，会导致 B 的召唤结果混入 A 的数据、甚至提前终止。
+    /// 主站所有链路服务都按本次操作的 <c>ca</c> 建立事务，不再走「不校验」路径；
+    /// 保留 <c>null</c> 仅为无法确定目标地址的特殊场景。
     /// </remarks>
     public byte? ExpectedAddress { get; }
 

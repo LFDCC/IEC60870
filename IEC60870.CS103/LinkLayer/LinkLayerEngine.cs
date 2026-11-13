@@ -18,6 +18,10 @@ namespace IEC60870.CS103;
 /// <para><b>FCB 规则</b>：主站对同一从站的新一轮 SEND/CONFIRM 或 REQUEST 服务
 /// 必须翻转 FCB；从站校验 FCB 重复帧并重发上次应答（消除重复报文）。
 /// 本类把 FCB 收敛为单一状态，避免每个服务方法各自维护。</para>
+/// <para><b>FCB 按地址独立</b>：IEC 60870-5-1 规定帧计数位是<b>每个从站独立</b>的。
+/// 一条通道下挂多台装置（各自有链路地址）时，若共用一个 FCB，主站交替访问
+/// 不同装置会让某台看到的 FCB 序列与它自己上一轮不符；严格校验的装置会把
+/// 正常请求判成重复帧并回陈旧应答。故主站/从站两侧的 FCB 状态均按链路地址分组。</para>
 /// </remarks>
 internal sealed class LinkLayerEngine
 {
@@ -25,12 +29,28 @@ internal sealed class LinkLayerEngine
     private readonly Iec103LinkParameters _parameters;
     private Action<string>? _log;
 
-    // 主站侧 FCB 状态（下一次 SEND/CONFIRM 或 REQUEST 使用的值）
-    private bool _nextFcb;
+    // FCB 状态按链路地址分组。主站侧受调用方的链路事务锁保护、从站侧由单读循环
+    // 串行访问；仍用一把锁兜底，避免未来接入并发调用时字典被并发读写破坏。
+    private readonly object _fcbGate = new();
 
-    // 从站侧：上一次收到的 FCB 与其应答帧（用于重复帧检测）
-    private bool? _lastReceivedFcb;
-    private byte[]? _lastSecondaryResponse;
+    // 主站侧 FCB 状态（各地址下一次 SEND/CONFIRM 或 REQUEST 使用的值）
+    private readonly Dictionary<byte, bool> _nextFcb = new();
+
+    // 从站侧：各地址上一次收到的 FCB 与其应答帧（用于重复帧检测）
+    private readonly Dictionary<byte, SecondaryState> _secondaryStates = new();
+
+    /// <summary>从站侧单地址的重复帧检测状态。</summary>
+    private sealed class SecondaryState
+    {
+        /// <summary>是否已收到过一帧（对应原实现的 <c>bool?</c> 有值）。</summary>
+        public bool HasFcb;
+
+        /// <summary>上一次收到的 FCB 值。</summary>
+        public bool Fcb;
+
+        /// <summary>上一次应答帧的线路字节（重复帧原样回送）。</summary>
+        public byte[]? Response;
+    }
 
     private long _frameCount;
     private long _repeatCount;
@@ -55,18 +75,32 @@ internal sealed class LinkLayerEngine
     /// <summary>被舍弃的坏帧数（诊断）。</summary>
     public long RejectedCount => Interlocked.Read(ref _rejectedCount);
 
-    /// <summary>主站侧下一次服务应使用的 FCB 值。</summary>
-    public bool NextFcb => _nextFcb;
-
-    /// <summary>翻转 FCB（每完成一轮 SEND/CONFIRM 或 REQUEST/ RESPOND 后调用）。</summary>
-    public void FlipFcb() => _nextFcb = !_nextFcb;
-
-    /// <summary>复位 FCB 到初始值（RESET CU / RESET FCB 后）。</summary>
-    public void ResetFcbState()
+    /// <summary>取得指定链路地址下一次服务应使用的 FCB 值。</summary>
+    public bool GetNextFcb(byte address)
     {
-        _nextFcb = false;
-        _lastReceivedFcb = null;
-        _lastSecondaryResponse = null;
+        lock (_fcbGate)
+        {
+            return _nextFcb.TryGetValue(address, out var fcb) && fcb;
+        }
+    }
+
+    /// <summary>翻转指定链路地址的 FCB（每完成一轮 SEND/CONFIRM 或 REQUEST/RESPOND 后调用）。</summary>
+    public void FlipFcb(byte address)
+    {
+        lock (_fcbGate)
+        {
+            _nextFcb[address] = !(_nextFcb.TryGetValue(address, out var fcb) && fcb);
+        }
+    }
+
+    /// <summary>复位指定地址的 FCB 与重复帧状态（该地址的 RESET CU / RESET FCB 后）。</summary>
+    public void ResetFcbState(byte address)
+    {
+        lock (_fcbGate)
+        {
+            _nextFcb.Remove(address);
+            _secondaryStates.Remove(address);
+        }
     }
 
     /// <summary>
@@ -149,7 +183,9 @@ internal sealed class LinkLayerEngine
         LinkTransaction103 transaction,
         CancellationToken ct)
     {
-        var control = LinkControl.SendConfirmed(_nextFcb);
+        // 整轮重发必须使用同一个 FCB：重发的是「同一帧」，从站才能识别为重复帧。
+        var fcb = GetNextFcb(Address);
+        var control = LinkControl.SendConfirmed(fcb);
         var frame = new Ft12Frame(Ft12FrameFormat.VariableLength, control.ToByte(), Address, asdu.ToArray());
 
         for (var attempt = 0; attempt <= _parameters.MaxRepeat; attempt++)
@@ -176,7 +212,7 @@ internal sealed class LinkLayerEngine
             if (attempt < _parameters.MaxRepeat)
             {
                 Interlocked.Increment(ref _repeatCount);
-                _log?.Invoke($"用户数据超时重发（FCB={(_nextFcb ? 1 : 0)}）第 {attempt + 1} 次");
+                _log?.Invoke($"用户数据超时重发（A={Address} FCB={(fcb ? 1 : 0)}）第 {attempt + 1} 次");
             }
         }
 
@@ -218,11 +254,11 @@ internal sealed class LinkLayerEngine
         switch (function)
         {
             case PrimaryFunction.ResetCu:
-                ResetFcbState();
+                ResetFcbState(request.Address);
                 return SecondaryAck(request.Address, acd: hasMoreClass1(), dfc: false);
 
             case PrimaryFunction.ResetFcb:
-                ResetFcbState();
+                ResetFcbState(request.Address);
                 return SecondaryAck(request.Address, acd: hasMoreClass1(), dfc: false);
 
             case PrimaryFunction.RequestLinkStatus:
@@ -246,19 +282,21 @@ internal sealed class LinkLayerEngine
 
                 if (!isBroadcast)
                 {
-                    if (_lastReceivedFcb.HasValue && _lastReceivedFcb.Value == control.FcbOrAcd && _lastSecondaryResponse is not null)
+                    var state = GetSecondaryState(request.Address);
+                    if (state.HasFcb && state.Fcb == control.FcbOrAcd && state.Response is not null)
                     {
-                        _log?.Invoke($"检测到重复帧（FCB={(_lastReceivedFcb.Value ? 1 : 0)}），重发上次应答");
-                        return Ft12Frame.TryDecode(_lastSecondaryResponse, out var cached, out _) ? cached : null;
+                        _log?.Invoke($"检测到重复帧（A={request.Address} FCB={(state.Fcb ? 1 : 0)}），重发上次应答");
+                        return Ft12Frame.TryDecode(state.Response, out var cached, out _) ? cached : null;
                     }
 
-                    _lastReceivedFcb = control.FcbOrAcd;
+                    state.HasFcb = true;
+                    state.Fcb = control.FcbOrAcd;
                 }
 
                 var ack = SecondaryAck(request.Address, acd: hasMoreClass1(), dfc: false);
                 if (!isBroadcast)
                 {
-                    _lastSecondaryResponse = ack.ToBytes();
+                    GetSecondaryState(request.Address).Response = ack.ToBytes();
                 }
 
                 return ack;
@@ -272,13 +310,15 @@ internal sealed class LinkLayerEngine
 
                 if (!isBroadcast)
                 {
-                    if (_lastReceivedFcb.HasValue && _lastReceivedFcb.Value == control.FcbOrAcd && _lastSecondaryResponse is not null)
+                    var state = GetSecondaryState(request.Address);
+                    if (state.HasFcb && state.Fcb == control.FcbOrAcd && state.Response is not null)
                     {
-                        _log?.Invoke($"检测到重复帧（FCB={(_lastReceivedFcb.Value ? 1 : 0)}），重发上次应答");
-                        return Ft12Frame.TryDecode(_lastSecondaryResponse, out var cached, out _) ? cached : null;
+                        _log?.Invoke($"检测到重复帧（A={request.Address} FCB={(state.Fcb ? 1 : 0)}），重发上次应答");
+                        return Ft12Frame.TryDecode(state.Response, out var cached, out _) ? cached : null;
                     }
 
-                    _lastReceivedFcb = control.FcbOrAcd;
+                    state.HasFcb = true;
+                    state.Fcb = control.FcbOrAcd;
                 }
 
                 // CLASS1 召唤只取 1 级队列，CLASS2 召唤只取 2 级队列。
@@ -310,7 +350,7 @@ internal sealed class LinkLayerEngine
 
                 if (!isBroadcast)
                 {
-                    _lastSecondaryResponse = response.ToBytes();
+                    GetSecondaryState(request.Address).Response = response.ToBytes();
                 }
 
                 return response;
@@ -326,4 +366,26 @@ internal sealed class LinkLayerEngine
         LinkControl.Secondary(SecondaryFunction.Ack, acd, dfc).ToByte(),
         address,
         Ft12Frame.EmptyAsdu);
+
+    /// <summary>
+    /// 取得指定地址的从站重复帧状态（不存在则创建）。
+    /// </summary>
+    /// <remarks>
+    /// 只在字典增删上持锁；返回对象的字段由调用方（从站单读循环）串行读写，
+    /// 与 <see cref="ResetFcbState(byte)"/> 的竞争最坏结果是丢失一次去重缓存，
+    /// 不会破坏链路状态。
+    /// </remarks>
+    private SecondaryState GetSecondaryState(byte address)
+    {
+        lock (_fcbGate)
+        {
+            if (!_secondaryStates.TryGetValue(address, out var state))
+            {
+                state = new SecondaryState();
+                _secondaryStates[address] = state;
+            }
+
+            return state;
+        }
+    }
 }

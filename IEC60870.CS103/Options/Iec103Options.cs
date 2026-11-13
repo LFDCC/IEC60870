@@ -63,10 +63,48 @@ public sealed class Iec103LinkParameters
     /// RS-485 总线上多个从站共享物理线路，从站必须只响应本站地址的请求帧，
     /// 其余静默忽略（否则会与其他从站抢答导致总线冲突）。
     /// <para>
+    /// 一条通道下挂多台装置、由链路地址（即 CA）区分时，用 <see cref="AddLinkAddress"/>
+    /// 把同一从站需要应答的其余地址也加入 <see cref="LinkAddresses"/>。
+    /// </para>
+    /// <para>
     /// TCP 模式下忽略此配置：一条连接对应一个主站，地址由主站首帧确定。
     /// </para>
     /// </remarks>
-    public byte LocalLinkAddress { get; set; } = 1;
+    public byte LocalLinkAddress
+    {
+        get => _localLinkAddress;
+        set
+        {
+            _localLinkAddress = value;
+            _linkAddresses.Clear();
+            _linkAddresses.Add(value);
+        }
+    }
+
+    /// <summary>
+    /// 本站接受的全部链路地址（RS-485 地址过滤依据）。
+    /// </summary>
+    /// <remarks>
+    /// 默认只含 <see cref="LocalLinkAddress"/>。一条通道下挂多台装置时，
+    /// 每台装置应各自运行一个从站实例并配置自己的地址；只有「一台物理装置
+    /// 占用多个逻辑地址」的场景才需要把多个地址加到同一个从站上。
+    /// </remarks>
+    public IReadOnlySet<byte> LinkAddresses => _linkAddresses;
+
+    /// <summary>增加一个本站链路地址（多逻辑地址场景）。</summary>
+    /// <param name="address">链路地址（1-254；255 为广播，不应作为本站地址）。</param>
+    public void AddLinkAddress(byte address)
+    {
+        if (address == 0 || address == BroadcastAddress)
+        {
+            throw new ArgumentOutOfRangeException(nameof(address), "本站链路地址不能是 0 或广播地址 255");
+        }
+
+        _linkAddresses.Add(address);
+    }
+
+    private byte _localLinkAddress = 1;
+    private readonly HashSet<byte> _linkAddresses = new() { 1 };
 
     /// <summary>
     /// 是否接受 255 广播帧（仅串口/Stream 从站使用）。默认 true。
@@ -103,8 +141,16 @@ public sealed class Iec103LinkParameters
         CharacterTimeoutMs = source.CharacterTimeoutMs;
         MaxRepeat = source.MaxRepeat;
         DrainClass1UntilEmpty = source.DrainClass1UntilEmpty;
-        LocalLinkAddress = source.LocalLinkAddress;
         AcceptBroadcast = source.AcceptBroadcast;
+
+        // 直接复制字段而非走 LocalLinkAddress setter：setter 会把集合重置为单地址，
+        // 会丢掉 AddLinkAddress 添加的其余地址。
+        _localLinkAddress = source._localLinkAddress;
+        _linkAddresses.Clear();
+        foreach (var address in source._linkAddresses)
+        {
+            _linkAddresses.Add(address);
+        }
     }
 }
 

@@ -95,6 +95,33 @@ await client.ConnectAsync();
 await client.ResetLinkAsync(1);
 ```
 
+### Multiple devices behind one channel
+
+Some stations put several protection devices behind one serial line or one TCP
+gateway and let the master tell them apart by link address (the 1-byte CA in 103):
+
+```csharp
+// One client == one physical channel. Do NOT create one client per device:
+// that would be several master connections, not one multi-drop channel.
+await using var client = new Iec103Client("10.1.1.5", 2404);
+await client.ConnectAsync();
+
+foreach (var ca in new byte[] { 1, 2, 3 })
+{
+    await client.ResetLinkAsync(ca);
+    var data = await client.RequestClass2Async(ca);
+
+    // FCB, the 1/2-class queues and transaction matching are all per address:
+    // a late answer from device 1 can never be consumed by device 2's call.
+}
+```
+
+Polling is serialized inside the client (103 is unbalanced — one transaction at
+a time), so `Task.WhenAll` across devices is safe but not faster than a plain
+sequential loop. On the slave side, one `Iec103Server` instance represents one
+device; to simulate a multi-drop channel, configure several addresses on the same
+instance with `AddLinkAddress` (or run one instance per device).
+
 ### Slave over serial (RS-485, with address filtering)
 
 ```csharp
@@ -237,10 +264,10 @@ Packages are produced with `dotnet pack` and published to NuGet.org by the
 GitHub Actions workflow on version tags (`v*.*.*`). To publish manually:
 
 ```bash
-dotnet pack IEC60870.Core/IEC60870.Core.csproj   -c Release -p:Version=6.1.3 -o artifacts
-dotnet pack IEC60870.CS101/IEC60870.CS101.csproj -c Release -p:Version=6.1.3 -o artifacts
-dotnet pack IEC60870.CS103/IEC60870.CS103.csproj -c Release -p:Version=6.1.3 -o artifacts
-dotnet pack IEC60870.CS104/IEC60870.CS104.csproj -c Release -p:Version=6.1.3 -o artifacts
+dotnet pack IEC60870.Core/IEC60870.Core.csproj   -c Release -p:Version=6.1.4 -o artifacts
+dotnet pack IEC60870.CS101/IEC60870.CS101.csproj -c Release -p:Version=6.1.4 -o artifacts
+dotnet pack IEC60870.CS103/IEC60870.CS103.csproj -c Release -p:Version=6.1.4 -o artifacts
+dotnet pack IEC60870.CS104/IEC60870.CS104.csproj -c Release -p:Version=6.1.4 -o artifacts
 dotnet nuget push "artifacts/*.nupkg" --source https://api.nuget.org/v3/index.json --api-key <YOUR_API_KEY>
 ```
 

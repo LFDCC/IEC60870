@@ -204,7 +204,7 @@ public sealed class Iec103Server : IIec103Slave
             Mode = Iec103ServerMode.SerialPort;
             SafeInvoke("SessionOpened", () => SessionOpened?.Invoke(session));
 
-            Logger?.Info($"103 从站已启动（{modeName}，链路地址 {_options.Link.LocalLinkAddress}），单链路模式");
+            Logger?.Info($"103 从站已启动（{modeName}，链路地址 {string.Join(",", _options.Link.LinkAddresses)}），单链路模式");
 
             await Task.CompletedTask.ConfigureAwait(false);
         }

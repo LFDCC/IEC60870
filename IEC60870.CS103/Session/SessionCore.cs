@@ -24,6 +24,11 @@ namespace IEC60870.CS103;
 /// 必须忽略非本站地址；255 广播可配置是否接受）。TCP 模式关闭
 /// （一条连接对应一个主站，地址由首帧确定）。
 /// </para>
+/// <para>
+/// <b>一条通道多台装置</b>：1 级/2 级上送队列与数据帧 FCB 去重状态均<b>按链路地址分组</b>。
+/// 主站向地址 A 召唤只取 A 的队列，装置 B 的突发数据不会串进 A 的应答
+/// （否则多装置共通道时每台都会收到别人的数据）。
+/// </para>
 /// </remarks>
 internal sealed class SessionCore : IAsyncDisposable
 {
@@ -36,12 +41,15 @@ internal sealed class SessionCore : IAsyncDisposable
 
     private readonly LinkLayerEngine _engine;
     private readonly Ft12FrameParser _parser = new();
-    private readonly ConcurrentQueue<byte[]> _class1 = new();
-    private readonly ConcurrentQueue<byte[]> _class2 = new();
+
+    // 上送队列按链路地址分组：主站向哪个地址召唤，就只取那个地址的数据。
+    private readonly ConcurrentDictionary<byte, ConcurrentQueue<byte[]>> _class1 = new();
+    private readonly ConcurrentDictionary<byte, ConcurrentQueue<byte[]>> _class2 = new();
+
     private readonly CancellationTokenSource _cts = new();
 
     // 上送队列上界：主站不轮询（或不及时轮询）时队列会无限增长直到 OOM。
-    // 每个队列默认最多 10000 条，超出丢弃最旧数据并计入 DroppedAsduCount。
+    // 每个地址的每个队列默认最多 10000 条，超出丢弃最旧数据并计入 DroppedAsduCount。
     private const int DefaultMaxQueueLength = 10000;
 
     private Task? _loop;
@@ -54,13 +62,19 @@ internal sealed class SessionCore : IAsyncDisposable
     private byte _linkAddress;
     private long _lastActivityTicks = DateTime.UtcNow.Ticks;
 
-    // 数据帧 FCB 去重（从站侧）。主站因 ACK 丢失而原样重发同一 SEND/CONFIRM 帧时，
-    // 只重发缓存的链路应答，绝不再派发 ASDU——否则遥控/对时/定值写会被执行两次。
-    private bool _hasLastDataFcb;
-    private bool _lastDataFcb;
-    private byte _lastDataFcbAddress;
-    private Ft12Frame? _lastDataResponse;
-    private byte[]? _lastDataAsdu;
+    // 数据帧 FCB 去重（从站侧，按链路地址分组）。主站因 ACK 丢失而原样重发同一
+    // SEND/CONFIRM 帧时，只重发缓存的链路应答，绝不再派发 ASDU——否则遥控/对时/
+    // 定值写会被执行两次。多装置共通道时若共用一个状态，A 的重发会被 B 的帧覆盖。
+    private readonly Dictionary<byte, DataDedupState> _dataDedup = new();
+
+    /// <summary>单地址的数据帧去重状态。</summary>
+    private sealed class DataDedupState
+    {
+        public bool HasFcb;
+        public bool Fcb;
+        public Ft12Frame? Response;
+        public byte[]? Asdu;
+    }
 
     /// <summary>创建会话核心。</summary>
     /// <param name="server">宿主从站（事件上报与私有注册表来源）。</param>
@@ -113,11 +127,12 @@ internal sealed class SessionCore : IAsyncDisposable
     public LinkLayerEngine Engine => _engine;
 
     /// <summary>
-    /// 1 级 / 2 级上送队列各自允许的最大条数（默认 10000）。
+    /// 1 级 / 2 级上送队列<b>每个地址</b>各自允许的最大条数（默认 10000）。
     /// </summary>
     /// <remarks>
     /// 主站长时间不召唤时队列会持续增长，必须设上界。超出后丢弃最旧数据
     /// （保留最新数据，与现场「宁丢旧不丢新」的监视需求一致）。
+    /// 多地址共通道时按地址分别计算：一台装置不召唤不影响另一台的队列。
     /// </remarks>
     internal int MaxQueueLength { get; set; } = DefaultMaxQueueLength;
 
@@ -129,7 +144,8 @@ internal sealed class SessionCore : IAsyncDisposable
     {
         if (_filterByAddress)
         {
-            // 串口单链路：本站地址在链路建立前即确定，用于地址过滤
+            // 串口单链路：本站地址在链路建立前即确定，用于地址过滤。
+            // 多地址时这里取主地址；实际通信地址随收到的帧更新。
             _linkAddress = _parameters.LocalLinkAddress;
             _engine.Address = _parameters.LocalLinkAddress;
         }
@@ -148,23 +164,47 @@ internal sealed class SessionCore : IAsyncDisposable
             return;
         }
 
-        EnqueueRaw(asdu.Encode(), isClass1: asdu.TypeId != TypeIds.Measurand);
+        EnqueueRaw(asdu.Ca, asdu.Encode(), isClass1: asdu.TypeId != TypeIds.Measurand);
     }
 
-    /// <summary>入队原始 ASDU 字节。</summary>
+    /// <summary>
+    /// 入队原始 ASDU 字节（按 ASDU 头部的公共地址分组）。
+    /// </summary>
+    /// <remarks>
+    /// 103 中链路地址与公共地址一致，故直接用 ASDU 的 CA 作为队列键。
+    /// 畸形短帧（不足 4 字节）退回当前会话地址，避免落到 0 号队列。
+    /// </remarks>
     public void EnqueueRaw(byte[] asduBytes, bool isClass1)
     {
+        ArgumentNullException.ThrowIfNull(asduBytes);
+
+        var address = asduBytes.Length >= 4 ? asduBytes[3] : _linkAddress;
+        EnqueueRaw(address, asduBytes, isClass1);
+    }
+
+    /// <summary>按显式链路地址入队原始 ASDU 字节。</summary>
+    /// <param name="address">链路地址（决定主站向哪个地址召唤时能取到）。</param>
+    /// <param name="asduBytes">完整 ASDU 字节。</param>
+    /// <param name="isClass1">true 进 1 级队列，false 进 2 级队列。</param>
+    public void EnqueueRaw(byte address, byte[] asduBytes, bool isClass1)
+    {
+        ArgumentNullException.ThrowIfNull(asduBytes);
+
         if (_disposed)
         {
             return;
         }
 
-        EnqueueBounded(isClass1 ? _class1 : _class2, asduBytes);
+        EnqueueBounded(isClass1 ? _class1 : _class2, address, asduBytes);
     }
 
-    /// <summary>入队并按上界裁剪（丢弃最旧数据并累计诊断计数）。</summary>
-    private void EnqueueBounded(ConcurrentQueue<byte[]> queue, byte[] asduBytes)
+    /// <summary>入队并按该地址队列的上界裁剪（丢弃最旧数据并累计诊断计数）。</summary>
+    private void EnqueueBounded(
+        ConcurrentDictionary<byte, ConcurrentQueue<byte[]>> queues,
+        byte address,
+        byte[] asduBytes)
     {
+        var queue = queues.GetOrAdd(address, static _ => new ConcurrentQueue<byte[]>());
         queue.Enqueue(asduBytes);
 
         var limit = MaxQueueLength;
@@ -191,9 +231,21 @@ internal sealed class SessionCore : IAsyncDisposable
         if (previous == 0 || previous / 1000 != total / 1000)
         {
             _logger?.Invoke(
-                $"[WARN] [会话 {_sessionId}] ASDU 队列超过上界 {limit}，已丢弃最旧数据（累计 {total} 条）");
+                $"[WARN] [会话 {_sessionId}] 地址 {address} 的 ASDU 队列超过上界 {limit}，已丢弃最旧数据（累计 {total} 条）");
         }
     }
+
+    /// <summary>从指定地址的 1 级队列取一条（无则 null）。</summary>
+    private byte[]? DequeueClass1(byte address)
+        => _class1.TryGetValue(address, out var queue) && queue.TryDequeue(out var asdu) ? asdu : null;
+
+    /// <summary>从指定地址的 2 级队列取一条（无则 null）。</summary>
+    private byte[]? DequeueClass2(byte address)
+        => _class2.TryGetValue(address, out var queue) && queue.TryDequeue(out var asdu) ? asdu : null;
+
+    /// <summary>指定地址的 1 级队列是否仍有余量（决定 ACD 位）。</summary>
+    private bool HasClass1(byte address)
+        => _class1.TryGetValue(address, out var queue) && !queue.IsEmpty;
 
     private async Task RunAsync(CancellationToken ct)
     {
@@ -281,7 +333,11 @@ internal sealed class SessionCore : IAsyncDisposable
         _server.RaiseFrameTracedById(_sessionId, "RX", frame);
 
         var control = LinkControl.FromByte(frame.Control);
-        var isDuplicateDataFrame = IsDuplicateDataFrame(frame, control);
+
+        // 去重状态按链路地址取：多装置共通道时，A 的重发帧必须与 A 自己的上一帧比较，
+        // 不能被 B 的通信覆盖。
+        var dedup = ShouldTrackDataFrame(frame, control) ? FindDedup(frame.Address) : null;
+        var isDuplicateDataFrame = IsDuplicateDataFrame(frame, control, dedup);
 
         if (frame.Format == Ft12FrameFormat.VariableLength)
         {
@@ -289,11 +345,10 @@ internal sealed class SessionCore : IAsyncDisposable
             _server.RaiseRawFrameReceivedById(_sessionId, raw);
 
             _linkEstablished = true;
-            if (!_filterByAddress)
-            {
-                // TCP：链路地址由主站首帧确定
-                _linkAddress = frame.Address;
-            }
+
+            // 链路地址反映当前通信的装置：TCP 由主站首帧确定；串口多地址时随帧更新，
+            // 便于诊断「这条会话最后跟哪台装置通信」。
+            _linkAddress = frame.Address;
 
             // 重复数据帧（FCB 与上次相同）只重发应答，绝不再派发 ASDU：
             // 主站重发是 ACK 丢失后的正常协议行为，应用层必须只执行一次。
@@ -309,64 +364,62 @@ internal sealed class SessionCore : IAsyncDisposable
             if (function is PrimaryFunction.ResetCu or PrimaryFunction.ResetFcb)
             {
                 _linkEstablished = true;
-                if (!_filterByAddress)
-                {
-                    _linkAddress = frame.Address;
-                }
+                _linkAddress = frame.Address;
 
                 _engine.Address = frame.Address;
-                ResetDataFrameDedup();
+                ResetDataFrameDedup(frame.Address);
             }
         }
 
         // 重复帧仍然必须回应答，否则主站收不到响应会无限重发。
         if (isDuplicateDataFrame)
         {
-            await SendSecondaryResponseAsync(_lastDataResponse!, ct).ConfigureAwait(false);
+            await SendSecondaryResponseAsync(dedup!.Response!, ct).ConfigureAwait(false);
             return;
         }
 
+        // 只取本次请求地址的队列：主站向 A 召唤时不能把 B 的突发数据当成交给 A。
+        var address = frame.Address;
         var response = _engine.BuildSecondaryResponse(
             frame,
-            nextClass1: () => _class1.TryDequeue(out var a) ? a : null,
-            nextClass2: () => _class2.TryDequeue(out var a) ? a : null,
-            hasMoreClass1: () => !_class1.IsEmpty);
+            nextClass1: () => DequeueClass1(address),
+            nextClass2: () => DequeueClass2(address),
+            hasMoreClass1: () => HasClass1(address));
 
         if (response is null)
         {
             return;
         }
 
-        // 缓存数据帧的应答，供同一 FCB 的重发帧原样回送。
+        // 缓存数据帧的应答，供同一地址同一 FCB 的重发帧原样回送。
         if (ShouldTrackDataFrame(frame, control))
         {
-            _hasLastDataFcb = true;
-            _lastDataFcb = control.FcbOrAcd;
-            _lastDataFcbAddress = frame.Address;
-            _lastDataResponse = response;
-            _lastDataAsdu = frame.Asdu.ToArray();
+            var state = GetDedup(address);
+            state.HasFcb = true;
+            state.Fcb = control.FcbOrAcd;
+            state.Response = response;
+            state.Asdu = frame.Asdu.ToArray();
         }
 
         await SendSecondaryResponseAsync(response, ct).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// 判定是否为主站重发的数据帧：同链路地址 + 同 FCB 的 SEND/CONFIRM（FCV=1）。
+    /// 判定是否为主站重发的数据帧：同链路地址 + 同 FCB + 同 ASDU 字节的 SEND/CONFIRM（FCV=1）。
     /// </summary>
     /// <remarks>
     /// 只覆盖携带应用层 ASDU 的 SEND/CONFIRM。REQUEST CLASS 1/2 是主站主动召唤
     /// （固定帧、无 ASDU），不参与 FCB 去重；广播（地址 255）不应答，同样不去重。
     /// </remarks>
-    private bool IsDuplicateDataFrame(Ft12Frame frame, in LinkControl control)
-        => ShouldTrackDataFrame(frame, control)
-            && _hasLastDataFcb
-            && _lastDataFcb == control.FcbOrAcd
-            && _lastDataFcbAddress == frame.Address
-            && _lastDataResponse is not null
+    private static bool IsDuplicateDataFrame(Ft12Frame frame, in LinkControl control, DataDedupState? state)
+        => state is not null
+            && state.HasFcb
+            && state.Fcb == control.FcbOrAcd
+            && state.Response is not null
             // 真重发是**逐字节相同**的帧；只比 FCB 会把"主站连续两帧但未翻转 FCB"
             // （某些实现如此）误判为重复，导致第二条命令被静默替换成上一条的应答。
-            && _lastDataAsdu is not null
-            && frame.Asdu.AsSpan().SequenceEqual(_lastDataAsdu);
+            && state.Asdu is not null
+            && frame.Asdu.AsSpan().SequenceEqual(state.Asdu);
 
     /// <summary>该帧是否属于需要按 FCB 去重的数据帧（SEND/CONFIRM、FCV=1、非广播）。</summary>
     private static bool ShouldTrackDataFrame(Ft12Frame frame, in LinkControl control)
@@ -376,15 +429,24 @@ internal sealed class SessionCore : IAsyncDisposable
             && control.FcvOrDfc
             && frame.Address != 255;
 
-    /// <summary>链路复位后清空 FCB 去重状态（主站会从 FCB=0 重新开始）。</summary>
-    private void ResetDataFrameDedup()
+    /// <summary>取指定地址的去重状态（不存在返回 null）。</summary>
+    private DataDedupState? FindDedup(byte address)
+        => _dataDedup.TryGetValue(address, out var state) ? state : null;
+
+    /// <summary>取指定地址的去重状态（不存在则创建）。</summary>
+    private DataDedupState GetDedup(byte address)
     {
-        _hasLastDataFcb = false;
-        _lastDataFcb = false;
-        _lastDataFcbAddress = 0;
-        _lastDataResponse = null;
-        _lastDataAsdu = null;
+        if (!_dataDedup.TryGetValue(address, out var state))
+        {
+            state = new DataDedupState();
+            _dataDedup[address] = state;
+        }
+
+        return state;
     }
+
+    /// <summary>链路复位后清空指定地址的 FCB 去重状态（主站会从 FCB=0 重新开始）。</summary>
+    private void ResetDataFrameDedup(byte address) => _dataDedup.Remove(address);
 
     private async Task SendSecondaryResponseAsync(Ft12Frame response, CancellationToken ct)
     {
@@ -405,10 +467,10 @@ internal sealed class SessionCore : IAsyncDisposable
     }
 
     /// <summary>
-    /// RS-485 总线地址判定：本站地址或（可配置的）255 广播。
+    /// RS-485 总线地址判定：本站地址集合中的任一地址，或（可配置的）255 广播。
     /// </summary>
     private bool ShouldAcceptAddress(byte address)
-        => address == _parameters.LocalLinkAddress
+        => _parameters.LinkAddresses.Contains(address)
             || (_parameters.AcceptBroadcast && address == _parameters.BroadcastAddress);
 
     /// <summary>

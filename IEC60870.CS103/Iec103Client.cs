@@ -121,7 +121,13 @@ public sealed class Iec103Client : IIec103Master
     /// <inheritdoc />
     public bool IsConnected => _connected;
 
-    /// <summary>链路地址（连接后由 <see cref="ResetLinkAsync"/> 设定）。</summary>
+    /// <summary>
+    /// 最近一次链路服务使用的链路地址。
+    /// </summary>
+    /// <remarks>
+    /// 一条通道下挂多台装置时，本属性只反映「最后一次操作的装置」，
+    /// <b>不能</b>用来判断收到的 ASDU 属于哪台——用 <see cref="Asdu.Ca"/>。
+    /// </remarks>
     public byte LinkAddress { get; private set; }
 
     /// <inheritdoc />
@@ -502,7 +508,7 @@ public sealed class Iec103Client : IIec103Master
         {
             LinkAddress = ca;
             engine.Address = ca;
-            engine.ResetFcbState();
+            engine.ResetFcbState(ca);
 
             var response = await engine.SendControlAndWaitAsync(
                 LinkControl.ResetCu(), transaction, linkedCt).ConfigureAwait(false);
@@ -515,7 +521,7 @@ public sealed class Iec103Client : IIec103Master
             }
 
             RaiseLinkEvent(new Iec103LinkEvent(Iec103LinkEventKind.LinkReset, $"CA={ca}"));
-        }, ct, ControlFrameResponses).ConfigureAwait(false);
+        }, ct, ca, ControlFrameResponses).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -525,8 +531,8 @@ public sealed class Iec103Client : IIec103Master
         {
             engine.Address = ca;
             await engine.SendControlAndWaitAsync(LinkControl.ResetFcb(), transaction, linkedCt).ConfigureAwait(false);
-            engine.ResetFcbState();
-        }, ct, ControlFrameResponses).ConfigureAwait(false);
+            engine.ResetFcbState(ca);
+        }, ct, ca, ControlFrameResponses).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -540,7 +546,7 @@ public sealed class Iec103Client : IIec103Master
             result = await engine.SendControlAndWaitAsync(
                 LinkControl.RequestLinkStatus(), transaction, linkedCt).ConfigureAwait(false);
             RaiseLinkEvent(new Iec103LinkEvent(Iec103LinkEventKind.LinkStatus, $"CA={ca}"));
-        }, ct, ControlFrameResponses).ConfigureAwait(false);
+        }, ct, ca, ControlFrameResponses).ConfigureAwait(false);
 
         return result!;
     }
@@ -575,7 +581,7 @@ public sealed class Iec103Client : IIec103Master
             //    （旧版从确认帧里收 ASDU 是为配合「从站把数据塞进确认」的非标准行为，
             //     现已与从站侧一并改为标准语义。）
             await SendConfirmedAsduCoreAsync(engine, Asdu.GeneralInterrogation(ca), transaction, linkedCt).ConfigureAwait(false);
-            engine.FlipFcb();
+            engine.FlipFcb(ca);
 
             // 2. 反复召唤 1 级直到收到总召唤终止帧（TI=8）
             var terminated = false;
@@ -589,9 +595,9 @@ public sealed class Iec103Client : IIec103Master
                     break;
                 }
 
-                var control = LinkControl.RequestClass1(engine.NextFcb);
+                var control = LinkControl.RequestClass1(engine.GetNextFcb(ca));
                 var response = await engine.SendControlAndWaitAsync(control, transaction, linkedCt).ConfigureAwait(false);
-                engine.FlipFcb();
+                engine.FlipFcb(ca);
 
                 if (response.Format != Ft12FrameFormat.VariableLength)
                 {
@@ -601,7 +607,7 @@ public sealed class Iec103Client : IIec103Master
 
                 terminated = CollectFromResponse(response, collected);
             }
-        }, ct).ConfigureAwait(false);
+        }, ct, ca).ConfigureAwait(false);
 
         return collected;
     }
@@ -623,8 +629,8 @@ public sealed class Iec103Client : IIec103Master
             while (guard++ < maxRounds && !linkedCt.IsCancellationRequested)
             {
                 var response = await engine.SendControlAndWaitAsync(
-                    LinkControl.RequestClass1(engine.NextFcb), transaction, linkedCt).ConfigureAwait(false);
-                engine.FlipFcb();
+                    LinkControl.RequestClass1(engine.GetNextFcb(ca)), transaction, linkedCt).ConfigureAwait(false);
+                engine.FlipFcb(ca);
 
                 if (response.Format != Ft12FrameFormat.VariableLength)
                 {
@@ -649,7 +655,7 @@ public sealed class Iec103Client : IIec103Master
                     break;
                 }
             }
-        }, ct, DataCallResponses).ConfigureAwait(false);
+        }, ct, ca, DataCallResponses).ConfigureAwait(false);
 
         return collected;
     }
@@ -668,8 +674,8 @@ public sealed class Iec103Client : IIec103Master
             while (guard++ < maxRounds && !linkedCt.IsCancellationRequested)
             {
                 var response = await engine.SendControlAndWaitAsync(
-                    LinkControl.RequestClass2(engine.NextFcb), transaction, linkedCt).ConfigureAwait(false);
-                engine.FlipFcb();
+                    LinkControl.RequestClass2(engine.GetNextFcb(ca)), transaction, linkedCt).ConfigureAwait(false);
+                engine.FlipFcb(ca);
 
                 if (response.Format != Ft12FrameFormat.VariableLength)
                 {
@@ -684,7 +690,7 @@ public sealed class Iec103Client : IIec103Master
 
                 collected.Add(asdu);
             }
-        }, ct, DataCallResponses).ConfigureAwait(false);
+        }, ct, ca, DataCallResponses).ConfigureAwait(false);
 
         return collected;
     }
@@ -791,8 +797,8 @@ public sealed class Iec103Client : IIec103Master
             engine.Address = asdu.Ca;
             LinkAddress = asdu.Ca;
             await SendConfirmedAsduCoreAsync(engine, asdu, transaction, linkedCt).ConfigureAwait(false);
-            engine.FlipFcb();
-        }, ct, SendConfirmResponses).ConfigureAwait(false);
+            engine.FlipFcb(asdu.Ca);
+        }, ct, asdu.Ca, SendConfirmResponses).ConfigureAwait(false);
     }
 
     private async Task<Ft12Frame> SendConfirmedAsduCoreAsync(
@@ -824,7 +830,7 @@ public sealed class Iec103Client : IIec103Master
 
             // 同 GeneralInterrogationAsync：不静默清主站 FCB（从站侧不会同步）。
             await SendConfirmedAsduCoreAsync(engine, request, transaction, linkedCt).ConfigureAwait(false);
-            engine.FlipFcb();
+            engine.FlipFcb(request.Ca);
 
             var guard = 0;
             const int maxRounds = 256;
@@ -832,8 +838,8 @@ public sealed class Iec103Client : IIec103Master
             while (guard++ < maxRounds && !linkedCt.IsCancellationRequested)
             {
                 var response = await engine.SendControlAndWaitAsync(
-                    LinkControl.RequestClass1(engine.NextFcb), transaction, linkedCt).ConfigureAwait(false);
-                engine.FlipFcb();
+                    LinkControl.RequestClass1(engine.GetNextFcb(request.Ca)), transaction, linkedCt).ConfigureAwait(false);
+                engine.FlipFcb(request.Ca);
 
                 if (response.Format != Ft12FrameFormat.VariableLength)
                 {
@@ -884,7 +890,7 @@ public sealed class Iec103Client : IIec103Master
                     break;
                 }
             }
-        }, ct, DataCallResponses).ConfigureAwait(false);
+        }, ct, request.Ca, DataCallResponses).ConfigureAwait(false);
 
         foreach (var entry in pendingUnknown)
         {
@@ -962,14 +968,24 @@ public sealed class Iec103Client : IIec103Master
     ///   <item>状态检查移入锁内（原实现在锁外检查，等待锁期间被 Disconnect 置 null 会 NRE）。</item>
     ///   <item>每轮服务建立一个 <see cref="LinkTransaction103"/>，业务代码只从它读应答，
     ///         迟到帧不会串到下一事务。</item>
+    ///   <item><b>事务按本次操作的链路地址校验</b>：一条通道下挂多台装置时，装置 A 的
+    ///         迟到应答必须被装置 B 的事务拒绝，否则 B 的召唤结果会混入 A 的数据。</item>
     ///   <item>用 <see cref="CancellationTokenSource.CreateLinkedTokenSource(CancellationToken)"/>
     ///         把调用方 ct 与生命周期 ct 关联：Disconnect 能取消在途事务，不再悬挂 8 秒。</item>
     ///   <item>finally 里 End 事务并释放锁；Dispose 前不会再有活动事务。</item>
     /// </list>
     /// </remarks>
+    /// <param name="action">链路服务主体。</param>
+    /// <param name="ct">调用方取消令牌。</param>
+    /// <param name="expectedAddress">
+    /// 本轮期望的链路地址（即 <c>ca</c>）。传 <c>null</c> 表示不校验地址
+    /// （仅在无法确定目标地址的特殊场景使用）。
+    /// </param>
+    /// <param name="acceptedFunctions">本轮可接受的从站功能码集合。</param>
     private async Task ExecuteLinkServiceAsync(
         Func<LinkLayerEngine, LinkTransaction103, CancellationToken, Task> action,
         CancellationToken ct,
+        byte? expectedAddress = null,
         IReadOnlySet<byte>? acceptedFunctions = null)
     {
         ThrowIfDisposed();
@@ -990,11 +1006,10 @@ public sealed class Iec103Client : IIec103Master
             var lifetimeToken = _lifetimeCts?.Token ?? CancellationToken.None;
             linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetimeToken);
 
-            // 事务按「本操作期望的从站功能码集合」做相关性校验：
-            // 之前 Begin() 不带参 → AcceptedFunctions 恒为 null → IsMatch 只校验 PRM=0，
-            // 于是上一轮迟到的 ACK(FC=0) 会被本轮期待 DATA(FC=8) 的 await 消费掉，
-            // 突发上送的变长帧也可能被当成"确认"。这与类注释宣称的匹配语义不符。
-            transaction = _transactions.Begin(null, acceptedFunctions);
+            // 事务按「本轮目标地址 + 期望的从站功能码集合」做相关性校验：
+            // 之前 Begin() 不带地址 → 上一轮/上一台装置的迟到帧会被本轮 await 消费掉，
+            // 表现为「取到别人的数据却认为成功」。多装置共通道时这是必现缺陷。
+            transaction = _transactions.Begin(expectedAddress, acceptedFunctions);
             await action(engine, transaction, linked.Token).ConfigureAwait(false);
         }
         finally
