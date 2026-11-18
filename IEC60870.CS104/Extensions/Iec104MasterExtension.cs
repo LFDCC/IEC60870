@@ -114,5 +114,72 @@ public static class Iec104MasterExtension
         }
     }
 
+    /// <summary>
+    /// 发送一条读命令（C_RD_NA_1，typeID 102）并异步等待装置回送的被读点数据——
+    /// 「读一个点」的一体内建入口。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>与控制命令等待的差别</b>：读命令的应答类型由被读点决定
+    /// （M_SP_NA_1 / M_ME_NC_1 …），请求方事先不知道，因此关联键是 (CA, IOA)
+    /// 而不是 (TypeID, CA, IOA, Select)；应答可以是单元素、多元素或序列寻址，
+    /// 其中任一元素的 IOA 命中即交付。</para>
+    /// <para><b>不会串台</b>：周期上送、突发上送、召唤响应等主动帧不会被当成本次读的答案，
+    /// 同一 IOA 在此期间自发上送变位不会污染结果；并发对同一 IOA 的多次读按先进先出逐个交付。</para>
+    /// <para><b>现实约束</b>：C_RD_NA_1 在 IEC 60870-5-104 现场支持度参差（不少装置直接拒绝或
+    /// 不实现）。装置拒绝时返回 <see cref="ReadResponse.IsNegative"/> = true，而不是等超时；
+    /// 装置沉默时抛 <see cref="TimeoutException"/>。等待期间不关闭连接，迟到应答丢弃不串台。</para>
+    /// </remarks>
+    /// <param name="master">主站客户端。</param>
+    /// <param name="ca">公共地址。</param>
+    /// <param name="ioa">要读的信息对象地址。</param>
+    /// <param name="cancellationToken">外部取消。</param>
+    /// <returns>装置回送的读应答（含被读点的值或否定标记）。</returns>
+    /// <exception cref="TimeoutException">超过 <see cref="IIec104Master.CommandConfirmationTimeout"/>
+    /// 未收到匹配应答时抛出，避免调用方永久挂起。</exception>
+    /// <exception cref="OperationCanceledException">调用方取消，或等待期间连接断开
+    /// （挂起槽位被统一唤醒）时抛出——断开不会被伪装成超时。</exception>
+    public static async Task<ReadResponse> SendReadCommandAndWaitAsync(
+        this IIec104Master master, int ca, int ioa, CancellationToken cancellationToken = default)
+    {
+        var tracker = ((Iec104Client)master).ReadTracker;
+        var key = ReadResponseTracker.MakeKey(ca, ioa);
+
+        var tcs = new TaskCompletionSource<ReadResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        tracker.Register(key, tcs);
+
+        try
+        {
+            // 1) 先登记再发送：应答可能紧随发送返回，登记晚一步就会漏掉。
+            await master.SendReadCommandAsync(ca, ioa, cancellationToken).ConfigureDefaultAwait();
+
+            // 2) 等待装置回送的数据（带超时保护）
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(master.CommandConfirmationTimeout);
+            try
+            {
+                return await tcs.Task.WaitAsync(cts.Token).ConfigureDefaultAwait();
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            {
+                // cts 已触发：要么是外部取消（原样抛），要么是本方法自己的超时。
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+
+                throw new TimeoutException(
+                    $"等待读命令应答超时：IOA={ioa}, CA={ca}。" +
+                    "请确认装置支持 C_RD_NA_1（部分装置只做周期/突发上送）");
+            }
+            // cts 未触发却收到取消 = 连接断开时挂起槽位被 CompleteAllCanceled 唤醒，
+            // 此时原样抛 OperationCanceledException，不伪装成超时。
+        }
+        finally
+        {
+            tracker.Unregister(key, tcs);
+        }
+    }
+
     #endregion 发送并等待确认
 }

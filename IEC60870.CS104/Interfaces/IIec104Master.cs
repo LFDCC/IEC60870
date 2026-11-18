@@ -24,6 +24,7 @@ public interface IIec104Master : IAsyncDisposable
     ConnectionCloseReason? LastCloseReason { get; }
 
     /// <summary><see cref="Iec104MasterExtension.SendControlCommandAndWaitAsync"/> 等待 ACT-CON 的超时时长。</summary>
+    /// <remarks>同时用于 <see cref="Iec104MasterExtension.SendReadCommandAndWaitAsync"/> 等待读应答。</remarks>
     TimeSpan CommandConfirmationTimeout { get; set; }
 
     /// <summary>收到 ASDU 的同步零拷贝事件（支持多订阅者）。</summary>
@@ -57,6 +58,13 @@ public interface IIec104Master : IAsyncDisposable
     Task<ControlConfirmation> SendControlCommandAndWaitAsync(
         CauseOfTransmission cot, int ca, InformationObject io,
         CancellationToken cancellationToken = default);
+
+    /// <summary>发送一条读命令（C_RD_NA_1）并异步等待装置回送的被读点数据。</summary>
+    /// <remarks>关联键是 (CA, IOA)；装置拒绝时返回 <see cref="ReadResponse.IsNegative"/> = true，
+    /// 装置沉默时抛 <see cref="TimeoutException"/>，等待期间连接断开则抛
+    /// <see cref="OperationCanceledException"/>。</remarks>
+    Task<ReadResponse> SendReadCommandAndWaitAsync(
+        int ca, int ioa, CancellationToken cancellationToken = default);
 }
 
 /// <summary>

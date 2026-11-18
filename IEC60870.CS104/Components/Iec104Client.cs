@@ -30,6 +30,7 @@ public sealed class Iec104Client : TcpClient, IIec104Master, IIec104ApduSink
     private readonly ClientSslOption _sslOption;
     private readonly ApduEndpoint _endpoint;
     private readonly ControlConfirmationTracker _confirmationTracker = new ControlConfirmationTracker();
+    private readonly ReadResponseTracker _readTracker = new ReadResponseTracker();
 
     private bool _setupDone;
     private bool _dataTransferStarted;
@@ -40,6 +41,9 @@ public sealed class Iec104Client : TcpClient, IIec104Master, IIec104ApduSink
 
     /// <summary>控制命令确认匹配器（供 <see cref="Iec104MasterExtension.SendControlCommandAndWaitAsync"/> 使用）。</summary>
     internal ControlConfirmationTracker ConfirmationTracker => _confirmationTracker;
+
+    /// <summary>读命令应答匹配器（供 <see cref="Iec104MasterExtension.SendReadCommandAndWaitAsync"/> 使用）。</summary>
+    internal ReadResponseTracker ReadTracker => _readTracker;
 
     /// <summary>应用层参数（可在连接前调整字段宽度）。</summary>
     public ApplicationLayerParameters Parameters => _al;
@@ -352,10 +356,31 @@ public sealed class Iec104Client : TcpClient, IIec104Master, IIec104ApduSink
         => Iec104MasterExtension.SendControlCommandAndWaitAsync(this, cot, ca, io, cancellationToken);
 
     /// <summary>
-    /// 内置确认匹配回调：将收到的 ACT-CON 交给 <see cref="ControlConfirmationTracker"/> 唤醒等待者。
+    /// 发送一条读命令（C_RD_NA_1），并异步等待装置回送的被读点数据。
+    /// 关联键为 (CA, IOA)：应答类型由点决定，不作类型假设；
+    /// 周期/突发/召唤响应等主动上送帧不会被误当成本次读的答案。
+    /// </summary>
+    /// <param name="ca">公共地址。</param>
+    /// <param name="ioa">信息对象地址（要读的点）。</param>
+    /// <param name="cancellationToken">外部取消。</param>
+    /// <returns>装置回送的数据（含是否否定应答）。</returns>
+    /// <exception cref="TimeoutException">超过 <see cref="CommandConfirmationTimeout"/> 未收到匹配应答时抛出。</exception>
+    /// <exception cref="OperationCanceledException">调用方取消，或等待期间连接断开时抛出。</exception>
+    public Task<ReadResponse> SendReadCommandAndWaitAsync(
+        int ca, int ioa, CancellationToken cancellationToken = default)
+        => Iec104MasterExtension.SendReadCommandAndWaitAsync(this, ca, ioa, cancellationToken);
+
+    /// <summary>
+    /// 内置确认匹配回调：把收到的 ASDU 交给控制命令与读命令两个匹配器。
+    /// 二者互不干扰（控制命令按 TypeID+CA+IOA+Select 认领 ACT-CON，
+    /// 读命令按 CA+IOA 认领监视方向数据帧），都只唤醒各自挂起的等待者，
+    /// 不影响用户订阅的 <see cref="AsduReceived"/>。
     /// </summary>
     private void OnConfirmationAsdu(in AsduView view)
-        => _confirmationTracker.TryComplete(in view, _al);
+    {
+        _confirmationTracker.TryComplete(in view, _al);
+        _readTracker.TryComplete(in view, _al, TypeHandlers);
+    }
 
     #endregion 发送
 
@@ -413,6 +438,7 @@ public sealed class Iec104Client : TcpClient, IIec104Master, IIec104ApduSink
         // 取消生命周期令牌，让定时器循环与 k 窗口背压退出（不等 OnTcpClosed）
         _endpoint.CancelLife();
         _confirmationTracker.CompleteAllCanceled();
+        _readTracker.CompleteAllCanceled();
 
         // 关键：失效路径也必须释放共享调度器注册与状态机。
         // 只做上面两步是「修一半」：OnTcpClosed 不触发时（本次修复的前提场景），
@@ -434,9 +460,10 @@ public sealed class Iec104Client : TcpClient, IIec104Master, IIec104ApduSink
     {
         _endpoint.CleanupConnection();
 
-        // 连接终止：唤醒所有等待命令确认的调用者（抛 TaskCanceledException），
-        // 避免其悬挂至 CommandConfirmationTimeout 超时——断开后确认永远不会到达。
+        // 连接终止：唤醒所有等待命令确认/读应答的调用者（抛 TaskCanceledException），
+        // 避免其悬挂至 CommandConfirmationTimeout 超时——断开后应答永远不会到达。
         _confirmationTracker.CompleteAllCanceled();
+        _readTracker.CompleteAllCanceled();
 
         // 注意：此处【不】释放生命周期 CTS。ReconnectionPlugin 等外部重连器可能在断开回调
         // 尚未走完时就发起下一次 ConnectAsync（Rebuild 统一释放旧 CTS 并重建），若在此
