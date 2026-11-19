@@ -44,7 +44,7 @@ namespace IEC60870.Tests
 
             var threw = 0;
             await using var server = new Iec103Server(Options());
-            server.AsduReceived += (session, in view) =>
+            server.AsduReceived += (IIec103Session session, in Iec103AsduView view) =>
             {
                 Interlocked.Increment(ref threw);
                 throw new InvalidOperationException("订阅者故意抛异常");

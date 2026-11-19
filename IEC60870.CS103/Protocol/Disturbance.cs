@@ -213,7 +213,7 @@ public sealed class DisturbanceRecord
 public static class DisturbanceAsdu
 {
     /// <summary>ASDU 23 被记录的扰动表：每条 FAN(2)+SOF(1)+CP56(7)，VSQ 记录数。</summary>
-    public static Asdu DisturbanceList(byte ca, IReadOnlyList<DisturbanceRecord> records)
+    public static Asdu DisturbanceList(int ca, IReadOnlyList<DisturbanceRecord> records)
     {
         var data = new byte[records.Count * 10];
         var offset = 0;
@@ -231,7 +231,7 @@ public static class DisturbanceAsdu
     }
 
     /// <summary>ASDU 24/25：TOO(1)+TOV(1)+FAN(2)+ACC(1)。</summary>
-    public static Asdu DisturbanceCommand(byte typeId, byte ca, byte too, int fan, byte acc, byte cot)
+    public static Asdu DisturbanceCommand(byte typeId, int ca, byte too, int fan, byte acc, byte cot)
         => new(typeId, true, 1, cot, false, ca, Asdu.GlobalFun, 0,
             new[] { too, TovCodes.InstantaneousValues, (byte)(fan & 0xFF), (byte)(fan >> 8), acc });
 
@@ -251,7 +251,7 @@ public static class DisturbanceAsdu
     /// ASDU 26 扰动数据传输准备就绪：
     /// TOO+TOV+FAN+NOF(2)+NOC(1)+NOE(2)+INT(2 µs)+CP32(4)。
     /// </summary>
-    public static Asdu TransferReady(byte ca, byte too, DisturbanceRecord record, int recordedCount)
+    public static Asdu TransferReady(int ca, byte too, DisturbanceRecord record, int recordedCount)
     {
         var data = new byte[15];
         data[0] = too;
@@ -276,7 +276,7 @@ public static class DisturbanceAsdu
     }
 
     /// <summary>ASDU 27 通道一次值：TOO+TOV+FAN+ACC+RPV(4f)+RSV(4f)+RFA(4f)。</summary>
-    public static Asdu ChannelRating(byte ca, byte too, int fan, DisturbanceChannel channel)
+    public static Asdu ChannelRating(int ca, byte too, int fan, DisturbanceChannel channel)
     {
         var data = new byte[17];
         data[0] = too;
@@ -293,7 +293,7 @@ public static class DisturbanceAsdu
     /// <summary>
     /// ASDU 30 通道扰动数据段：TOO+TOV+FAN+ACC+NDV(1)+NFE(2)+SDV×NDV（归一化 int16 LE）。
     /// </summary>
-    public static Asdu ChannelData(byte ca, byte too, int fan, byte acc, short[] samples, int offset, int count)
+    public static Asdu ChannelData(int ca, byte too, int fan, byte acc, short[] samples, int offset, int count)
     {
         // 头部 8 字节（TOO/TOV/FAN/ACC/NDV/NFE）+ NDV×2。
         // 曾误写为 9+2N，导致线路帧尾部恒带一个多余的 0x00；
@@ -319,12 +319,12 @@ public static class DisturbanceAsdu
     }
 
     /// <summary>ASDU 31 通道/扰动传输终止：TOO+TOV+FAN+ACC。</summary>
-    public static Asdu ChannelEnd(byte ca, byte too, int fan, byte acc)
+    public static Asdu ChannelEnd(int ca, byte too, int fan, byte acc)
         => new(TypeIds.ChannelEnd, true, 1, CotCodes.DisturbanceTransfer, false, ca, Asdu.GlobalFun, 0,
             new[] { too, TovCodes.InstantaneousValues, (byte)(fan & 0xFF), (byte)(fan >> 8), acc });
 
     /// <summary>ASDU 29 带标签的通道扰动数据：FAN(2)+NOT(1)+TAP(2)+NOT×(FUN+INF+DPI)。</summary>
-    public static Asdu DisturbanceTags(byte ca, int fan, int tap, IReadOnlyList<(byte Fun, byte Inf, int Dpi)> tags)
+    public static Asdu DisturbanceTags(int ca, int fan, int tap, IReadOnlyList<(byte Fun, byte Inf, int Dpi)> tags)
     {
         var data = new byte[5 + tags.Count * 3];
         data[0] = (byte)(fan & 0xFF);

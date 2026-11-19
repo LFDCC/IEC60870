@@ -1,6 +1,38 @@
 IEC60870.NETAsync — Changelog
 =============================
 
+Changes to version 7.0.0
+------------------------
+- **BREAKING(CS103)**: ASDU 公共地址从 `byte` 拓宽到 `int`，公开 API 的 `ca` 参数同步改为 `int`。
+  `Asdu.Ca`、`Iec103AsduView.Ca`、`Iec103AsduHeader.Ca` 及全部 Asdu 工厂方法、`Iec103Client` /
+  `IIec103Master` 各方法（`ResetLinkAsync` / `GeneralInterrogationAsync` / `SendCommandAsync` …）
+  均受影响。标准 FT1.2 承载下 CA 仍是 1 字节（高字节恒 0），超宽时编码抛
+  `ArgumentOutOfRangeException` 而不是静默截断。迁移：把 `byte ca` 变量改为 `int`，
+  或直接用字面量（`1` 可隐式转换）。
+- feat(CS103): **新增帧层扩展点 `IIec103FramingCodec` + `Iec103AsduLayout`**，用于厂商私有的
+  帧承载。标准 FT1.2 仍是内置默认实现，库里不含任何厂商代码。
+  * `Iec103AsduLayout` 描述头部布局：字段偏移/宽度、COT 宽 1 或 2 字节、CA 宽 1 或 2 字节、
+    COT 位序（`CotNegativeMask` / `CotValueMask`）。`Standard` 为标准 6 字节头。
+  * 自定义承载通过 `Iec103Options.Link.FramingCodec` 注入；注入后 FT1.2 专属的链路服务
+    （`ResetLinkAsync` / `ResetFcbAsync` / `RequestLinkStatusAsync` / `GeneralInterrogationAsync` /
+    `RequestClass1Async` / `RequestClass2Async`）抛 `NotSupportedException`——那些依赖固定帧
+    与 1/2 级队列。
+  * 新增 `Iec103Client.UsesCustomFraming`，供调用方判断该走推送还是召唤取数。
+  * `Asdu` / `Iec103AsduView` 增加可选 `Layout` 参数（`null` = 标准布局），
+    `Iec103AsduView` 新增 `CotField`（完整 COT 字段，2 字节承载时为 16 位值）。
+- feat(CS103): 服务端 `Enqueue` 在自定义承载下改为直接经编解码器发出（无 1/2 级队列可等），
+  并串行化写入避免并发帧交错。
+- examples(103): `cs103-private-ioa` 增加许继网口 103 的完整参考实现
+  （`Xuji/XujiApduCodec.cs`）——104 APCI 帧壳（`68|L(1B)|控制域4B|ASDU`，仅 I 帧）、
+  8 字节 ASDU 头（COT 2 字节、CA 2 字节）、`XujiCa = (装置地址<<8) | 公共地址(扇区)`、
+  COT 按 104 位序。新增 `--apdu`（走自定义承载）与 `--field`（回放现场抓包）两种用法。
+- examples(103): 许继 TI=61 定值改为 **3 字节/项**（`ushort` 值 + 比例系数 bit0-1 +
+  性质位 bit4），此前按 2 字节解析会从第 2 项起整体错位；新增 `XujiSettingValue` 承载
+  原始值/系数/性质位，`SettingClient` 按 `UsesCustomFraming` 自动选择推送订阅或召唤取数。
+- examples(103): `cs103-stress` 新增 `--xuji`，用于对厂商私有承载做压测。
+- fix(tests): 8 处 lambda 依赖 C# 预览特性（`(session, in view) =>` 未写参数类型），
+  补上显式类型 `(IIec103Session session, in Iec103AsduView view) =>`。
+
 Changes to version 6.1.5
 ------------------------
 - feat(CS104): **新增 `SendReadCommandAndWaitAsync`——读命令（C_RD_NA_1）的同步等待入口**，

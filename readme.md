@@ -43,7 +43,7 @@ buffering, with a familiar information-object model. It is released under the
 | --- | --- |
 | `LFDCC.IEC60870.Core`  | Transport-agnostic protocol core: `ASDU`, information objects, time/quality types, hex & telegram helpers. |
 | `LFDCC.IEC60870.CS101` | IEC 60870-5-101 link layer (balanced / unbalanced, serial & TCP) on TouchSocket. |
-| `LFDCC.IEC60870.CS103` | IEC 60870-5-103 / DL/T 667 protection-equipment stack: native FT1.2 over serial & TCP, vendor-private type extensions. |
+| `LFDCC.IEC60870.CS103` | IEC 60870-5-103 / DL/T 667 protection-equipment stack: native FT1.2 over serial & TCP, vendor-private type extensions, pluggable frame codecs. |
 | `LFDCC.IEC60870.CS104` | IEC 60870-5-104 TCP / TLS transport on TouchSocket. |
 
 ```bash
@@ -68,6 +68,17 @@ dotnet add package LFDCC.IEC60870.CS104
 > `FUN`/`INF` two-level addressing instead of IOA. The `0x68` start byte is shared
 > with 104's APCI by coincidence only — the second byte, control field and frame
 > terminator all differ. `CS103` shares no protocol code with `CS104`.
+>
+> **Vendor-private framing** (e.g. Xuji's ethernet 103, which stuffs 103 ASDUs into
+> a 104-style APCI envelope): DL/T 667 states the standard *does not* use APCI, and
+> such envelopes differ per vendor (1- or 2-byte length, 4- or 12-byte control field,
+> 5/6/8-byte ASDU header). They are therefore **not** in the standard library.
+>
+> The library only provides the seam: implement `IIec103FramingCodec` and inject it
+> via `options.Link.FramingCodec`. A complete worked implementation lives in
+> `examples/103/cs103-private-ioa/Xuji/` (ethernet framing, 2-byte CA = sector +
+> device address, 18 private TypeIDs, TI=61 setting transfer) — copy it into your
+> own project, or use it as the reference for another vendor.
 
 ## Getting started (IEC 60870-5-103)
 
@@ -90,10 +101,14 @@ var points = await client.GeneralInterrogationAsync(1); // TI=7 → TI=8
 ### Master over TCP
 
 ```csharp
-await using var client = new Iec103Client("10.1.1.5", 2404);
+await using var client = new Iec103Client("10.1.1.5", 2403);
 await client.ConnectAsync();
 await client.ResetLinkAsync(1);
 ```
+
+Port note: 103 and 104 are **separate service ports on the same device**. 2404 is
+the 104 port; sites commonly expose 103 on 2403. This is vendor-specific — confirm
+against the device manual instead of assuming.
 
 ### Multiple devices behind one channel
 
@@ -103,7 +118,7 @@ gateway and let the master tell them apart by link address (the 1-byte CA in 103
 ```csharp
 // One client == one physical channel. Do NOT create one client per device:
 // that would be several master connections, not one multi-drop channel.
-await using var client = new Iec103Client("10.1.1.5", 2404);
+await using var client = new Iec103Client("10.1.1.5", 2403);
 await client.ConnectAsync();
 
 foreach (var ca in new byte[] { 1, 2, 3 })
@@ -144,7 +159,7 @@ await server.StartAsync(port);
 ```csharp
 await using var server = new Iec103Server();
 server.AsduReceived += (session, in asdu) => { /* … */ };
-await server.StartAsync(2404);   // multiple masters connect concurrently
+await server.StartAsync(2403);   // multiple masters connect concurrently
 ```
 
 ### Vendor-private types

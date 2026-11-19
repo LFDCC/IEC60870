@@ -107,6 +107,24 @@ public sealed class Iec103LinkParameters
     private readonly HashSet<byte> _linkAddresses = new() { 1 };
 
     /// <summary>
+    /// 厂商私有帧编解码器。<c>null</c>（默认）表示使用库内置的标准 FT1.2 承载。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 标准 103 只定义 FT1.2 帧，串口与「FT1.2 字节流灌进 TCP」的隧道都由内置实现覆盖，
+    /// <b>不需要设置本属性</b>。厂商自定义的网口承载不属于任何标准，由使用方实现
+    /// <see cref="IIec103FramingCodec"/> 后在此注入。
+    /// </para>
+    /// <para>
+    /// 注入后 FT1.2 专属的链路服务（<c>ResetLinkAsync</c> / <c>ResetFcbAsync</c> /
+    /// <c>RequestLinkStatusAsync</c> / <c>GeneralInterrogationAsync</c> /
+    /// <c>RequestClass1Async</c> / <c>RequestClass2Async</c>）会抛
+    /// <see cref="NotSupportedException"/>——它们依赖固定帧与 1/2 级队列。
+    /// </para>
+    /// </remarks>
+    public IIec103FramingCodec? FramingCodec { get; set; }
+
+    /// <summary>
     /// 是否接受 255 广播帧（仅串口/Stream 从站使用）。默认 true。
     /// </summary>
     /// <remarks>
@@ -142,6 +160,7 @@ public sealed class Iec103LinkParameters
         MaxRepeat = source.MaxRepeat;
         DrainClass1UntilEmpty = source.DrainClass1UntilEmpty;
         AcceptBroadcast = source.AcceptBroadcast;
+        FramingCodec = source.FramingCodec;
 
         // 直接复制字段而非走 LocalLinkAddress setter：setter 会把集合重置为单地址，
         // 会丢掉 AddLinkAddress 添加的其余地址。

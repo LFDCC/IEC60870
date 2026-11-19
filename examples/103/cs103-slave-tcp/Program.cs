@@ -105,7 +105,7 @@ while (true)
 //  总召唤：回送监视点 + 终止帧
 // ══════════════════════════════════════════════════════════════════
 
-static void PushAllPoints(IIec103Session session, byte ca)
+static void PushAllPoints(IIec103Session session, int ca)
 {
     var now = Cp56Time2a.FromDateTime(DateTime.Now);
 

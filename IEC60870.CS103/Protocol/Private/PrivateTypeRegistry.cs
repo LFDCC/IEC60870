@@ -31,7 +31,7 @@ public interface IIec103PrivateTypeHandler
     /// <summary>类型标识（TI）。仅作元数据，寻址匹配以注册时提供的键为准。</summary>
     byte TypeId { get; }
 
-    /// <summary>厂商标识（如 <c>"Xuji"</c> / <c>"NARI"</c> / <c>"SAC"</c>），用于诊断与日志。</summary>
+    /// <summary>厂商标识（如 <c>"VendorA"</c> / <c>"VendorB"</c>），用于诊断与日志。</summary>
     string VendorTag { get; }
 
     /// <summary>本处理器绑定的 FUN；<c>null</c> 表示不限定（仅按 TI 匹配）。</summary>

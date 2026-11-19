@@ -13,18 +13,31 @@
 //   dotnet run                 # 默认 TCP 自环（127.0.0.1:2406），无需硬件
 //   dotnet run -- 2506         # 指定端口
 //   dotnet run -- --serial COM3  # 走串口（需另一个主站，或配合 cs103-master-serial）
+//   dotnet run -- --apdu       # 用 APDU 承载（许继网口 2403 的实际形态）
+//   dotnet run -- --field      # 只回放现场抓包并解码（不需要网络）
 //
 // 自环模式用「同一个进程里的从站 + 主站」跑完整链路（复位→总召唤→1 级数据），
 // 因此可以当作回归脚本使用。
+//
+// 两种承载：
+//   Ft12（默认）——串口、以及「FT1.2 字节流原样灌进 TCP」的网口隧道；
+//   Apdu        ——许继网口 2403 的实际形态：68 | L | 控制域4B | ASDU，
+//                  ASDU 头 8 字节（COT 2 字节、CA 2 字节）。见 --field 的报文样例。
 
 using IEC60870.CS103;
 using cs103_private_ioa.Xuji;
 
-const byte Ca = 1;           // 公共地址
+const byte Ca = 1;           // 公共地址（FT1.2 承载为 1 字节）
 const byte Fun = 161;        // 功能类型（许继装置信息表定义，此处取一个专用范围值作为示例）
 const byte FunMeas = 161;    // 遥测用的 FUN（实际由装置信息表决定）
 
+// 网口 103 的 CA 是 2 字节，按许继 104 规则拼：CA = (装置地址 << 8) | 公共地址(扇区)。
+// 现场抓包值是 0x0101 → 扇区=1、装置地址=1。
+var apduCa = new XujiCa(sector: 1, device: 1).ToCommonAddress();
+
 var serialPortName = GetArg(args, "--serial");
+var useApdu = args.Contains("--apdu");
+var fieldOnly = args.Contains("--field");
 var port = 2406;
 foreach (var arg in args)
 {
@@ -36,13 +49,19 @@ foreach (var arg in args)
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
+if (fieldOnly)
+{
+    FieldFrames.Run();
+    return;
+}
+
 if (serialPortName is not null)
 {
     await RunSerialAsync(serialPortName);
 }
 else
 {
-    await RunLoopbackAsync(port);
+    await RunLoopbackAsync(port, useApdu);
 }
 
 return;
@@ -51,17 +70,36 @@ return;
 //  TCP 自环：从站 + 主站同进程
 // ══════════════════════════════════════════════════════════════════
 
-async Task RunLoopbackAsync(int tcpPort)
+async Task RunLoopbackAsync(int tcpPort, bool apduFraming)
 {
-    Console.WriteLine($"许继 103 扩展类型示例（TCP 自环 127.0.0.1:{tcpPort}）");
+    var ca = apduFraming ? apduCa : Ca;
+    var framingName = apduFraming ? "许继 APCI（104 壳）" : "标准 FT1.2";
+
+    Console.WriteLine($"许继 103 扩展类型示例（TCP 自环 127.0.0.1:{tcpPort}，承载={framingName}）");
     Console.WriteLine("规约依据：《许继103通信规约》表10~表38\n");
 
-    await using var server = new Iec103Server();
+    // 从站与主站必须使用同一种承载——两种帧都以 0x68 起始，库不做自动嗅探。
+    // 许继的 APCI 是厂商私有实现，因此由 examples 提供编解码器注入库。
+    var serverOptions = new Iec103Options();
+    var clientOptions = new Iec103Options();
+    if (apduFraming)
+    {
+        serverOptions.UseLinkParameters(l => l.FramingCodec = new XujiApduCodec());
+        clientOptions.UseLinkParameters(l => l.FramingCodec = new XujiApduCodec());
+    }
+
+    await using var server = new Iec103Server(serverOptions);
 
     // 从站也注册同一套类型：既用于日志里显示语义，也便于将来做「校验再回送」
     XujiPrivateTypes.RegisterAll(server.PrivateTypes);
 
     server.SessionOpened += s => Console.WriteLine($"[从站] 主站接入 {s.RemoteEndPoint}");
+
+    if (apduFraming)
+    {
+        server.RawFrameReceived += (s, raw) =>
+            Console.WriteLine($"[从站帧 RX] {Convert.ToHexString(raw)}");
+    }
 
     // 总召唤时把许继扩展类型全部推一遍
     server.AsduReceived += (IIec103Session session, in Iec103AsduView asdu) =>
@@ -80,7 +118,13 @@ async Task RunLoopbackAsync(int tcpPort)
     await server.StartAsync(tcpPort);
     Console.WriteLine($"[从站] 已监听 {tcpPort}\n");
 
-    await using var client = new Iec103Client("127.0.0.1", tcpPort);
+    await using var client = new Iec103Client("127.0.0.1", tcpPort, clientOptions);
+
+    if (apduFraming)
+    {
+        client.RawFrameReceived += raw =>
+            Console.WriteLine($"[主站帧 RX] {Convert.ToHexString(raw)}");
+    }
 
     // ── 主站侧：登记 + 订阅 ──────────────────────────────────
     XujiPrivateTypes.RegisterAll(client.PrivateTypes);
@@ -104,48 +148,77 @@ async Task RunLoopbackAsync(int tcpPort)
     await client.ConnectAsync();
     Console.WriteLine("[主站] 已连接");
 
-    // 1. 复位通信单元（RESET CU）
-    await client.ResetLinkAsync(Ca);
-    Console.WriteLine("[主站] 链路已复位");
-
-    // 2. 总召唤：从站会连续推 18 种扩展类型
-    var gi = await client.GeneralInterrogationAsync(Ca);
-    Console.WriteLine($"[主站] 总召唤收到 {gi.Count} 条 ASDU");
-
-    // 3. 轮询 1 级数据，直到收够或超时
-    var deadline = DateTime.UtcNow.AddSeconds(3);
-    while (received.Count < XujiSamples.Count && DateTime.UtcNow < deadline)
+    if (apduFraming)
     {
-        await client.RequestClass1Async(Ca);
-        await Task.Delay(50);
+        // APDU 承载没有固定帧，因此 RESET CU / 总召唤 / 1-2 级召唤都不存在。
+        // 这里验证库对这类 FT1.2 专用服务是「明确拒绝」而不是白等超时。
+        Console.WriteLine("[主站] APDU 承载：跳过 RESET CU / 总召唤 / 1-2 级召唤");
+        try
+        {
+            await client.ResetLinkAsync(Ca);
+            Console.WriteLine("✘ ResetLinkAsync 本应在 APDU 承载下报错");
+        }
+        catch (NotSupportedException ex)
+        {
+            Console.WriteLine($"✔ FT1.2 链路服务被明确拒绝：{ex.Message}");
+        }
     }
+    else
+    {
+        // 1. 复位通信单元（RESET CU）
+        await client.ResetLinkAsync(Ca);
+        Console.WriteLine("[主站] 链路已复位");
 
-    Console.WriteLine($"\n── 汇总 ──");
-    Console.WriteLine($"主站解码出的许继扩展对象：{received.Count} 个（预期 {XujiSamples.Count} 个）");
-    Console.WriteLine(received.Count == XujiSamples.Count ? "✔ 全部类型解码成功" : "✘ 有类型未收到");
+        // 2. 总召唤：从站会连续推 18 种扩展类型
+        var gi = await client.GeneralInterrogationAsync(Ca);
+        Console.WriteLine($"[主站] 总召唤收到 {gi.Count} 条 ASDU");
+
+        // 3. 轮询 1 级数据，直到收够或超时。
+        //    每轮召唤后多等一拍：ASDU 事件在接收循环里触发，与本次召唤返回之间
+        //    存在极短的时间差，立即判断数量会在最后一帧到达前就退出循环。
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (received.Count < XujiSamples.Count && DateTime.UtcNow < deadline)
+        {
+            await client.RequestClass1Async(Ca);
+            await Task.Delay(50);
+        }
+
+        Console.WriteLine($"\n── 汇总 ──");
+        Console.WriteLine($"主站解码出的许继扩展对象：{received.Count} 个（预期 {XujiSamples.Count} 个）");
+        Console.WriteLine(received.Count == XujiSamples.Count ? "✔ 全部类型解码成功" : "✘ 有类型未收到");
+    }
 
     // ── 4. 定值读写（TI=61）─────────────────────────────────────
     Console.WriteLine("\n── 定值读写（TI=61）──");
 
-    // 装置侧：模拟「CPU 板 1 / 定值区 0」的参数区
-    var device = new SettingDevice(server, Ca, Fun);
-    device.SetTable(cpu: 1, zone: 0, new ushort[] { 100, 200, 300, 400, 500 });
+    // 装置侧：模拟「CPU 板 1 / 定值区 0」的参数区。
+    // 每项定值 3 字节 = 原始值 2B + 比例系数/性质位 1B，这里全部用「系数 ×1、性质=数据」。
+    var device = new SettingDevice(server, ca, Fun);
+    device.SetTable(cpu: 1, zone: 0, new[]
+    {
+        XujiSettingValue.Create(100),
+        XujiSettingValue.Create(200),
+        XujiSettingValue.Create(300),
+        XujiSettingValue.Create(400),
+        XujiSettingValue.Create(500),
+    });
     device.Attach();
 
-    var settings = new SettingClient(client, Ca, Fun);
+    var settings = new SettingClient(client, ca, Fun);
 
     // 4.1 读定值（INF=100）
     var loaded = await settings.ReadAsync(cpu: 1, zone: 0);
-    Console.WriteLine($"[主站] 读到定值 {loaded.Length} 项：{string.Join(", ", loaded)}");
+    Console.WriteLine($"[主站] 读到定值 {loaded.Length} 项：{string.Join(", ", loaded.Select(v => v.EngineeringValue))}");
 
-    // 4.2 改一项，写回（预发 101 → 返校 102 → 执行 103 → 确认 104）
-    loaded[2] = 999;
+    // 4.2 改一项，写回（预发 101 → 返校 102 → 执行 103 → 确认 104）。
+    // 用现场报文的典型值：原始 1500 + 系数 ×0.01 → 实际 15.00
+    loaded[2] = XujiSettingValue.FromBytes(0xDC, 0x05, 0x12);
     await settings.WriteAsync(cpu: 1, zone: 0, loaded);
-    Console.WriteLine($"[主站] 已写入：{string.Join(", ", loaded)}");
+    Console.WriteLine($"[主站] 已写入第 3 项：原始 1500、系数 ×0.01 → {loaded[2].EngineeringValue}");
 
     // 4.3 回读校验
     var after = await settings.ReadAsync(cpu: 1, zone: 0);
-    Console.WriteLine($"[主站] 回读：{string.Join(", ", after)}");
+    Console.WriteLine($"[主站] 回读：{string.Join(", ", after.Select(v => v.EngineeringValue))}");
     Console.WriteLine(after.SequenceEqual(loaded) ? "✔ 定值读写校验通过" : "✘ 定值回读不一致");
 
     // 4.4 读一个不存在的定值区 → 装置回否定确认（COT=21）
@@ -204,7 +277,7 @@ async Task RunSerialAsync(string portName)
 //  从站上送：把 18 个许继扩展类型各推一帧
 // ══════════════════════════════════════════════════════════════════
 
-void PushAllXujiPoints(IIec103Session session, byte ca)
+void PushAllXujiPoints(IIec103Session session, int ca)
 {
     var now = DateTime.Now;
     var cp56 = Cp56Time2a.FromDateTime(now);
@@ -326,7 +399,7 @@ internal static class XujiSamples
     public static int Count => Build(1, 161, 161, default, default).Count;
 
     /// <summary>按规约表逐类型组帧。</summary>
-    public static List<Asdu> Build(byte ca, byte fun, byte funMeas, Cp56Time2a cp56, Cp32Time2a cp24)
+    public static List<Asdu> Build(int ca, byte fun, byte funMeas, Cp56Time2a cp56, Cp32Time2a cp24)
     {
         var list = new List<Asdu>();
         byte inf = 1;
@@ -387,9 +460,14 @@ internal static class XujiSamples
                 new XujiMeasuredValue(2, -567),
             })));
 
-        // 61 定值命令（CPU/区 + 序号 + 定值）
+        // 61 定值命令（CPU/区 + 序号 + 定值 3B/项）
         list.Add(XujiPrivateTypes.CreateAsdu(XujiTypeIds.SettingCommand, ca, fun, XujiSettingInf.Read,
-            new XujiSettingCommand(CpuBoard: 1, Zone: 0, Index: 1, Values: new ushort[] { 100, 200, 300 })));
+            new XujiSettingCommand(CpuBoard: 1, Zone: 0, Index: 1, Values: new[]
+            {
+                XujiSettingValue.Create(100),
+                XujiSettingValue.Create(200),
+                XujiSettingValue.Create(300),
+            })));
 
         // 62 故障报告确认/结束
         list.Add(XujiPrivateTypes.CreateAsdu(XujiTypeIds.FaultReportAck, ca, fun, 0, new XujiSequenceNumber(1)));
@@ -446,4 +524,77 @@ internal static class XujiSamples
 
         return list;
     }
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  现场抓包回放（不需要网络）
+// ══════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// 用许继现场 2403 端口抓到的 7 帧真实报文验证 APDU 承载的解码，
+/// 包含「调定值」与「单项定值修改」两条完整交互。
+/// </summary>
+internal static class FieldFrames
+{
+    /// <summary>现场 7 帧原始报文（2026-11-19 抓包）。</summary>
+    private static readonly (string Name, string Hex)[] Captures =
+    {
+        ("调定值 请求 M→S", "68 0E 00 00 00 00 3D 81 14 00 01 01 B2 64 1F 00"),
+        ("调定值 应答 S→M", "68 5f 00 00 02 00 3d 1c 14 00 01 01 b2 64 1f 00 00 00 10 01 00 10 05 00 10 e8 03 10 14 00 10 00 00 10 e8 03 10 01 00 10 c0 00 10 a8 00 10 04 00 10 02 00 10 00 00 10 80 00 10 e1 00 10 22 00 10 22 00 10 12 00 10 00 00 10 80 00 10 e1 00 10 22 00 10 22 00 10 00 00 10 01 00 10 01 00 10 00 00 10"),
+        ("调定值 结束帧 S→M", "68 0e 02 00 02 00 3d 81 0a 00 01 01 b2 64 1f 00"),
+        ("单项定值 预发 M→S", "68 11 00 00 00 00 3D 02 14 00 01 01 B2 6B 1F 0A DC 05 12"),
+        ("单项定值 返校 S→M", "68 11 00 00 02 00 3D 02 14 00 01 01 B2 6C 1F 0A DC 05 12"),
+        ("单项定值 执行 M→S (序号 1)", "68 0E 00 00 00 00 3D 81 14 00 01 01 B2 6D 1F 01"),
+        ("单项定值 执行 M→S (序号 2)", "68 0E 00 00 00 00 3D 81 14 00 01 01 B2 6D 1F 02"),
+    };
+
+    /// <summary>回放全部抓包并解码。</summary>
+    public static void Run()
+    {
+        Console.WriteLine("许继现场报文回放（网口 103，端口 2403）\n");
+        Console.WriteLine("报文格式完全按 IEC 60870-5-104（工程师确认），连接仍按 103：");
+        Console.WriteLine("  帧  ：68 | L(1B) | 控制域 4B | ASDU      总长 = 2 + L");
+        Console.WriteLine("  ASDU：TI | VSQ | COT(2B) | CA(2B) | FUN | INF     ← 104 头字段，IOA 换成 FUN/INF");
+        Console.WriteLine("  CA  ：(装置地址 << 8) | 公共地址(扇区)            ← 按许继 104 规约 §3.14\n");
+
+        var codec = new XujiApduCodec();
+        codec.FrameRejected += (raw, why) => Console.WriteLine($"  ✘ 坏帧 {raw}：{why}");
+
+        foreach (var (name, hex) in Captures)
+        {
+            var bytes = Hex(hex);
+            Console.WriteLine($"── {name}（{bytes.Length} 字节）──");
+            Console.WriteLine($"   RAW  {hex}");
+
+            foreach (var incoming in codec.Feed(bytes))
+            {
+                Console.WriteLine($"   帧    长度域 L={bytes[1]}，总长 {bytes.Length}，ASDU {incoming.Asdu.Length}B");
+
+                var view = new Iec103AsduView(incoming.Asdu, XujiApduLayout.Instance);
+                Console.WriteLine($"   ASDU  {view.Describe()}");
+                Console.WriteLine($"   CA    0x{view.Ca:X4} → {XujiCa.Parse(view.Ca)}");
+
+                var decoded = XujiPrivateTypes.Decode(in view);
+                if (decoded is XujiSettingCommand cmd)
+                {
+                    // 信息体首字节：高半字节 CPU 板、低半字节定值区（规约表26），与 CA 无关
+                    Console.WriteLine($"   定值  0x{incoming.Asdu[8]:X2}→CPU板={cmd.CpuBoard} 定值区={cmd.Zone} 序号={cmd.Index} 项数={cmd.Values.Length}");
+                    for (var i = 0; i < cmd.Values.Length; i++)
+                    {
+                        var v = cmd.Values[i];
+                        Console.WriteLine($"         #{i + 1,2}  原始={v.Raw,5}  系数=×{v.Scale,-6} 实际={v.EngineeringValue}");
+                    }
+                }
+
+                Console.WriteLine();
+            }
+        }
+
+        Console.WriteLine("✔ 全部现场报文解码完成");
+    }
+
+    private static byte[] Hex(string text)
+        => text.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => Convert.ToByte(x, 16))
+            .ToArray();
 }

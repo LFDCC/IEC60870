@@ -266,7 +266,7 @@ namespace IEC60870.Tests
 
             // 总召唤应答：从站回 2 个带时标的测量值 + 终止帧。
             // 103 的命令/时钟同步只有确认帧、不回推 ASDU，因此用总召唤的返回帧数作为"链路活着"的证据。
-            server.AsduReceived += (session, in view) =>
+            server.AsduReceived += (IIec103Session session, in Iec103AsduView view) =>
             {
                 if (view.TypeId != TypeIds.GeneralInterrogation)
                 {

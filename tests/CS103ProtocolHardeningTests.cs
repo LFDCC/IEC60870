@@ -59,7 +59,7 @@ namespace IEC60870.Tests
             var asduCount = 0;
 
             await using var server = new Iec103Server(FastOptions());
-            server.AsduReceived += (session, in view) =>
+            server.AsduReceived += (IIec103Session session, in Iec103AsduView view) =>
             {
                 if (view.TypeId == TypeIds.GeneralCommand)
                 {

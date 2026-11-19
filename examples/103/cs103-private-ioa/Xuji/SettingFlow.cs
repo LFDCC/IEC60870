@@ -3,6 +3,12 @@
 //  源代码使用协议遵循本仓库的开源协议（MIT License）
 //------------------------------------------------------------------------------
 
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Channels;
+using System.Threading.Tasks;
 using IEC60870.CS103;
 
 namespace cs103_private_ioa.Xuji;
@@ -11,37 +17,69 @@ namespace cs103_private_ioa.Xuji;
 /// 许继 103 定值读写（TI=61）的主站侧流程。
 /// </summary>
 /// <remarks>
-/// <para><b>规约流程</b>（《许继103通信规约》3.3.18~3.3.19）：</para>
+/// <para>《许继103通信规约》3.3.18~3.3.19：</para>
 /// <list type="number">
-///   <item><b>读</b>：主站发 INF=100（调定值，定值序号=0）→ 装置按表28 分帧回送定值，
-///         最后一帧为结束帧（COT=10）；无定值时回表27（COT=21 否定）。</item>
-///   <item><b>写</b>：预发 INF=101 → 装置回 102 返校（值须与预发一致，COT=20，最后一帧 COT=10）
-///         → 执行 INF=103 → 装置回 104 执行确认（COT=20/21）。中途可用 INF=105 撤销。</item>
+///   <item><b>读</b>：INF=100（定值序号=0 表示整区）→ 装置按表28 分帧回送，末帧 COT=10；
+///         无定值时按表27 回 COT=21 否定。</item>
+///   <item><b>写</b>：预发 INF=101 → 返校 102 → 执行 103 → 确认 104。可用 105 撤销。</item>
 /// </list>
 /// <para>
-/// 103 是主从式轮询协议：装置收到命令后先链路确认，数据放进 1 级队列，
-/// 主站必须自己召唤 1 级数据才能取到。所以下面每个步骤都是
-/// 「发命令（SEND/CONFIRM）→ 反复召 1 级 → 直到命中结束帧/确认帧」。
+/// 取数方式随承载自动选择：标准 FT1.2 是非平衡链路，需召唤 1/2 级队列；
+/// 自定义承载（如许继网口）装置收到即回送，靠 <c>AsduReceived</c> 事件接收。
 /// </para>
 /// </remarks>
-internal sealed class SettingClient
+public sealed class SettingClient : IAsyncDisposable
 {
-    /// <summary>单帧最多携带的定值个数（按报文长度上限 253 字节、2 字节/定值留余量）。</summary>
+    /// <summary>单帧最多携带的定值个数（报文上限 253 字节，2 字节/定值留余量）。</summary>
     public const int MaxValuesPerFrame = 64;
 
     private readonly Iec103Client _client;
-    private readonly byte _ca;
+    private readonly int _ca;
     private readonly byte _fun;
 
+    /// <summary>true = 装置主动推送（自定义承载）；false = 召唤拉取（标准 FT1.2）。</summary>
+    private readonly bool _pushMode;
+
+    /// <summary>推送模式下装置上送的 TI=61 应答。</summary>
+    private readonly Channel<Asdu> _inbox = Channel.CreateUnbounded<Asdu>();
+
+    /// <summary>召唤模式下，一批召唤结果中尚未消费的 ASDU。</summary>
+    private readonly Queue<Asdu> _polled = new();
+
     /// <summary>构造定值客户端。</summary>
-    /// <param name="client">已连接并复位链路的主站。</param>
+    /// <param name="client">已连接的主站。</param>
     /// <param name="ca">公共地址。</param>
     /// <param name="fun">功能类型（由装置信息表定义）。</param>
-    public SettingClient(Iec103Client client, byte ca, byte fun)
+    public SettingClient(Iec103Client client, int ca, byte fun)
     {
         _client = client;
         _ca = ca;
         _fun = fun;
+        _pushMode = client.UsesCustomFraming;
+
+        if (_pushMode)
+        {
+            _client.AsduReceived += OnAsduReceived;
+        }
+    }
+
+    /// <summary>把收到的 TI=61 应答转入队列；其余报文不处理。</summary>
+    private void OnAsduReceived(in Iec103AsduView asdu)
+    {
+        if (asdu.TypeId != XujiTypeIds.SettingCommand)
+        {
+            return;
+        }
+
+        _inbox.Writer.TryWrite(Asdu.Materialize(in asdu));
+    }
+
+    /// <inheritdoc />
+    public ValueTask DisposeAsync()
+    {
+        _client.AsduReceived -= OnAsduReceived;
+        _inbox.Writer.TryComplete();
+        return default;
     }
 
     /// <summary>读一个定值区的全部定值。</summary>
@@ -51,45 +89,30 @@ internal sealed class SettingClient
     /// <param name="ct">取消令牌。</param>
     /// <exception cref="TimeoutException">超时未收到结束帧。</exception>
     /// <exception cref="InvalidOperationException">装置否定应答（无此定值）。</exception>
-    public async Task<ushort[]> ReadAsync(byte cpu, byte zone, int timeoutMs = 5000, CancellationToken ct = default)
+    public async Task<XujiSettingValue[]> ReadAsync(byte cpu, byte zone, int timeoutMs = 5000, CancellationToken ct = default)
     {
         // INF=100 调定值，定值序号=0 表示整区
-        await SendAsync(XujiSettingInf.Read, new XujiSettingCommand(cpu, zone, 0, Array.Empty<ushort>()), ct);
+        await SendAsync(XujiSettingInf.Read, new XujiSettingCommand(cpu, zone, 0, Array.Empty<XujiSettingValue>()), ct);
 
-        var values = new List<ushort>();
-        var deadline = Environment.TickCount64 + timeoutMs;
+        var values = new List<XujiSettingValue>();
 
-        while (Environment.TickCount64 < deadline)
+        while (true)
         {
-            var batch = await _client.RequestClass1Async(_ca, ct: ct);
+            var asdu = await ReadNextAsync(XujiSettingInf.Read, timeoutMs, ct).ConfigureAwait(false);
 
-            foreach (var asdu in batch)
+            if (asdu.Negative || asdu.Cot == XujiCot.Negative)
             {
-                if (asdu.TypeId != XujiTypeIds.SettingCommand)
-                {
-                    continue;
-                }
-
-                if (asdu.Negative || asdu.Cot == XujiCot.Negative)
-                {
-                    throw new InvalidOperationException($"装置否定应答：TI=61 INF={asdu.Inf} COT={asdu.Cot}");
-                }
-
-                var cmd = Decode(asdu);
-
-                // 结束帧：COT=10，定值序号=0，不带定值
-                if (asdu.Cot == XujiCot.EndOfData)
-                {
-                    return values.ToArray();
-                }
-
-                values.AddRange(cmd.Values);
+                throw new InvalidOperationException($"装置否定应答：TI=61 INF={asdu.Inf} COT={asdu.Cot}");
             }
 
-            await Task.Delay(10, ct);
-        }
+            // 结束帧：COT=10，定值序号=0，不带定值
+            if (asdu.Cot == XujiCot.EndOfData)
+            {
+                return values.ToArray();
+            }
 
-        throw new TimeoutException($"{timeoutMs}ms 内未收到调定值结束帧（已收 {values.Count} 项）");
+            values.AddRange(Decode(asdu).Values);
+        }
     }
 
     /// <summary>
@@ -101,7 +124,7 @@ internal sealed class SettingClient
     /// <param name="timeoutMs">每一步的超时。</param>
     /// <param name="ct">取消令牌。</param>
     /// <exception cref="InvalidOperationException">返校值与预发值不一致，或装置否定确认。</exception>
-    public async Task WriteAsync(byte cpu, byte zone, ushort[] values, int timeoutMs = 5000, CancellationToken ct = default)
+    public async Task WriteAsync(byte cpu, byte zone, XujiSettingValue[] values, int timeoutMs = 5000, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(values);
 
@@ -119,7 +142,7 @@ internal sealed class SettingClient
         }
 
         // ── 3. 执行（INF=103）──
-        await SendAsync(XujiSettingInf.Execute, new XujiSettingCommand(cpu, zone, 1, Array.Empty<ushort>()), ct);
+        await SendAsync(XujiSettingInf.Execute, new XujiSettingCommand(cpu, zone, 1, Array.Empty<XujiSettingValue>()), ct);
 
         // ── 4. 收执行确认（INF=104）──
         await WaitAckAsync(XujiSettingInf.ExecuteAck, timeoutMs, ct);
@@ -130,7 +153,7 @@ internal sealed class SettingClient
     /// <param name="ct">取消令牌。</param>
     public async Task CancelAsync(int timeoutMs = 5000, CancellationToken ct = default)
     {
-        await SendAsync(XujiSettingInf.Cancel, new XujiSettingCommand(0, 0, 0, Array.Empty<ushort>()), ct);
+        await SendAsync(XujiSettingInf.Cancel, new XujiSettingCommand(0, 0, 0, Array.Empty<XujiSettingValue>()), ct);
         await WaitAckAsync(XujiSettingInf.CancelAck, timeoutMs, ct);
     }
 
@@ -140,69 +163,95 @@ internal sealed class SettingClient
         => _client.SendPrivateAsync(_ca, _fun, inf, XujiTypeIds.SettingCommand, command, ct);
 
     /// <summary>收集某个子命令（INF）回送的定值，直到 COT=10 结束帧。</summary>
-    private async Task<ushort[]> CollectAsync(byte expectInf, int timeoutMs, CancellationToken ct)
+    private async Task<XujiSettingValue[]> CollectAsync(byte expectInf, int timeoutMs, CancellationToken ct)
     {
-        var values = new List<ushort>();
-        var deadline = Environment.TickCount64 + timeoutMs;
+        var values = new List<XujiSettingValue>();
 
-        while (Environment.TickCount64 < deadline)
+        while (true)
         {
-            var batch = await _client.RequestClass1Async(_ca, ct: ct);
+            var asdu = await ReadNextAsync(expectInf, timeoutMs, ct).ConfigureAwait(false);
 
-            foreach (var asdu in batch)
+            if (asdu.Negative || asdu.Cot == XujiCot.Negative)
             {
-                if (asdu.TypeId != XujiTypeIds.SettingCommand || asdu.Inf != expectInf)
-                {
-                    continue;
-                }
-
-                if (asdu.Negative || asdu.Cot == XujiCot.Negative)
-                {
-                    throw new InvalidOperationException($"装置对 INF={expectInf} 否定应答（COT={asdu.Cot}）");
-                }
-
-                if (asdu.Cot == XujiCot.EndOfData)
-                {
-                    return values.ToArray();
-                }
-
-                values.AddRange(Decode(asdu).Values);
+                throw new InvalidOperationException($"装置对 INF={expectInf} 否定应答（COT={asdu.Cot}）");
             }
 
-            await Task.Delay(10, ct);
-        }
+            if (asdu.Cot == XujiCot.EndOfData)
+            {
+                return values.ToArray();
+            }
 
-        throw new TimeoutException($"{timeoutMs}ms 内未收到 INF={expectInf} 的结束帧");
+            values.AddRange(Decode(asdu).Values);
+        }
     }
 
     /// <summary>等待一个只带确认语义的应答帧（INF=104 / 106）。</summary>
     private async Task WaitAckAsync(byte expectInf, int timeoutMs, CancellationToken ct)
     {
-        var deadline = Environment.TickCount64 + timeoutMs;
+        var asdu = await ReadNextAsync(expectInf, timeoutMs, ct).ConfigureAwait(false);
 
-        while (Environment.TickCount64 < deadline)
+        if (asdu.Negative || asdu.Cot == XujiCot.Negative)
         {
-            var batch = await _client.RequestClass1Async(_ca, ct: ct);
+            throw new InvalidOperationException($"装置对 INF={expectInf} 否定应答");
+        }
+    }
 
-            foreach (var asdu in batch)
+    /// <summary>取下一条 INF 匹配的 TI=61 应答。</summary>
+    private async ValueTask<Asdu> ReadNextAsync(byte expectInf, int timeoutMs, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(timeoutMs);
+
+        while (true)
+        {
+            Asdu? asdu;
+            try
             {
-                if (asdu.TypeId != XujiTypeIds.SettingCommand || asdu.Inf != expectInf)
-                {
-                    continue;
-                }
-
-                if (asdu.Negative || asdu.Cot == XujiCot.Negative)
-                {
-                    throw new InvalidOperationException($"装置对 INF={expectInf} 否定应答");
-                }
-
-                return;
+                asdu = _pushMode
+                    ? await _inbox.Reader.ReadAsync(timeout.Token).ConfigureAwait(false)
+                    : await PollClass1Async(expectInf, timeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new TimeoutException($"{timeoutMs}ms 内未收到 INF={expectInf} 的应答");
             }
 
-            await Task.Delay(10, ct);
+            if (asdu is not null && asdu.Inf == expectInf)
+            {
+                return asdu;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 标准 FT1.2：从本地缓存或新一次召唤中取一条 TI=61 应答。
+    /// </summary>
+    /// <remarks>
+    /// 一次召唤可能同时带回数据帧与结束帧，整批先入本地队列再逐条消费，
+    /// 只取第一条会丢掉后面的。
+    /// </remarks>
+    private async Task<Asdu?> PollClass1Async(byte expectInf, CancellationToken ct)
+    {
+        while (_polled.Count > 0)
+        {
+            var pending = _polled.Dequeue();
+            if (pending.TypeId == XujiTypeIds.SettingCommand && pending.Inf == expectInf)
+            {
+                return pending;
+            }
         }
 
-        throw new TimeoutException($"{timeoutMs}ms 内未收到 INF={expectInf} 确认帧");
+        var batch = await _client.RequestClass1Async(_ca, ct: ct).ConfigureAwait(false);
+
+        foreach (var asdu in batch)
+        {
+            if (asdu.TypeId == XujiTypeIds.SettingCommand && asdu.Inf == expectInf)
+            {
+                _polled.Enqueue(asdu);
+            }
+        }
+
+        return _polled.Count > 0 ? _polled.Dequeue() : null;
     }
 
     private async Task TryCancelAsync(CancellationToken ct)
@@ -218,8 +267,10 @@ internal sealed class SettingClient
     }
 
     /// <summary>把已物化的 ASDU 交给许继解码器解析成定值命令。</summary>
+    /// <remarks>必须带上该 ASDU 自己的头部布局，否则 FUN/INF 偏移会错 2 字节。</remarks>
     private static XujiSettingCommand Decode(Asdu asdu)
-        => (XujiSettingCommand)XujiSettingHandler.Parse(new Iec103AsduView(asdu.Encode()));
+        => (XujiSettingCommand)XujiSettingHandler.Parse(
+            new Iec103AsduView(asdu.Encode(), asdu.EffectiveLayout));
 }
 
 
@@ -230,21 +281,21 @@ internal sealed class SettingClient
 /// 内存里维护 (CPU 板, 定值区) → 定值数组，按规约响应主站的 TI=61 各子命令。
 /// 真实装置把这张表换成自己的参数区即可。
 /// </remarks>
-internal sealed class SettingDevice
+public sealed class SettingDevice
 {
     private readonly Iec103Server _server;
-    private readonly byte _ca;
+    private readonly int _ca;
     private readonly byte _fun;
-    private readonly Dictionary<(byte Cpu, byte Zone), ushort[]> _table = new();
+    private readonly Dictionary<(byte Cpu, byte Zone), XujiSettingValue[]> _table = new();
 
     /// <summary>已预发但未执行的值（预发-执行两阶段）。</summary>
-    private (byte Cpu, byte Zone, ushort[] Values)? _pending;
+    private (byte Cpu, byte Zone, XujiSettingValue[] Values)? _pending;
 
     /// <summary>构造装置侧模拟。</summary>
     /// <param name="server">已启动的 103 从站。</param>
     /// <param name="ca">公共地址。</param>
     /// <param name="fun">功能类型（须与主站一致）。</param>
-    public SettingDevice(Iec103Server server, byte ca, byte fun)
+    public SettingDevice(Iec103Server server, int ca, byte fun)
     {
         _server = server;
         _ca = ca;
@@ -252,7 +303,7 @@ internal sealed class SettingDevice
     }
 
     /// <summary>登记某个定值区的当前值（模拟装置参数区）。</summary>
-    public void SetTable(byte cpu, byte zone, ushort[] values)
+    public void SetTable(byte cpu, byte zone, XujiSettingValue[] values)
         => _table[(cpu, zone)] = values;
 
     /// <summary>挂接到从站的 ASDU 回调上。</summary>
@@ -290,7 +341,7 @@ internal sealed class SettingDevice
                 _pending = null;
                 session.SendAsduAsync(XujiPrivateTypes.CreateAsdu(
                     XujiTypeIds.SettingCommand, _ca, _fun, XujiSettingInf.CancelAck,
-                    new XujiSettingCommand(cmd.CpuBoard, cmd.Zone, 0, Array.Empty<ushort>()),
+                    new XujiSettingCommand(cmd.CpuBoard, cmd.Zone, 0, Array.Empty<XujiSettingValue>()),
                     XujiCot.Positive));
                 break;
         }
@@ -304,7 +355,7 @@ internal sealed class SettingDevice
             // 表27：无定值时回答，定值序号=0，COT=21
             session.SendAsduAsync(XujiPrivateTypes.CreateAsdu(
                 XujiTypeIds.SettingCommand, _ca, _fun, XujiSettingInf.Read,
-                new XujiSettingCommand(request.CpuBoard, request.Zone, 0, Array.Empty<ushort>()),
+                new XujiSettingCommand(request.CpuBoard, request.Zone, 0, Array.Empty<XujiSettingValue>()),
                 XujiCot.Negative));
             return;
         }
@@ -313,7 +364,7 @@ internal sealed class SettingDevice
         for (var offset = 0; offset < values.Length; offset += SettingClient.MaxValuesPerFrame)
         {
             var count = Math.Min(SettingClient.MaxValuesPerFrame, values.Length - offset);
-            var chunk = new ushort[count];
+            var chunk = new XujiSettingValue[count];
             Array.Copy(values, offset, chunk, 0, count);
 
             session.SendAsduAsync(XujiPrivateTypes.CreateAsdu(
@@ -332,7 +383,7 @@ internal sealed class SettingDevice
         for (var offset = 0; offset < values.Length; offset += SettingClient.MaxValuesPerFrame)
         {
             var count = Math.Min(SettingClient.MaxValuesPerFrame, values.Length - offset);
-            var chunk = new ushort[count];
+            var chunk = new XujiSettingValue[count];
             Array.Copy(values, offset, chunk, 0, count);
 
             session.SendAsduAsync(XujiPrivateTypes.CreateAsdu(
@@ -351,7 +402,7 @@ internal sealed class SettingDevice
         {
             session.SendAsduAsync(XujiPrivateTypes.CreateAsdu(
                 XujiTypeIds.SettingCommand, _ca, _fun, XujiSettingInf.ExecuteAck,
-                new XujiSettingCommand(cmd.CpuBoard, cmd.Zone, 0, Array.Empty<ushort>()),
+                new XujiSettingCommand(cmd.CpuBoard, cmd.Zone, 0, Array.Empty<XujiSettingValue>()),
                 XujiCot.Negative));
             return;
         }
@@ -362,7 +413,7 @@ internal sealed class SettingDevice
         // 表27：执行确认，定值序号=0，COT=20
         session.SendAsduAsync(XujiPrivateTypes.CreateAsdu(
             XujiTypeIds.SettingCommand, _ca, _fun, XujiSettingInf.ExecuteAck,
-            new XujiSettingCommand(pending.Cpu, pending.Zone, 0, Array.Empty<ushort>()),
+            new XujiSettingCommand(pending.Cpu, pending.Zone, 0, Array.Empty<XujiSettingValue>()),
             XujiCot.Positive));
     }
 
@@ -371,7 +422,7 @@ internal sealed class SettingDevice
         // 表28 末帧：COT=10，定值序号=0，不带定值
         session.SendAsduAsync(XujiPrivateTypes.CreateAsdu(
             XujiTypeIds.SettingCommand, _ca, _fun, inf,
-            new XujiSettingCommand(cmd.CpuBoard, cmd.Zone, 0, Array.Empty<ushort>()),
+            new XujiSettingCommand(cmd.CpuBoard, cmd.Zone, 0, Array.Empty<XujiSettingValue>()),
             XujiCot.EndOfData));
     }
 }

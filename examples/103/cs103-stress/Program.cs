@@ -19,6 +19,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using IEC60870.CS103;
+using cs103_private_ioa.Xuji;
 
 var cfg = StressConfig.Parse(args);
 if (cfg.Help)
@@ -193,18 +194,37 @@ finally
 
 static async Task RunMasterAsync(int port, StressConfig cfg, Metrics metrics, CancellationToken ct)
 {
-    await using var client = new Iec103Client("127.0.0.1", port);
+    var options = new Iec103Options();
+    if (cfg.Xuji)
+    {
+        options.UseLinkParameters(l => l.FramingCodec = new XujiApduCodec());
+    }
+
+    await using var client = new Iec103Client("127.0.0.1", port, options);
     client.AsduReceived += (in Iec103AsduView asdu) => metrics.CountDown(asdu.Raw.Length);
 
     try
     {
         await client.ConnectAsync(ct);
-        await client.ResetLinkAsync((byte)1, ct);
+
+        // RESET CU 是 FT1.2 链路服务，许继承载下没有固定帧
+        if (!cfg.Xuji)
+        {
+            await client.ResetLinkAsync(1, ct);
+        }
+
         metrics.IncClientConnected();
     }
     catch (Exception)
     {
         metrics.IncConnectFailure();
+        return;
+    }
+
+    // 许继承载没有 1/2 级召唤与总召唤，主路径是「发 ASDU、从站回送」
+    if (cfg.Xuji)
+    {
+        await RunXujiMasterLoopAsync(client, cfg, metrics, ct).ConfigureAwait(false);
         return;
     }
 
@@ -314,6 +334,57 @@ static double ElapsedMs(long startTimestamp)
 static double ElapsedMsBetween(long startTimestamp, long endTimestamp)
     => (endTimestamp - startTimestamp) * 1000.0 / Stopwatch.Frequency;
 
+// ══════════════════════════════════════════════════════════════════
+//  许继承载的主站循环
+// ══════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// 许继承载的主站循环：无 1/2 级召唤，直接发 ASDU 施加负载。
+/// </summary>
+/// <remarks>
+/// 记录的是发送耗时（含编码与写 socket），不是应答往返——该承载没有可依赖的请求/应答配对。
+/// 下行由 <c>AsduReceived</c> 事件统计。
+/// </remarks>
+static async Task RunXujiMasterLoopAsync(
+    Iec103Client client, StressConfig cfg, Metrics metrics, CancellationToken ct)
+{
+    var periodMs = Math.Max(1, cfg.Class1IntervalMs > 0 ? cfg.Class1IntervalMs : 1);
+    using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(periodMs));
+    var inf = 0;
+
+    while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+    {
+        for (var i = 0; i < Math.Max(1, cfg.PointsPerSpontaneous); i++)
+        {
+            var start = Stopwatch.GetTimestamp();
+            try
+            {
+                var asdu = Asdu.GeneralCommand(
+                    ca: 0x0101, fun: 178, inf: (byte)(Interlocked.Increment(ref inf) & 0xFF), dco: 0x02, rii: 1);
+                await client.SendAsduAsync(asdu, ct).ConfigureAwait(false);
+                metrics.RecordCommand(ElapsedMs(start));
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception)
+            {
+                metrics.IncTimeout();
+            }
+        }
+    }
+
+    try
+    {
+        await client.DisconnectAsync(CancellationToken.None);
+    }
+    catch
+    {
+        // 关闭期忽略
+    }
+}
+
 
 // ══════════════════════════════════════════════════════════════════
 //  从站（装置）
@@ -348,6 +419,11 @@ internal sealed class DeviceRuntime
                 l.AcceptBroadcast = true;
                 l.MessageTimeoutMs = 5000;
                 l.CharacterTimeoutMs = 200;
+
+                if (_cfg.Xuji)
+                {
+                    l.FramingCodec = new XujiApduCodec();
+                }
             });
 
         _server = new Iec103Server(options);
@@ -634,6 +710,7 @@ internal sealed class StressConfig
     public int CommandIntervalMs = 500;
     public int GiIntervalMs = 5000;
     public bool Burst;
+    public bool Xuji;
     public int BurstPoints = 16;
     public bool Verbose = true;
     public string? JsonOut;
@@ -659,6 +736,7 @@ internal sealed class StressConfig
                 case "--cmd-interval": cfg.CommandIntervalMs = int.Parse(Next()!); break;
                 case "--gi-interval": cfg.GiIntervalMs = int.Parse(Next()!); break;
                 case "--burst": cfg.Burst = true; break;
+                case "--xuji": cfg.Xuji = true; break;
                 case "--burst-points": cfg.BurstPoints = int.Parse(Next()!); break;
                 case "--quiet": cfg.Verbose = false; break;
                 case "--json": cfg.JsonOut = Next(); break;

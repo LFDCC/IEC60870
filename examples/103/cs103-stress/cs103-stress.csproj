@@ -2,6 +2,13 @@
   <ItemGroup>
     <ProjectReference Include="../../../IEC60870.CS103/IEC60870.CS103.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!--
+      xuji 模式需要许继网口承载的帧编解码器。它是厂商私有实现，
+      位于 examples/103/cs103-private-ioa/Xuji，此处按源码引入（标准库不含它）。
+    -->
+    <Compile Include="../cs103-private-ioa/Xuji/XujiApduCodec.cs" Link="Vendor/XujiApduCodec.cs" />
+  </ItemGroup>
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>

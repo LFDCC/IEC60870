@@ -23,18 +23,40 @@ namespace IEC60870.CS103;
 public readonly ref struct Iec103AsduView
 {
     private readonly ReadOnlySpan<byte> _raw;
+    private readonly Iec103AsduLayout _layout;
 
-    /// <summary>从完整 ASDU 字节构造视图（至少 6 字节）。</summary>
+    /// <summary>
+    /// 从完整 ASDU 字节构造视图（按标准 103 的 6 字节头解析）。
+    /// </summary>
     /// <exception cref="ArgumentException">长度不足 6 字节。</exception>
     public Iec103AsduView(ReadOnlySpan<byte> raw)
+        : this(raw, Iec103AsduLayout.Standard)
     {
-        if (raw.Length < Asdu.HeaderLength)
+    }
+
+    /// <summary>
+    /// 从完整 ASDU 字节构造视图，显式指定头部布局。
+    /// </summary>
+    /// <param name="raw">完整 ASDU 字节。</param>
+    /// <param name="layout">头部布局；标准 103 用 <see cref="Iec103AsduLayout.Standard"/>。</param>
+    /// <exception cref="ArgumentException">长度不足该布局要求的头长度。</exception>
+    public Iec103AsduView(ReadOnlySpan<byte> raw, Iec103AsduLayout layout)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        if (raw.Length < layout.HeaderLength)
         {
-            throw new ArgumentException($"ASDU 至少 {Asdu.HeaderLength} 字节，实际 {raw.Length}", nameof(raw));
+            throw new ArgumentException($"ASDU 至少 {layout.HeaderLength} 字节，实际 {raw.Length}", nameof(raw));
         }
 
         _raw = raw;
+        _layout = layout;
     }
+
+    /// <summary>该视图使用的头部布局。</summary>
+    public Iec103AsduLayout Layout => _layout;
+
+    /// <summary>该布局下的 ASDU 头长度。</summary>
+    public int HeaderLength => _layout.HeaderLength;
 
     /// <summary>类型标识（TI），可能是厂商私有值。</summary>
     public byte TypeId => _raw[0];
@@ -48,32 +70,52 @@ public readonly ref struct Iec103AsduView
     /// <summary>信息对象数目（VSQ bit0-6）。</summary>
     public int Count => _raw[1] & 0x7F;
 
-    /// <summary>COT 原始字节（含 P/N 位）。</summary>
-    public byte CotByte => _raw[2];
+    /// <summary>COT 的首字节原始值（含 P/N 位）。</summary>
+    public byte CotByte => _raw[_layout.CotOffset];
 
-    /// <summary>传送原因（去 P/N 位）。</summary>
-    public byte Cot => (byte)(_raw[2] & CotCodes.ValueMask);
+    /// <summary>传送原因（按布局的 COT 位定义去掉 P/N 位）。</summary>
+    /// <remarks>
+    /// 标准 103 取 bit6-0；若布局声明为 IEC 104 位序则取 bit5-0（bit7 是 T、bit6 是 P/N）。
+    /// </remarks>
+    public byte Cot => (byte)(_raw[_layout.CotOffset] & _layout.CotValueMask);
 
-    /// <summary>否定确认标志（COT bit7）。</summary>
-    public bool Negative => (_raw[2] & CotCodes.NegativeMask) != 0;
+    /// <summary>否定确认标志（按布局的 COT 位定义取）。</summary>
+    /// <remarks>标准 103 看 bit7；IEC 104 位序看 bit6。</remarks>
+    public bool Negative => (_raw[_layout.CotOffset] & _layout.CotNegativeMask) != 0;
 
-    /// <summary>公共地址 CA。</summary>
-    public byte Ca => _raw[3];
+    /// <summary>
+    /// 完整的传送原因字段（1 或 2 字节，小端）。
+    /// </summary>
+    /// <remarks>
+    /// 标准 103 为 1 字节；按 104 实现的承载为 2 字节，其高字节是源发地址，
+    /// 与原因值同属传送原因字段。库不解释该字节，原样返回整个字段。
+    /// </remarks>
+    public int CotField => _layout.ReadCot(_raw);
+
+    /// <summary>
+    /// 公共地址 CA。
+    /// </summary>
+    /// <remarks>
+    /// 宽度由布局决定：标准 103 为 1 字节（高字节恒 0）；厂商私有承载可能为 2 字节小端。
+    /// 2 字节场合的字节拆分（如「低字节扇区、高字节装置地址」）属厂商约定，
+    /// <b>库不做解释</b>，原样返回 16 位值。
+    /// </remarks>
+    public int Ca => _layout.ReadCa(_raw);
 
     /// <summary>功能类型 FUN（103 两级寻址的第一级）。</summary>
-    public byte Fun => _raw[4];
+    public byte Fun => _raw[_layout.FunOffset];
 
     /// <summary>信息序号 INF（103 两级寻址的第二级）。</summary>
-    public byte Inf => _raw[5];
+    public byte Inf => _raw[_layout.InfOffset];
 
-    /// <summary>信息体数据区（FUN/INF 之后）。</summary>
-    public ReadOnlySpan<byte> Data => _raw[Asdu.HeaderLength..];
+    /// <summary>信息体数据区（头部之后）。</summary>
+    public ReadOnlySpan<byte> Data => _raw[_layout.HeaderLength..];
 
-    /// <summary>完整 ASDU 字节（含 6 字节头），回调期有效。</summary>
+    /// <summary>完整 ASDU 字节（含头部），回调期有效。</summary>
     public ReadOnlySpan<byte> Raw => _raw;
 
     /// <summary>信息体数据长度。</summary>
-    public int DataLength => _raw.Length - Asdu.HeaderLength;
+    public int DataLength => _raw.Length - _layout.HeaderLength;
 
     /// <summary>该 ASDU 是否落在 FUN 专用范围（160-255，厂商私有）。</summary>
     public bool IsPrivateFun => Fun is >= Asdu.PrivateFunFrom and <= Asdu.PrivateFunTo;

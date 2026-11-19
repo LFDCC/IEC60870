@@ -68,40 +68,40 @@ public interface IIec103Master : IAsyncDisposable
     Task DisconnectAsync(CancellationToken ct = default);
 
     /// <summary>复位通信单元（RESET CU，FC=0）。</summary>
-    Task ResetLinkAsync(byte ca, CancellationToken ct = default);
+    Task ResetLinkAsync(int ca, CancellationToken ct = default);
 
     /// <summary>复位帧计数位（RESET FCB，FC=7）。</summary>
-    Task ResetFcbAsync(byte ca, CancellationToken ct = default);
+    Task ResetFcbAsync(int ca, CancellationToken ct = default);
 
     /// <summary>请求链路状态（FC=9）。</summary>
-    Task<Ft12Frame> RequestLinkStatusAsync(byte ca, CancellationToken ct = default);
+    Task<Ft12Frame> RequestLinkStatusAsync(int ca, CancellationToken ct = default);
 
     /// <summary>时间同步（TI=6，COT=8）。</summary>
-    Task SendClockSyncAsync(byte ca, DateTime time, CancellationToken ct = default);
+    Task SendClockSyncAsync(int ca, DateTime time, CancellationToken ct = default);
 
     /// <summary>总召唤（TI=7）并取回全部数据，直到 TI=8 终止帧。</summary>
-    Task<IReadOnlyList<Asdu>> GeneralInterrogationAsync(byte ca, CancellationToken ct = default);
+    Task<IReadOnlyList<Asdu>> GeneralInterrogationAsync(int ca, CancellationToken ct = default);
 
     /// <summary>召唤 1 级用户数据并按 <paramref name="stop"/> 条件排空。</summary>
-    Task<IReadOnlyList<Asdu>> RequestClass1Async(byte ca, Func<Asdu, bool>? stop = null, CancellationToken ct = default);
+    Task<IReadOnlyList<Asdu>> RequestClass1Async(int ca, Func<Asdu, bool>? stop = null, CancellationToken ct = default);
 
     /// <summary>召唤 2 级用户数据（测量值）。</summary>
-    Task<IReadOnlyList<Asdu>> RequestClass2Async(byte ca, CancellationToken ct = default);
+    Task<IReadOnlyList<Asdu>> RequestClass2Async(int ca, CancellationToken ct = default);
 
     /// <summary>读取通用分类全目录。</summary>
-    Task<IReadOnlyList<GenericDataSet>> ReadGenericProfileAsync(byte ca, CancellationToken ct = default);
+    Task<IReadOnlyList<GenericDataSet>> ReadGenericProfileAsync(int ca, CancellationToken ct = default);
 
     /// <summary>读取指定通用分类条目。</summary>
-    Task<IReadOnlyList<GenericDataSet>> ReadGenericAsync(byte ca, params (Gin Gin, byte Kod)[] entries);
+    Task<IReadOnlyList<GenericDataSet>> ReadGenericAsync(int ca, params (Gin Gin, byte Kod)[] entries);
 
     /// <summary>写通用分类值（TI=10，COT=40）。</summary>
-    Task<IReadOnlyList<GenericDataSet>> WriteGenericAsync(byte ca, IReadOnlyList<GenericDataSet> sets, CancellationToken ct = default);
+    Task<IReadOnlyList<GenericDataSet>> WriteGenericAsync(int ca, IReadOnlyList<GenericDataSet> sets, CancellationToken ct = default);
 
     /// <summary>发送一般命令（TI=20）。</summary>
-    Task SendCommandAsync(byte ca, byte fun, byte inf, int dco, byte rii = 0, CancellationToken ct = default);
+    Task SendCommandAsync(int ca, byte fun, byte inf, int dco, byte rii = 0, CancellationToken ct = default);
 
     /// <summary>发送厂商私有 ASDU（走已注册的私有处理器编码）。</summary>
-    Task SendPrivateAsync(byte ca, byte fun, byte inf, Iec103DecodedAsdu value, CancellationToken ct = default);
+    Task SendPrivateAsync(int ca, byte fun, byte inf, Iec103DecodedAsdu value, CancellationToken ct = default);
 
     /// <summary>
     /// 收到的 ASDU（零拷贝，回调期有效）。标准报文与厂商私有报文都走这一个入口：

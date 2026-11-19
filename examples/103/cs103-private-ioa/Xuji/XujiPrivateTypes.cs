@@ -6,6 +6,9 @@
 
 using System.Buffers.Binary;
 using System.Text;
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using IEC60870.CS103;
 
 namespace cs103_private_ioa.Xuji;
@@ -45,18 +48,72 @@ public readonly record struct XujiMeasuredValue(byte Inf, short Value);
 public readonly record struct XujiEnergyCounterValue(uint Reading, bool Invalid, bool Adjusted, bool Overflow, byte Sequence);
 
 /// <summary>
-/// 定值命令（TI=61，表26~28）。
-/// 信息体 = 「CPU板地址|定值区号」(1) + 定值序号(1) [+ 定值 N×2B]。
+/// 单个定值（TI=61，表28）：3 字节 = 定值数据(2B) + 比例系数/性质位(1B)。
 /// </summary>
 /// <remarks>
-/// 规约把定值抽象为「定值数据(bit1-16) + 比例系数(bit17-18) + RES + 性质位(bit21) + RES + 符号位」，
-/// 但表 26/28 的报文字面上每个定值只占 2 字节，本模型按报文取 <c>ushort</c> 原名值；
-/// 比例系数/性质位/符号位的实际打包方式由装置信息表约定，故不做假设。
+/// <para>规约把定值定义为 <c>{ 定值数据, 比例系数, RES, 性质位, RES, 符号位 }</c>，报文中打包成 3 字节（小端）：</para>
+/// <code>
+/// byte0-1: 定值数据 UI16（0~65535）
+/// byte2  : bit0-1 比例系数（0=×1, 1=×0.1, 2=×0.01, 3=×0.001）
+///          bit2-3 保留
+///          bit4   性质位（0=控制字, 1=数据）
+///          bit5-7 保留
+/// </code>
+/// <para>
+/// <b>现场实证</b>（许继 2403 抓包）：每项确为 3 字节。例如 <c>DC 05 12</c> →
+/// 原始值 1500、系数 2（×0.01）→ 实际值 15.00；
+/// 调定值回送的 27 项全部形如 <c>xx xx 10</c>（系数 0、性质位=数据）。
+/// </para>
 /// </remarks>
-public sealed record XujiSettingCommand(byte CpuBoard, byte Zone, byte Index, ushort[] Values) : Iec103DecodedAsdu
+public readonly record struct XujiSettingValue(ushort Raw, byte ScaleCode, bool IsData)
+{
+    /// <summary>比例系数码对应的乘数：0→1、1→0.1、2→0.01、3→0.001。</summary>
+    public double Scale => ScaleCode switch
+    {
+        0 => 1.0,
+        1 => 0.1,
+        2 => 0.01,
+        3 => 0.001,
+        _ => 1.0,
+    };
+
+    /// <summary>按比例系数换算后的工程值。</summary>
+    public double EngineeringValue => Raw * Scale;
+
+    /// <summary>性质位是否表示控制字（bit4=0）。</summary>
+    public bool IsControlWord => !IsData;
+
+    /// <summary>按「原始值 + 比例系数 + 性质位」构造（业务侧常用入口）。</summary>
+    /// <param name="raw">定值原始值（0~65535）。</param>
+    /// <param name="scaleCode">比例系数码：0=×1、1=×0.1、2=×0.01、3=×0.001。</param>
+    /// <param name="isData">性质位：true=数据、false=控制字。</param>
+    public static XujiSettingValue Create(int raw, int scaleCode = 0, bool isData = true)
+        => new((ushort)raw, (byte)(scaleCode & 0x03), isData);
+
+    /// <summary>由报文 3 个字节原样解出一项定值（解码路径用）。</summary>
+    /// <param name="b0">定值数据低字节。</param>
+    /// <param name="b1">定值数据高字节。</param>
+    /// <param name="b2">比例系数/性质位字节。</param>
+    public static XujiSettingValue FromBytes(int b0, int b1, int b2)
+        => new((ushort)((b0 & 0xFF) | ((b1 & 0xFF) << 8)), (byte)(b2 & 0x03), (b2 & 0x10) != 0);
+
+    /// <summary>编码为 3 字节。</summary>
+    public void EncodeTo(Span<byte> destination)
+    {
+        destination[0] = (byte)(Raw & 0xFF);
+        destination[1] = (byte)(Raw >> 8);
+        destination[2] = (byte)((ScaleCode & 0x03) | (IsData ? 0x10 : 0x00));
+    }
+}
+
+/// <summary>
+/// 定值命令（TI=61，表26~28）。
+/// 信息体 = 「CPU板地址|定值区号」(1) + 定值序号(1) [+ 定值 N×3B]。
+/// </summary>
+public sealed record XujiSettingCommand(byte CpuBoard, byte Zone, byte Index, XujiSettingValue[] Values) : Iec103DecodedAsdu
 {
     /// <summary>由规约的单字节「CPU板地址|定值区号」拆包（高半字节 CPU，低半字节定值区）。</summary>
-    public static XujiSettingCommand FromPacked(byte packed, byte index, ushort[] values)
+    public static XujiSettingCommand FromPacked(byte packed, byte index, XujiSettingValue[] values)
         => new((byte)(packed >> 4), (byte)(packed & 0x0F), index, values);
 }
 
@@ -564,6 +621,9 @@ public sealed class XujiSettingHandler : XujiHandlerBase
     /// <summary>信息体固定头长度（不含定值数组）。</summary>
     public const int HeaderSize = 2;
 
+    /// <summary>每项定值占用的字节数（定值数据 2B + 比例系数/性质位 1B）。</summary>
+    public const int ValueSize = 3;
+
     /// <summary>构造处理器。</summary>
     public XujiSettingHandler() : base(XujiTypeIds.SettingCommand) { }
 
@@ -576,10 +636,20 @@ public sealed class XujiSettingHandler : XujiHandlerBase
             throw new FormatException($"TI=61 定值命令至少 {HeaderSize} 字节，实际 {data.Length}");
         }
 
-        var values = new ushort[(data.Length - HeaderSize) / 2];
+        // 每项定值 3 字节（定值数据 2B + 比例系数/性质位 1B）。
+        // 现场实测确认：许继 2403 抓包里 27 项 = 81 字节、单项 = 3 字节。
+        var bodyLength = data.Length - HeaderSize;
+        if (bodyLength % ValueSize != 0)
+        {
+            throw new FormatException(
+                $"TI=61 定值数据长度 {bodyLength} 不是 {ValueSize} 的整数倍（每项 3 字节）");
+        }
+
+        var values = new XujiSettingValue[bodyLength / ValueSize];
         for (var i = 0; i < values.Length; i++)
         {
-            values[i] = BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(HeaderSize + i * 2, 2));
+            var offset = HeaderSize + i * ValueSize;
+            values[i] = XujiSettingValue.FromBytes(data[offset], data[offset + 1], data[offset + 2]);
         }
 
         return XujiSettingCommand.FromPacked(data[0], data[1], values);
@@ -589,12 +659,12 @@ public sealed class XujiSettingHandler : XujiHandlerBase
     public override byte[] Encode(Iec103DecodedAsdu value)
     {
         var cmd = (XujiSettingCommand)value;
-        var data = new byte[HeaderSize + cmd.Values.Length * 2];
+        var data = new byte[HeaderSize + cmd.Values.Length * ValueSize];
         data[0] = (byte)(((cmd.CpuBoard & 0x0F) << 4) | (cmd.Zone & 0x0F));
         data[1] = cmd.Index;
         for (var i = 0; i < cmd.Values.Length; i++)
         {
-            BinaryPrimitives.WriteUInt16LittleEndian(data.AsSpan(HeaderSize + i * 2, 2), cmd.Values[i]);
+            cmd.Values[i].EncodeTo(data.AsSpan(HeaderSize + i * ValueSize, ValueSize));
         }
 
         return data;
@@ -1015,7 +1085,7 @@ public static class XujiPrivateTypes
     /// <param name="count">VSQ 数目，默认 1。</param>
     public static Asdu CreateAsdu(
         byte typeId,
-        byte ca,
+        int ca,
         byte fun,
         byte inf,
         Iec103DecodedAsdu value,

@@ -25,6 +25,9 @@ public sealed class Iec103Client : IIec103Master
     private readonly Iec103LinkParameters _linkParameters;
     private readonly Action<TouchSocketConfig>? _configureConfig;
 
+    /// <summary>厂商私有帧编解码器；<c>null</c> 表示使用内置的标准 FT1.2 承载。</summary>
+    private readonly IIec103FramingCodec? _codec;
+
     private IIec103LinkTransport? _transport;
     private LinkLayerEngine? _engine;
     private CancellationTokenSource? _lifetimeCts;
@@ -32,6 +35,9 @@ public sealed class Iec103Client : IIec103Master
     private readonly SemaphoreSlim _transactionLock = new(1, 1);
     private readonly LinkTransactionDispatcher103 _transactions = new();
     private readonly Ft12FrameParser _parser = new();
+
+    // 自定义承载下串行化写入：多条业务线程并发发 ASDU 时保证帧不交错。
+    private readonly SemaphoreSlim _codecWriteGate = new(1, 1);
 
     // 生命周期串行化：Connect/Disconnect/Dispose 可被并发调用，
     // 若不串行化会出现两个读循环、字段互相覆盖、对已 Dispose 的 CTS 取 Token 等问题。
@@ -62,9 +68,11 @@ public sealed class Iec103Client : IIec103Master
         _port = port;
         _options = (options ?? new Iec103Options()).Clone();
         _linkParameters = _options.Link;
+        _codec = _linkParameters.FramingCodec;
         _configureConfig = configureConfig;
 
         _parser.FrameRejected += OnFrameRejected;
+        if (_codec is not null) { _codec.FrameRejected += OnFrameRejected; }
     }
 
     /// <summary>
@@ -81,8 +89,10 @@ public sealed class Iec103Client : IIec103Master
         _serialPort = port ?? throw new ArgumentNullException(nameof(port));
         _options = (options ?? new Iec103Options()).Clone();
         _linkParameters = _options.Link;
+        _codec = _linkParameters.FramingCodec;
 
         _parser.FrameRejected += OnFrameRejected;
+        if (_codec is not null) { _codec.FrameRejected += OnFrameRejected; }
     }
 
     /// <summary>
@@ -95,8 +105,10 @@ public sealed class Iec103Client : IIec103Master
         _stream = stream ?? throw new ArgumentNullException(nameof(stream));
         _options = (options ?? new Iec103Options()).Clone();
         _linkParameters = _options.Link;
+        _codec = _linkParameters.FramingCodec;
 
         _parser.FrameRejected += OnFrameRejected;
+        if (_codec is not null) { _codec.FrameRejected += OnFrameRejected; }
     }
 
     private void OnFrameRejected(string hex, string reason)
@@ -117,6 +129,15 @@ public sealed class Iec103Client : IIec103Master
 
     /// <inheritdoc />
     public Iec103PrivateTypeRegistry PrivateTypes { get; } = new();
+
+    /// <summary>
+    /// 当前是否使用厂商自定义的帧承载（<c>Options.Link.FramingCodec</c> 非空）。
+    /// </summary>
+    /// <remarks>
+    /// 自定义承载通常是平衡式：装置收到请求即回送，主站靠 <see cref="AsduReceived"/> 事件接收，
+    /// 没有 1/2 级队列召唤。调用方据此决定取数方式。
+    /// </remarks>
+    public bool UsesCustomFraming => _codec is not null;
 
     /// <inheritdoc />
     public bool IsConnected => _connected;
@@ -294,6 +315,7 @@ public sealed class Iec103Client : IIec103Master
             _connected = true;
             Interlocked.Exchange(ref _disconnectedRaised, 0);
             _parser.Reset();
+            _codec?.Reset();
             _transactions.End();
 
             // 接收循环必须常开：所有请求（RequestClass*/总召/定值…）都靠它把应答
@@ -501,14 +523,36 @@ public sealed class Iec103Client : IIec103Master
             (byte)SecondaryFunction.RespondData,
         };
 
-    /// <inheritdoc />
-    public async Task ResetLinkAsync(byte ca, CancellationToken ct = default)
+    /// <summary>
+    /// FT1.2 链路服务（RESET/FCB/召唤 1-2 级）在自定义承载下不适用，直接明确报错。
+    /// </summary>
+    /// <remarks>
+    /// 自定义承载没有固定帧（<c>10 C A CS 16</c>），也没有 1/2 级队列召唤机制——
+    /// 那些是 FT1.2 非平衡链路的东西。若在这里照常发出固定帧，对端不会认，
+    /// 结果只是白等一个 MessageTimeoutMs × (MaxRepeat+1) 的超时，
+    /// 让调用方误以为是通信故障。故在此显式拒绝，说明原因与正确做法。
+    /// </remarks>
+    private void ThrowIfCustomFraming(string operation)
     {
+        if (_codec is not null)
+        {
+            throw new NotSupportedException(
+                $"{operation} 是 FT1.2 链路服务，当前使用自定义承载「{_codec.Name}」，没有对应帧；"
+                + "自定义承载没有固定帧与 1/2 级队列召唤，消息直接以 ASDU 收发。");
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task ResetLinkAsync(int ca, CancellationToken ct = default)
+    {
+        ThrowIfCustomFraming(nameof(ResetLinkAsync));
+        var ft12Ca = RequireFt12Address(ca);
+
         await ExecuteLinkServiceAsync(async (engine, transaction, linkedCt) =>
         {
-            LinkAddress = ca;
-            engine.Address = ca;
-            engine.ResetFcbState(ca);
+            LinkAddress = ft12Ca;
+            engine.Address = ft12Ca;
+            engine.ResetFcbState(ft12Ca);
 
             var response = await engine.SendControlAndWaitAsync(
                 LinkControl.ResetCu(), transaction, linkedCt).ConfigureAwait(false);
@@ -521,32 +565,38 @@ public sealed class Iec103Client : IIec103Master
             }
 
             RaiseLinkEvent(new Iec103LinkEvent(Iec103LinkEventKind.LinkReset, $"CA={ca}"));
-        }, ct, ca, ControlFrameResponses).ConfigureAwait(false);
+        }, ct, ft12Ca, ControlFrameResponses).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
-    public async Task ResetFcbAsync(byte ca, CancellationToken ct = default)
+    public async Task ResetFcbAsync(int ca, CancellationToken ct = default)
     {
+        ThrowIfCustomFraming(nameof(ResetFcbAsync));
+        var ft12Ca = RequireFt12Address(ca);
+
         await ExecuteLinkServiceAsync(async (engine, transaction, linkedCt) =>
         {
-            engine.Address = ca;
+            engine.Address = ft12Ca;
             await engine.SendControlAndWaitAsync(LinkControl.ResetFcb(), transaction, linkedCt).ConfigureAwait(false);
-            engine.ResetFcbState(ca);
-        }, ct, ca, ControlFrameResponses).ConfigureAwait(false);
+            engine.ResetFcbState(ft12Ca);
+        }, ct, ft12Ca, ControlFrameResponses).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
-    public async Task<Ft12Frame> RequestLinkStatusAsync(byte ca, CancellationToken ct = default)
+    public async Task<Ft12Frame> RequestLinkStatusAsync(int ca, CancellationToken ct = default)
     {
+        ThrowIfCustomFraming(nameof(RequestLinkStatusAsync));
+        var ft12Ca = RequireFt12Address(ca);
+
         Ft12Frame? result = null;
 
         await ExecuteLinkServiceAsync(async (engine, transaction, linkedCt) =>
         {
-            engine.Address = ca;
+            engine.Address = ft12Ca;
             result = await engine.SendControlAndWaitAsync(
                 LinkControl.RequestLinkStatus(), transaction, linkedCt).ConfigureAwait(false);
             RaiseLinkEvent(new Iec103LinkEvent(Iec103LinkEventKind.LinkStatus, $"CA={ca}"));
-        }, ct, ca, ControlFrameResponses).ConfigureAwait(false);
+        }, ct, ft12Ca, ControlFrameResponses).ConfigureAwait(false);
 
         return result!;
     }
@@ -556,20 +606,23 @@ public sealed class Iec103Client : IIec103Master
     // ═══════════════════════════════════════════════════════════════
 
     /// <inheritdoc />
-    public async Task SendClockSyncAsync(byte ca, DateTime time, CancellationToken ct = default)
+    public async Task SendClockSyncAsync(int ca, DateTime time, CancellationToken ct = default)
     {
         var asdu = Asdu.ClockSync(Cp56Time2a.FromDateTime(time), ca);
         await SendConfirmedAsduAsync(asdu, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<Asdu>> GeneralInterrogationAsync(byte ca, CancellationToken ct = default)
+    public async Task<IReadOnlyList<Asdu>> GeneralInterrogationAsync(int ca, CancellationToken ct = default)
     {
+        ThrowIfCustomFraming(nameof(GeneralInterrogationAsync));
+        var ft12Ca = RequireFt12Address(ca);
+
         var collected = new List<Asdu>();
 
         await ExecuteLinkServiceAsync(async (engine, transaction, linkedCt) =>
         {
-            engine.Address = ca;
+            engine.Address = ft12Ca;
 
             // 不要在这里 ResetFcbState()：它只清主站侧的 _nextFcb，
             // 并不向从站发 RESET FCB(FC=7)。从站仍保留上轮的 _lastReceivedFcb，
@@ -580,8 +633,8 @@ public sealed class Iec103Client : IIec103Master
             //    标准应答是固定帧 ACK/NACK，数据必须由后续 REQUEST CLASS1 取走。
             //    （旧版从确认帧里收 ASDU 是为配合「从站把数据塞进确认」的非标准行为，
             //     现已与从站侧一并改为标准语义。）
-            await SendConfirmedAsduCoreAsync(engine, Asdu.GeneralInterrogation(ca), transaction, linkedCt).ConfigureAwait(false);
-            engine.FlipFcb(ca);
+            await SendConfirmedAsduCoreAsync(engine, Asdu.GeneralInterrogation(ft12Ca), transaction, linkedCt).ConfigureAwait(false);
+            engine.FlipFcb(ft12Ca);
 
             // 2. 反复召唤 1 级直到收到总召唤终止帧（TI=8）
             var terminated = false;
@@ -595,9 +648,9 @@ public sealed class Iec103Client : IIec103Master
                     break;
                 }
 
-                var control = LinkControl.RequestClass1(engine.GetNextFcb(ca));
+                var control = LinkControl.RequestClass1(engine.GetNextFcb(ft12Ca));
                 var response = await engine.SendControlAndWaitAsync(control, transaction, linkedCt).ConfigureAwait(false);
-                engine.FlipFcb(ca);
+                engine.FlipFcb(ft12Ca);
 
                 if (response.Format != Ft12FrameFormat.VariableLength)
                 {
@@ -607,30 +660,33 @@ public sealed class Iec103Client : IIec103Master
 
                 terminated = CollectFromResponse(response, collected);
             }
-        }, ct, ca).ConfigureAwait(false);
+        }, ct, ft12Ca).ConfigureAwait(false);
 
         return collected;
     }
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<Asdu>> RequestClass1Async(
-        byte ca,
+        int ca,
         Func<Asdu, bool>? stop = null,
         CancellationToken ct = default)
     {
+        ThrowIfCustomFraming(nameof(RequestClass1Async));
+        var ft12Ca = RequireFt12Address(ca);
+
         var collected = new List<Asdu>();
 
         await ExecuteLinkServiceAsync(async (engine, transaction, linkedCt) =>
         {
-            engine.Address = ca;
+            engine.Address = ft12Ca;
             var guard = 0;
             const int maxRounds = 4096;
 
             while (guard++ < maxRounds && !linkedCt.IsCancellationRequested)
             {
                 var response = await engine.SendControlAndWaitAsync(
-                    LinkControl.RequestClass1(engine.GetNextFcb(ca)), transaction, linkedCt).ConfigureAwait(false);
-                engine.FlipFcb(ca);
+                    LinkControl.RequestClass1(engine.GetNextFcb(ft12Ca)), transaction, linkedCt).ConfigureAwait(false);
+                engine.FlipFcb(ft12Ca);
 
                 if (response.Format != Ft12FrameFormat.VariableLength)
                 {
@@ -655,27 +711,30 @@ public sealed class Iec103Client : IIec103Master
                     break;
                 }
             }
-        }, ct, ca, DataCallResponses).ConfigureAwait(false);
+        }, ct, ft12Ca, DataCallResponses).ConfigureAwait(false);
 
         return collected;
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<Asdu>> RequestClass2Async(byte ca, CancellationToken ct = default)
+    public async Task<IReadOnlyList<Asdu>> RequestClass2Async(int ca, CancellationToken ct = default)
     {
+        ThrowIfCustomFraming(nameof(RequestClass2Async));
+        var ft12Ca = RequireFt12Address(ca);
+
         var collected = new List<Asdu>();
 
         await ExecuteLinkServiceAsync(async (engine, transaction, linkedCt) =>
         {
-            engine.Address = ca;
+            engine.Address = ft12Ca;
             var guard = 0;
             const int maxRounds = 4096;
 
             while (guard++ < maxRounds && !linkedCt.IsCancellationRequested)
             {
                 var response = await engine.SendControlAndWaitAsync(
-                    LinkControl.RequestClass2(engine.GetNextFcb(ca)), transaction, linkedCt).ConfigureAwait(false);
-                engine.FlipFcb(ca);
+                    LinkControl.RequestClass2(engine.GetNextFcb(ft12Ca)), transaction, linkedCt).ConfigureAwait(false);
+                engine.FlipFcb(ft12Ca);
 
                 if (response.Format != Ft12FrameFormat.VariableLength)
                 {
@@ -690,20 +749,20 @@ public sealed class Iec103Client : IIec103Master
 
                 collected.Add(asdu);
             }
-        }, ct, ca, DataCallResponses).ConfigureAwait(false);
+        }, ct, ft12Ca, DataCallResponses).ConfigureAwait(false);
 
         return collected;
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<GenericDataSet>> ReadGenericProfileAsync(byte ca, CancellationToken ct = default)
+    public async Task<IReadOnlyList<GenericDataSet>> ReadGenericProfileAsync(int ca, CancellationToken ct = default)
     {
         var request = Asdu.GenericReadAll(ca, rii: 1);
         return await TransactGenericAsync(request, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<GenericDataSet>> ReadGenericAsync(byte ca, params (Gin Gin, byte Kod)[] entries)
+    public async Task<IReadOnlyList<GenericDataSet>> ReadGenericAsync(int ca, params (Gin Gin, byte Kod)[] entries)
     {
         var request = Asdu.GenericRead(ca, rii: 2, entries);
         return await ReadGenericCoreAsync(request, CancellationToken.None).ConfigureAwait(false);
@@ -711,7 +770,7 @@ public sealed class Iec103Client : IIec103Master
 
     /// <summary>读取指定通用分类条目（可取消）。</summary>
     public Task<IReadOnlyList<GenericDataSet>> ReadGenericAsync(
-        byte ca,
+        int ca,
         CancellationToken ct,
         params (Gin Gin, byte Kod)[] entries)
         => ReadGenericCoreAsync(Asdu.GenericRead(ca, rii: 2, entries), ct);
@@ -721,7 +780,7 @@ public sealed class Iec103Client : IIec103Master
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<GenericDataSet>> WriteGenericAsync(
-        byte ca,
+        int ca,
         IReadOnlyList<GenericDataSet> sets,
         CancellationToken ct = default)
     {
@@ -730,14 +789,14 @@ public sealed class Iec103Client : IIec103Master
     }
 
     /// <inheritdoc />
-    public async Task SendCommandAsync(byte ca, byte fun, byte inf, int dco, byte rii = 0, CancellationToken ct = default)
+    public async Task SendCommandAsync(int ca, byte fun, byte inf, int dco, byte rii = 0, CancellationToken ct = default)
     {
         var asdu = Asdu.GeneralCommand(ca, fun, inf, dco, rii);
         await SendConfirmedAsduAsync(asdu, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
-    public Task SendPrivateAsync(byte ca, byte fun, byte inf, Iec103DecodedAsdu value, CancellationToken ct = default)
+    public Task SendPrivateAsync(int ca, byte fun, byte inf, Iec103DecodedAsdu value, CancellationToken ct = default)
         => SendPrivateAsync(ca, fun, inf, typeId: null, value, ct);
 
     /// <summary>发送厂商私有 ASDU（可显式指定 TI，供按 TypeID 注册的处理器使用）。</summary>
@@ -747,7 +806,7 @@ public sealed class Iec103Client : IIec103Master
     /// <param name="typeId">私有 TI；为 null 时由 FUN/INF 注册表解析。</param>
     /// <param name="value">待编码的厂商对象。</param>
     /// <param name="ct">取消令牌。</param>
-    public async Task SendPrivateAsync(byte ca, byte fun, byte inf, byte? typeId, Iec103DecodedAsdu value, CancellationToken ct = default)
+    public async Task SendPrivateAsync(int ca, byte fun, byte inf, byte? typeId, Iec103DecodedAsdu value, CancellationToken ct = default)
     {
         IIec103PrivateTypeHandler? handler;
         byte resolvedTypeId;
@@ -792,13 +851,24 @@ public sealed class Iec103Client : IIec103Master
 
     private async Task SendConfirmedAsduAsync(Asdu asdu, CancellationToken ct)
     {
+        // 自定义承载：用编解码器编码后直接写出，没有 SEND/CONFIRM 链路服务
+        if (_codec is not null)
+        {
+            var payload = (asdu with { Layout = _codec.Layout }).Encode();
+            await SendViaCodecAsync(payload, ct).ConfigureAwait(false);
+            RaiseRawFrameSent(payload);
+            return;
+        }
+
+        var ca = RequireFt12Address(asdu.Ca);
+
         await ExecuteLinkServiceAsync(async (engine, transaction, linkedCt) =>
         {
-            engine.Address = asdu.Ca;
-            LinkAddress = asdu.Ca;
+            engine.Address = ca;
+            LinkAddress = ca;
             await SendConfirmedAsduCoreAsync(engine, asdu, transaction, linkedCt).ConfigureAwait(false);
-            engine.FlipFcb(asdu.Ca);
-        }, ct, asdu.Ca, SendConfirmResponses).ConfigureAwait(false);
+            engine.FlipFcb(ca);
+        }, ct, ca, SendConfirmResponses).ConfigureAwait(false);
     }
 
     private async Task<Ft12Frame> SendConfirmedAsduCoreAsync(
@@ -826,11 +896,12 @@ public sealed class Iec103Client : IIec103Master
 
         await ExecuteLinkServiceAsync(async (engine, transaction, linkedCt) =>
         {
-            engine.Address = request.Ca;
+            var ca = RequireFt12Address(request.Ca);
+            engine.Address = ca;
 
             // 同 GeneralInterrogationAsync：不静默清主站 FCB（从站侧不会同步）。
             await SendConfirmedAsduCoreAsync(engine, request, transaction, linkedCt).ConfigureAwait(false);
-            engine.FlipFcb(request.Ca);
+            engine.FlipFcb(ca);
 
             var guard = 0;
             const int maxRounds = 256;
@@ -838,8 +909,8 @@ public sealed class Iec103Client : IIec103Master
             while (guard++ < maxRounds && !linkedCt.IsCancellationRequested)
             {
                 var response = await engine.SendControlAndWaitAsync(
-                    LinkControl.RequestClass1(engine.GetNextFcb(request.Ca)), transaction, linkedCt).ConfigureAwait(false);
-                engine.FlipFcb(request.Ca);
+                    LinkControl.RequestClass1(engine.GetNextFcb(ca)), transaction, linkedCt).ConfigureAwait(false);
+                engine.FlipFcb(ca);
 
                 if (response.Format != Ft12FrameFormat.VariableLength)
                 {
@@ -890,7 +961,7 @@ public sealed class Iec103Client : IIec103Master
                     break;
                 }
             }
-        }, ct, request.Ca, DataCallResponses).ConfigureAwait(false);
+        }, ct, RequireFt12Address(request.Ca), DataCallResponses).ConfigureAwait(false);
 
         foreach (var entry in pendingUnknown)
         {
@@ -1058,14 +1129,26 @@ public sealed class Iec103Client : IIec103Master
                     break;
                 }
 
-                var frames = _parser.Feed(buffer.AsSpan(0, read));
-                foreach (var frame in frames)
+                if (_codec is not null)
                 {
-                    DispatchFrame(frame);
-                }
+                    foreach (var incoming in _codec.Feed(buffer.AsSpan(0, read)))
+                    {
+                        DispatchCodecFrame(incoming);
+                    }
 
-                // 半帧超时复位：线路中断或装置发帧不全时避免状态机卡死
-                _parser.TryResetStale(_linkParameters.CharacterTimeoutMs);
+                    _codec.TryResetStale(_linkParameters.CharacterTimeoutMs);
+                }
+                else
+                {
+                    var frames = _parser.Feed(buffer.AsSpan(0, read));
+                    foreach (var frame in frames)
+                    {
+                        DispatchFrame(frame);
+                    }
+
+                    // 半帧超时复位：线路中断或装置发帧不全时避免状态机卡死
+                    _parser.TryResetStale(_linkParameters.CharacterTimeoutMs);
+                }
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -1132,6 +1215,60 @@ public sealed class Iec103Client : IIec103Master
         }
 
         RaiseLinkEvent(new Iec103LinkEvent(Iec103LinkEventKind.Disconnected, reason));
+    }
+
+    /// <summary>
+    /// 自定义承载的帧分派：解出的 ASDU 一律走事件，库内不做事务关联。
+    /// </summary>
+    /// <remarks>
+    /// 自定义承载通常不维护可依赖的消息序号，应答与请求的对应由业务按
+    /// TI/FUN/INF/COT 自行判定。原始帧仍通过 <c>RawFrameReceived</c> 上报，便于抓包排查。
+    /// </remarks>
+    private void DispatchCodecFrame(Iec103IncomingFrame incoming)
+    {
+        SafeInvoke("RawFrameReceived", () => RawFrameReceived?.Invoke(incoming.Raw));
+
+        if (incoming.Asdu.Length < (_codec?.Layout.HeaderLength ?? 0))
+        {
+            return;
+        }
+
+        // 收到的 ASDU 一律走事件，不在库内做事务关联：
+        // 自定义承载通常不维护可依赖的消息序号，应答与请求的对应由业务按 TI/FUN/INF/COT 判定。
+        DispatchCodecAsdu(incoming.Asdu);
+    }
+
+    /// <summary>自定义承载下的 ASDU 分派（头部布局由编解码器给出）。</summary>
+    private void DispatchCodecAsdu(byte[] asduBytes)
+    {
+        try
+        {
+            var view = new Iec103AsduView(asduBytes, _codec!.Layout);
+
+            AsduReceived?.Invoke(in view);
+
+            if (!TypeIds.IsStandard(view.TypeId)
+                && !PrivateTypes.TryResolve(view.TypeId, view.Fun, view.Inf, view.CotByte, out _))
+            {
+                var unknown = new Iec103UnknownAsdu(asduBytes, reason: $"未登记 TI={view.TypeId} FUN={view.Fun} INF={view.Inf}");
+
+                if (_options.UnknownTypePolicy == Iec103UnknownTypePolicy.Log)
+                {
+                    Logger?.Warning(unknown.ToString());
+                }
+
+                UnknownAsduReceived?.Invoke(unknown);
+
+                if (_options.UnknownTypePolicy == Iec103UnknownTypePolicy.Throw)
+                {
+                    throw new Iec103UnknownAsduException(unknown);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger?.Error($"[自定义承载 ASDU 分派] 异常已隔离，链路继续运行: {ex}");
+        }
     }
 
     /// <summary>帧分派：先投当前事务（相关性校验），不匹配的帧另作 ASDU/诊断处理。</summary>
@@ -1273,6 +1410,45 @@ public sealed class Iec103Client : IIec103Master
     {
         var control = LinkControl.FromByte(response.Control);
         return control.FcbOrAcd; // 从站 ACD=1 表示还有 1 级数据
+    }
+
+    /// <summary>
+    /// FT1.2 链路的链路地址只有 1 字节，把 16 位 CA 收窄前先校验。
+    /// </summary>
+    /// <remarks>
+    /// 静默截断会把发往 CA=0x0101 的请求错误地发到 CA=0x01，必须先报错。
+    /// 2 字节 CA 只可能出现在自定义承载下（由对应头部布局给出）。
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">CA 超出 1 字节范围。</exception>
+    private static byte RequireFt12Address(int ca)
+    {
+        if ((uint)ca > 0xFF)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(ca), ca, "标准 FT1.2 承载的公共地址只有 1 字节（0-255）；2 字节 CA 需要自定义承载");
+        }
+
+        return (byte)ca;
+    }
+
+    /// <summary>用自定义编解码器发送一个 ASDU（串行化写入，避免多线程交错）。</summary>
+    private async Task SendViaCodecAsync(byte[] asdu, CancellationToken ct)
+    {
+        var transport = _transport ?? throw new InvalidOperationException("连接未建立");
+        var codec = _codec!;
+
+        var frame = codec.Encode(asdu);
+        SafeInvoke("TraceFrame", () => TraceFrame?.Invoke($"[TX] {codec.Name} {Convert.ToHexString(frame)}"));
+
+        await _codecWriteGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await transport.WriteAsync(frame, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _codecWriteGate.Release();
+        }
     }
 
     private void RaiseRawFrameReceived(byte[] raw)

@@ -18,10 +18,10 @@ namespace IEC60870.CS103;
 /// <param name="TypeId">类型标识。</param>
 /// <param name="Cot">传送原因（已去 P/N 位）。</param>
 /// <param name="Negative">是否否定确认（COT bit7）。</param>
-/// <param name="Ca">公共地址。</param>
+/// <param name="Ca">公共地址（FT1.2 承载为 1 字节、APDU 承载为 2 字节，统一用 int 表示）。</param>
 /// <param name="Fun">功能类型。</param>
 /// <param name="Inf">信息序号。</param>
-public readonly record struct Iec103AsduHeader(byte TypeId, byte Cot, bool Negative, byte Ca, byte Fun, byte Inf)
+public readonly record struct Iec103AsduHeader(byte TypeId, byte Cot, bool Negative, int Ca, byte Fun, byte Inf)
 {
     /// <summary>从零拷贝视图提取。</summary>
     public static Iec103AsduHeader From(in Iec103AsduView view)
@@ -62,7 +62,7 @@ public abstract record Iec103DecodedAsdu
     public bool Negative => Header.Negative;
 
     /// <summary>公共地址。</summary>
-    public byte Ca => Header.Ca;
+    public int Ca => Header.Ca;
 
     /// <summary>功能类型。</summary>
     public byte Fun => Header.Fun;

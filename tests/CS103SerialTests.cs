@@ -166,7 +166,7 @@ namespace IEC60870.Tests
             const int pointCount = 3;
 
             await using var server = new Iec103Server(SerialOptions());
-            server.AsduReceived += (session, in view) =>
+            server.AsduReceived += (IIec103Session session, in Iec103AsduView view) =>
             {
                 if (view.TypeId != TypeIds.GeneralInterrogation)
                 {
@@ -287,7 +287,7 @@ namespace IEC60870.Tests
             await server.StartAsync(pipes.Slave);
 
             var linkEstablished = false;
-            server.AsduReceived += (session, in view) => linkEstablished = true;
+            server.AsduReceived += (IIec103Session session, in Iec103AsduView view) => linkEstablished = true;
 
             await using var client = new Iec103Client(pipes.Master, SerialOptions());
             await client.ConnectAsync();

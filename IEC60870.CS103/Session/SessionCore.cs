@@ -42,9 +42,15 @@ internal sealed class SessionCore : IAsyncDisposable
     private readonly LinkLayerEngine _engine;
     private readonly Ft12FrameParser _parser = new();
 
+    /// <summary>厂商私有帧编解码器；<c>null</c> 表示使用内置的标准 FT1.2 承载。</summary>
+    private readonly IIec103FramingCodec? _codec;
+
+    /// <summary>自定义承载下串行化写入，避免多线程上送时帧交错。</summary>
+    private readonly SemaphoreSlim _codecWriteGate = new(1, 1);
+
     // 上送队列按链路地址分组：主站向哪个地址召唤，就只取那个地址的数据。
-    private readonly ConcurrentDictionary<byte, ConcurrentQueue<byte[]>> _class1 = new();
-    private readonly ConcurrentDictionary<byte, ConcurrentQueue<byte[]>> _class2 = new();
+    private readonly ConcurrentDictionary<int, ConcurrentQueue<byte[]>> _class1 = new();
+    private readonly ConcurrentDictionary<int, ConcurrentQueue<byte[]>> _class2 = new();
 
     private readonly CancellationTokenSource _cts = new();
 
@@ -99,11 +105,18 @@ internal sealed class SessionCore : IAsyncDisposable
         _sessionId = sessionId;
         _logger = logger;
         _filterByAddress = filterByAddress;
+        _codec = parameters.FramingCodec;
 
         _engine = new LinkLayerEngine(transport, parameters, msg => RaiseFrameTraceText(_sessionId, msg));
 
         _parser.FrameRejected += (hex, reason) =>
             _server.RaiseFrameRejectedById(_sessionId, new Iec103FrameRejectedEventArgs(hex, reason));
+
+        if (_codec is not null)
+        {
+            _codec.FrameRejected += (hex, reason) =>
+                _server.RaiseFrameRejectedById(_sessionId, new Iec103FrameRejectedEventArgs(hex, reason));
+        }
 
         transport.TransportClosed += OnTransportClosed;
     }
@@ -153,7 +166,11 @@ internal sealed class SessionCore : IAsyncDisposable
         _loop = Task.Run(() => RunAsync(_cts.Token));
     }
 
-    /// <summary>入队一条待上送的 ASDU（TI=9 测量进 2 级，其余进 1 级）。</summary>
+    /// <summary>上送一条 ASDU。</summary>
+    /// <remarks>
+    /// FT1.2 承载下入队等待主站召唤；自定义承载（如许继网口）没有 1/2 级队列，
+    /// ASDU 以帧直接写出。
+    /// </remarks>
     public void Enqueue(Asdu asdu)
     {
         ArgumentNullException.ThrowIfNull(asdu);
@@ -164,7 +181,41 @@ internal sealed class SessionCore : IAsyncDisposable
             return;
         }
 
+        if (_codec is not null)
+        {
+            var payload = (asdu with { Layout = _codec.Layout }).Encode();
+            _ = SendViaCodecAsync(payload);
+            return;
+        }
+
         EnqueueRaw(asdu.Ca, asdu.Encode(), isClass1: asdu.TypeId != TypeIds.Measurand);
+    }
+
+    /// <summary>自定义承载下的 ASDU 发送（串行化写入，避免并发交错）。</summary>
+    private async Task SendViaCodecAsync(byte[] asdu)
+    {
+        var codec = _codec!;
+
+        try
+        {
+            var frame = codec.Encode(asdu);
+            await _codecWriteGate.WaitAsync(_cts.Token).ConfigureAwait(false);
+            try
+            {
+                await _transport.WriteAsync(frame, _cts.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                _codecWriteGate.Release();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger?.Invoke($"[会话 {_sessionId}] 上送失败: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -186,7 +237,7 @@ internal sealed class SessionCore : IAsyncDisposable
     /// <param name="address">链路地址（决定主站向哪个地址召唤时能取到）。</param>
     /// <param name="asduBytes">完整 ASDU 字节。</param>
     /// <param name="isClass1">true 进 1 级队列，false 进 2 级队列。</param>
-    public void EnqueueRaw(byte address, byte[] asduBytes, bool isClass1)
+    public void EnqueueRaw(int address, byte[] asduBytes, bool isClass1)
     {
         ArgumentNullException.ThrowIfNull(asduBytes);
 
@@ -200,8 +251,8 @@ internal sealed class SessionCore : IAsyncDisposable
 
     /// <summary>入队并按该地址队列的上界裁剪（丢弃最旧数据并累计诊断计数）。</summary>
     private void EnqueueBounded(
-        ConcurrentDictionary<byte, ConcurrentQueue<byte[]>> queues,
-        byte address,
+        ConcurrentDictionary<int, ConcurrentQueue<byte[]>> queues,
+        int address,
         byte[] asduBytes)
     {
         var queue = queues.GetOrAdd(address, static _ => new ConcurrentQueue<byte[]>());
@@ -236,15 +287,15 @@ internal sealed class SessionCore : IAsyncDisposable
     }
 
     /// <summary>从指定地址的 1 级队列取一条（无则 null）。</summary>
-    private byte[]? DequeueClass1(byte address)
+    private byte[]? DequeueClass1(int address)
         => _class1.TryGetValue(address, out var queue) && queue.TryDequeue(out var asdu) ? asdu : null;
 
     /// <summary>从指定地址的 2 级队列取一条（无则 null）。</summary>
-    private byte[]? DequeueClass2(byte address)
+    private byte[]? DequeueClass2(int address)
         => _class2.TryGetValue(address, out var queue) && queue.TryDequeue(out var asdu) ? asdu : null;
 
     /// <summary>指定地址的 1 级队列是否仍有余量（决定 ACD 位）。</summary>
-    private bool HasClass1(byte address)
+    private bool HasClass1(int address)
         => _class1.TryGetValue(address, out var queue) && !queue.IsEmpty;
 
     private async Task RunAsync(CancellationToken ct)
@@ -275,13 +326,25 @@ internal sealed class SessionCore : IAsyncDisposable
                     break;
                 }
 
-                foreach (var frame in _parser.Feed(buffer.AsSpan(0, read)))
+                if (_codec is not null)
                 {
-                    await HandleFrameAsync(frame, ct).ConfigureAwait(false);
-                }
+                    foreach (var incoming in _codec.Feed(buffer.AsSpan(0, read)))
+                    {
+                        HandleCodecFrame(incoming);
+                    }
 
-                // 半帧超时复位：装置发帧不全或线路中断时不卡死
-                _parser.TryResetStale(_parameters.CharacterTimeoutMs);
+                    _codec.TryResetStale(_parameters.CharacterTimeoutMs);
+                }
+                else
+                {
+                    foreach (var frame in _parser.Feed(buffer.AsSpan(0, read)))
+                    {
+                        await HandleFrameAsync(frame, ct).ConfigureAwait(false);
+                    }
+
+                    // 半帧超时复位：装置发帧不全或线路中断时不卡死
+                    _parser.TryResetStale(_parameters.CharacterTimeoutMs);
+                }
             }
         }
         catch (Exception ex)
@@ -317,6 +380,30 @@ internal sealed class SessionCore : IAsyncDisposable
             {
                 Volatile.Write(ref _disposingFromReceiveLoop, 0);
             }
+        }
+    }
+
+    /// <summary>
+    /// 自定义承载的帧处理：只解 ASDU 并派发，不实现承载自身的链路管理。
+    /// </summary>
+    /// <remarks>
+    /// 自定义承载（如「103 ASDU 装进 104 APCI」）通常没有固定帧、也没有 1/2 级队列，
+    /// 因此这里不做链路层应答，只把 ASDU 交给业务层。
+    /// </remarks>
+    private void HandleCodecFrame(Iec103IncomingFrame incoming)
+    {
+        Interlocked.Exchange(ref _lastActivityTicks, DateTime.UtcNow.Ticks);
+
+        _linkEstablished = true;
+
+        var layout = _codec!.Layout;
+        if (incoming.Asdu.Length >= layout.HeaderLength)
+        {
+            // 自定义承载没有帧内地址域，链路地址取自 ASDU 的 CA（可能为 2 字节）
+            var ca = layout.ReadCa(incoming.Asdu);
+            _linkAddress = ca <= 0xFF ? (byte)ca : _linkAddress;
+
+            DispatchAsdu(incoming.Asdu, layout);
         }
     }
 
@@ -501,6 +588,9 @@ internal sealed class SessionCore : IAsyncDisposable
     }
 
     private void DispatchAsdu(byte[] asduBytes)
+        => DispatchAsdu(asduBytes, Iec103AsduLayout.Standard);
+
+    private void DispatchAsdu(byte[] asduBytes, Iec103AsduLayout layout)
     {
         // 注意：Iec103AsduView 是 ref struct，不能捕获进 lambda，
         // 因此这里用显式 try/catch 而不是 SafeInvoke 包裹整段（与主站 DispatchAsdu 对称）。
@@ -508,7 +598,7 @@ internal sealed class SessionCore : IAsyncDisposable
         // catch，整个读循环会退出、会话静默死亡 —— 从站在 Throw 策略下将彻底不再收帧。
         try
         {
-            var view = new Iec103AsduView(asduBytes);
+            var view = new Iec103AsduView(asduBytes, layout);
 
             _server.RaiseAsduReceivedById(_sessionId, in view);
 

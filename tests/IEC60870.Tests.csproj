@@ -19,4 +19,13 @@
     <ProjectReference Include="..\IEC60870.CS103\IEC60870.CS103.csproj" />
     <ProjectReference Include="..\IEC60870.CS104\IEC60870.CS104.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!--
+      许继网口 103 是厂商私有承载（104 壳 + 103 ASDU），按要求放在 examples，
+      标准库只保留 FT1.2 与 IIec103FramingCodec 扩展点。
+      它是该扩展点的唯一实现范例，且有现场 7 帧要回归，故把编解码器文件
+      编译进测试程序集（examples 工程是 net8.0、测试是 net6.0，无法直接引用）。
+    -->
+    <Compile Include="..\examples\103\cs103-private-ioa\Xuji\XujiApduCodec.cs" Link="Vendor\XujiApduCodec.cs" />
+  </ItemGroup>
 </Project>
