@@ -1141,6 +1141,26 @@ public static class XujiSettingInf
     /// <summary>全部定值修改撤销确认。</summary>
     public const byte CancelAck = 106;
 
+    /// <summary>单项定值修改预发（表29）。</summary>
+    public const byte SinglePreSet = 107;
+
+    /// <summary>单项定值修改返校（表29）。</summary>
+    public const byte SingleVerify = 108;
+
+    /// <summary>单项定值修改执行（表30）。</summary>
+    public const byte SingleExecute = 109;
+
+    /// <summary>单项定值修改执行确认（表30）。</summary>
+    public const byte SingleExecuteAck = 110;
+
+    /// <summary>单项定值修改撤销（表30）。</summary>
+    public const byte SingleCancel = 111;
+
+    /// <summary>单项定值修改撤销确认（表30）。</summary>
+    public const byte SingleCancelAck = 112;
+
     /// <summary>该 INF 是否为「主站下发」方向（其余为装置应答）。</summary>
-    public static bool IsRequest(byte inf) => inf is Read or PreSet or Execute or Cancel;
+    public static bool IsRequest(byte inf)
+        => inf is Read or PreSet or Execute or Cancel
+            or SinglePreSet or SingleExecute or SingleCancel;
 }
