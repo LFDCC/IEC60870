@@ -30,7 +30,7 @@ namespace cs103_private_ioa.Xuji;
 /// </remarks>
 public sealed class SettingClient : IAsyncDisposable
 {
-    /// <summary>单帧最多携带的定值个数（报文上限 253 字节，2 字节/定值留余量）。</summary>
+    /// <summary>单帧最多携带的定值个数（报文上限 253 字节，3 字节/项留余量）。</summary>
     public const int MaxValuesPerFrame = 64;
 
     private readonly Iec103Client _client;

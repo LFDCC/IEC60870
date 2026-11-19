@@ -17,33 +17,16 @@ namespace cs103_private_ioa.Xuji;
 /// 许继网口 103 的 ASDU 头部布局（8 字节）。
 /// </summary>
 /// <remarks>
-/// <para>
-/// 现场工程师确认（2026-11-19）：<b>报文格式完全按 IEC 60870-5-104</b>，连接仍是 103。
-/// 即 104 的帧与 ASDU 头字段布局，只把 104 的 <c>IOA(3)</c> 换成 103 的 <c>FUN(1) INF(1)</c>。
-/// </para>
 /// <code>
 /// TI(1) | VSQ(1) | COT(2, 小端) | CA(2, 小端) | FUN(1) | INF(1) | 数据
 ///       偏移:  0       1          2-3            4-5         6       7
-///       来源: └──────── 104 的 ASDU 头字段 ─────────┘  └── 103 的寻址 ──┘
 /// </code>
-/// <para>
-/// COT 为 2 字节（104 的定义）：低字节 <c>[T bit7][P/N bit6][原因 bit5-0]</c>，
-/// 高字节是源发地址。CA 语义也按 104：<c>(装置地址 &lt;&lt; 8) | 公共地址(扇区)</c>，见 <see cref="XujiCa"/>。
-/// </para>
-/// <para>
-/// <b>实证依据</b>：现场报文的 8 字节头是唯一能让 FUN=178（规约「线路保护」）与
-/// INF=100/107/108/109（规约「调定值 / 单项预发 / 单项返校 / 单项执行」）
-/// 全部命中规约表 26~30 的读法。
-/// </para>
+/// COT 低字节 <c>[T bit7][P/N bit6][原因 bit5-0]</c>，高字节是源发地址。
+/// 现场报文中只有这个 8 字节读法能让 FUN=178 与 INF=100/107/108/109 命中规约表 26~30。
 /// </remarks>
 public static class XujiApduLayout
 {
     /// <summary>许继网口 103 的 8 字节头部布局。</summary>
-    /// <remarks>
-    /// COT 按 <b>IEC 104 位序</b>：<c>bit7=T(试验)、bit6=P/N、bit5-0=原因</c>，
-    /// 与标准 103 的 <c>bit7=P/N、bit6-0=原因</c> 不同。因此传 <c>CotNegativeMask=0x40</c>、
-    /// <c>CotValueMask=0x3F</c>。
-    /// </remarks>
     public static readonly Iec103AsduLayout Instance = new Iec103AsduLayout(
         HeaderLength: 8,
         CotOffset: 2,
@@ -60,17 +43,9 @@ public static class XujiApduLayout
 /// 许继 CA：2 字节，由「公共地址（扇区）」+「装置地址」两段拼成。
 /// </summary>
 /// <remarks>
-/// <para>
-/// 与许继 104 规约 §3.14 表 18 的原注一致：<c>COMADDR 低字节 = 公共地址；高字节 = 装置地址</c>。
-/// 该规则写在 104 的遥控章节并标「（下同）」，现场工程师确认网口 103 同样适用。
-/// </para>
-/// <para>
-/// 「装置地址」指保护装置自身的编号（下遥控时为目标装置），
-/// <b>不是</b> 103 串口里那 1 字节链路地址/CA——两者是不同层的概念。
-/// </para>
-/// <para>
-/// 落线顺序：CA 按小端写出，<c>(Device &lt;&lt; 8) | Sector</c> 上线路正好是「扇区在前、装置地址在后」。
-/// </para>
+/// 依据许继 104 规约 §3.14：<c>COMADDR 低字节 = 公共地址，高字节 = 装置地址</c>。
+/// 「装置地址」是保护装置自身的编号，不是 103 串口里的链路地址。
+/// CA 按小端写出，故 <c>(Device &lt;&lt; 8) | Sector</c> 上线顺序是「扇区在前」。
 /// </remarks>
 public readonly struct XujiCa
 {
@@ -103,15 +78,10 @@ public readonly struct XujiCa
 /// 许继网口的 APCI 帧：<c>68 | L(1B) | 控制域4B | ASDU</c>。
 /// </summary>
 /// <remarks>
-/// <para>
-/// 报文格式完全按 IEC 60870-5-104：<c>L ≤ 253</c>，<c>L = 4(控制域) + ASDU</c>，
-/// 总帧长 <c>2 + L</c>。104 定义的固定帧（<c>L = 4</c>，仅控制域，即 S 帧/U 帧）格式上存在，
-/// 但<b>本承载只处理 I 帧</b>——因为现场工程师确认「<b>只有报文传输采用 104，连接依然是 103</b>」：
-/// 不做 STARTDT 握手、不维护 k-w 窗口、不靠 S 帧确认，所以 S/U 帧不参与通信。
-/// </para>
-/// <para>
-/// 与标准 104 的差别：ASDU 里 104 的 <c>IOA(3)</c> 被替换为 103 的 <c>FUN(1) INF(1)</c>。
-/// </para>
+/// <c>L = 4 + ASDU</c>，总长 <c>2 + L</c>。只处理 I 帧：现场「只有报文传输采用 104，
+/// 连接依然是 103」，不做 STARTDT 握手、不维护 k-w 窗口，S/U 帧不参与通信。
+/// ASDU 里 104 的 <c>IOA(3)</c> 被换成 103 的 <c>FUN(1) INF(1)</c>。
+/// </remarks>
 /// </remarks>
 public sealed record XujiApduFrame(int SendSequence, int ReceiveSequence, byte[] Asdu)
 {
