@@ -72,7 +72,11 @@ public sealed class Iec103Client : IIec103Master
         _configureConfig = configureConfig;
 
         _parser.FrameRejected += OnFrameRejected;
-        if (_codec is not null) { _codec.FrameRejected += OnFrameRejected; }
+        if (_codec is not null)
+        {
+            _codec.FrameRejected += OnFrameRejected;
+            _codec.ControlFrameResponse += OnCodecControlFrame;
+        }
     }
 
     /// <summary>
@@ -92,7 +96,11 @@ public sealed class Iec103Client : IIec103Master
         _codec = _linkParameters.FramingCodec;
 
         _parser.FrameRejected += OnFrameRejected;
-        if (_codec is not null) { _codec.FrameRejected += OnFrameRejected; }
+        if (_codec is not null)
+        {
+            _codec.FrameRejected += OnFrameRejected;
+            _codec.ControlFrameResponse += OnCodecControlFrame;
+        }
     }
 
     /// <summary>
@@ -108,7 +116,11 @@ public sealed class Iec103Client : IIec103Master
         _codec = _linkParameters.FramingCodec;
 
         _parser.FrameRejected += OnFrameRejected;
-        if (_codec is not null) { _codec.FrameRejected += OnFrameRejected; }
+        if (_codec is not null)
+        {
+            _codec.FrameRejected += OnFrameRejected;
+            _codec.ControlFrameResponse += OnCodecControlFrame;
+        }
     }
 
     private void OnFrameRejected(string hex, string reason)
@@ -119,6 +131,32 @@ public sealed class Iec103Client : IIec103Master
         // 订阅者抛异常会击穿 ReceiveLoopAsync。必须单独隔离（与 DispatchFrame 对称）。
         SafeInvoke("Iec103LinkEvent(FrameRejected)",
             () => RaiseLinkEvent(new Iec103LinkEvent(Iec103LinkEventKind.FrameRejected, reason)));
+    }
+
+    /// <summary>编解码器产生的控制帧（如 STARTDT_CON）写回传输层。</summary>
+    private void OnCodecControlFrame(byte[] raw)
+    {
+        var transport = _transport;
+        var ct = _lifetimeCts?.Token ?? CancellationToken.None;
+        if (transport is null)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await transport.WriteAsync(raw, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                Logger?.Warning($"控制帧回送失败: {ex.Message}");
+            }
+        });
     }
 
     /// <inheritdoc />

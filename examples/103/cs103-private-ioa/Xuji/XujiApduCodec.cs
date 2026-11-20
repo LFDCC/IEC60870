@@ -27,6 +27,11 @@ namespace cs103_private_ioa.Xuji;
 public static class XujiApduLayout
 {
     /// <summary>许继网口 103 的 8 字节头部布局。</summary>
+    /// <remarks>
+    /// COT 字段宽 2 字节（104 的布局），但<b>首字节位序是 103 的</b>：
+    /// <c>bit7=P/N、bit6-0=原因</c>。规约 COT 表里有 64（调版本号）、66（冻结否定）
+    /// 等大于 63 的值，按 104 位序（bit6 作 P/N）会被抹成 0。
+    /// </remarks>
     public static readonly Iec103AsduLayout Instance = new Iec103AsduLayout(
         HeaderLength: 8,
         CotOffset: 2,
@@ -35,8 +40,8 @@ public static class XujiApduLayout
         CaWidth: 2,
         FunOffset: 6,
         InfOffset: 7,
-        CotNegativeMask: 0x40,
-        CotValueMask: 0x3F).Validate();
+        CotNegativeMask: 0x80,
+        CotValueMask: 0x7F).Validate();
 }
 
 /// <summary>
@@ -78,13 +83,25 @@ public readonly struct XujiCa
 /// 许继网口的 APCI 帧：<c>68 | L(1B) | 控制域4B | ASDU</c>。
 /// </summary>
 /// <remarks>
-/// <c>L = 4 + ASDU</c>，总长 <c>2 + L</c>。只处理 I 帧：现场「只有报文传输采用 104，
-/// 连接依然是 103」，不做 STARTDT 握手、不维护 k-w 窗口，S/U 帧不参与通信。
+/// <c>L = 4 + ASDU</c>，总长 <c>2 + L</c>。I 帧承载 ASDU；
+/// U 帧用于 STARTDT 握手（装置连上即发 <c>68 04 07 00 00 00</c>）。
+/// 无 k-w 窗口、无 S 帧确认。
 /// ASDU 里 104 的 <c>IOA(3)</c> 被换成 103 的 <c>FUN(1) INF(1)</c>。
-/// </remarks>
 /// </remarks>
 public sealed record XujiApduFrame(int SendSequence, int ReceiveSequence, byte[] Asdu)
 {
+    /// <summary>该帧是否为 U/S 控制帧（无 ASDU）。</summary>
+    public bool IsControlFrame { get; init; }
+
+    /// <summary>
+    /// 控制帧的功能码。U 帧取控制域首字节（<c>0x07</c> STARTDT_ACT / <c>0x0B</c> STARTDT_CON 等）；
+    /// S 帧该字节恒为 <c>0x01</c>，其含义由 <see cref="IsSFrame"/> 区分。
+    /// </summary>
+    public byte ControlFunction { get; init; }
+
+    /// <summary>是否为 S 帧（仅确认接收序号，按 104 无需应答）。</summary>
+    public bool IsSFrame => IsControlFrame && ControlFunction == 0x01;
+
     /// <summary>起始字符 <c>68H</c>。</summary>
     public const byte Start = 0x68;
 
@@ -150,10 +167,16 @@ public sealed record XujiApduFrame(int SendSequence, int ReceiveSequence, byte[]
         }
 
         var control = bytes.Slice(2, ControlLength);
+
+        // S 帧 / U 帧：无 ASDU，不需要应用层处理
         if ((control[0] & 0x01) != 0)
         {
-            error = $"不支持的控制域 0x{control[0]:X2}（许继承载只处理 I 帧，无 S/U 帧）";
-            return false;
+            frame = new XujiApduFrame(0, 0, Array.Empty<byte>())
+            {
+                IsControlFrame = true,
+                ControlFunction = control[0],
+            };
+            return true;
         }
 
         var ns = ((control[0] & 0xFE) >> 1) | (control[1] << 7);
@@ -166,12 +189,19 @@ public sealed record XujiApduFrame(int SendSequence, int ReceiveSequence, byte[]
         return true;
     }
 
+    /// <summary>构造 U 帧（STARTDT / STOPDT / TESTFR）。</summary>
+    public static byte[] EncodeUFormat(byte function) => new byte[] { Start, 0x04, function, 0x00, 0x00, 0x00 };
+
     /// <summary>诊断用描述。</summary>
-    public override string ToString() => $"I帧 NS={SendSequence} NR={ReceiveSequence} ASDU={Asdu.Length}B";
+    public override string ToString() => IsSFrame
+        ? $"S帧 NR={ReceiveSequence}"
+        : IsControlFrame
+            ? $"U帧 0x{ControlFunction:X2}"
+            : $"I帧 NS={SendSequence} NR={ReceiveSequence} ASDU={Asdu.Length}B";
 }
 
 /// <summary>
-/// 许继网口 103 的帧编解码器：<c>68 | L(1B) | 控制域4B | ASDU</c>，仅 I 帧。
+/// 许继网口 103 的帧编解码器：<c>68 | L(1B) | 控制域4B | ASDU</c>。
 /// </summary>
 /// <remarks>
 /// 作为 <see cref="IIec103FramingCodec"/> 的厂商实现放在 examples 里，
@@ -180,11 +210,18 @@ public sealed record XujiApduFrame(int SendSequence, int ReceiveSequence, byte[]
 /// var options = new Iec103Options()
 ///     .UseLinkParameters(l => l.FramingCodec = new XujiApduCodec());
 /// </code>
+/// 收到 STARTDT_ACT 时自动回 STARTDT_CON（装置连上即握手）。
 /// </remarks>
 public sealed class XujiApduCodec : IIec103FramingCodec
 {
     private readonly List<byte> _buffer = new();
     private long _stateEnteredTicks;
+
+    /// <summary>STARTDT_ACT。</summary>
+    public const byte StartDtAct = 0x07;
+
+    /// <summary>STARTDT_CON。</summary>
+    public const byte StartDtCon = 0x0B;
 
     /// <summary>最大帧长（L=255 时总长 257）。</summary>
     private const int MaxFrameLength = 2 + 255;
@@ -197,6 +234,12 @@ public sealed class XujiApduCodec : IIec103FramingCodec
 
     /// <inheritdoc />
     public event Action<string, string>? FrameRejected;
+
+    /// <summary>需要回送的控制帧（如对 STARTDT_ACT 回 STARTDT_CON）；无则 null。</summary>
+    public event Action<byte[]>? ControlFrameResponse;
+
+    /// <summary>收到的控制帧（U 帧 / S 帧）原始字节。不产生 ASDU，仅用于诊断抓包。</summary>
+    public event Action<byte[]>? ControlFrameReceived;
 
     /// <inheritdoc />
     public IReadOnlyList<Iec103IncomingFrame> Feed(ReadOnlySpan<byte> bytes)
@@ -282,16 +325,33 @@ public sealed class XujiApduCodec : IIec103FramingCodec
     {
         var raw = _buffer.ToArray();
 
-        if (XujiApduFrame.TryDecode(raw, out var frame, out var error) && frame is not null)
-        {
-            frames.Add(new Iec103IncomingFrame(raw, frame.Asdu));
-        }
-        else
+        if (!XujiApduFrame.TryDecode(raw, out var frame, out var error) || frame is null)
         {
             Reject(error ?? "未知错误");
             return;
         }
 
+        if (frame.IsControlFrame)
+        {
+            ControlFrameReceived?.Invoke(raw);
+
+            // STARTDT_ACT → 回 STARTDT_CON；其余控制帧只记录
+            var reply = frame.ControlFunction switch
+            {
+                StartDtAct => XujiApduFrame.EncodeUFormat(StartDtCon),
+                _ => null,
+            };
+
+            if (reply is not null)
+            {
+                ControlFrameResponse?.Invoke(reply);
+            }
+
+            _buffer.Clear();
+            return;
+        }
+
+        frames.Add(new Iec103IncomingFrame(raw, frame.Asdu));
         _buffer.Clear();
     }
 

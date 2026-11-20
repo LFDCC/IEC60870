@@ -51,6 +51,22 @@ public interface IIec103FramingCodec
     /// <param name="asdu">完整 ASDU 字节（头部按 <see cref="Layout"/> 布局）。</param>
     byte[] Encode(ReadOnlySpan<byte> asdu);
 
+    /// <summary>
+    /// 编解码器在切帧过程中产生、需立刻回送的原始帧（如对 STARTDT_ACT 回 STARTDT_CON）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 部分承载在报文之外还有链路控制交互。主机侧把它接到传输层写回即可：
+    /// </para>
+    /// <code>
+    /// codec.ControlFrameResponse += raw => transport.WriteAsync(raw, ct);
+    /// </code>
+    /// <para>
+    /// 标准 FT1.2 由库内置实现，不使用本事件。
+    /// </para>
+    /// </remarks>
+    event Action<byte[]>? ControlFrameResponse;
+
     /// <summary>复位分帧状态机（重连时调用，不产生坏帧事件）。</summary>
     void Reset();
 

@@ -215,12 +215,49 @@ namespace IEC60870.Tests
         }
 
         [Test]
-        public void Frame_RejectsNonIFrame()
+        public void Frame_DecodesControlFrame()
         {
-            // 控制域 bit0=1 → 不是 I 帧（S 帧或 U 帧），许继承载不支持
-            var bytes = new byte[] { 0x68, 0x04, 0x01, 0x00, 0x00, 0x00 };
-            Assert.That(XujiApduFrame.TryDecode(bytes, out _, out var error), Is.False);
-            Assert.That(error, Does.Contain("I 帧"));
+            // 控制域 bit0=1 → S/U 帧，无 ASDU，标记为控制帧
+            var bytes = new byte[] { 0x68, 0x04, 0x07, 0x00, 0x00, 0x00 };
+            Assert.That(XujiApduFrame.TryDecode(bytes, out var frame, out var error), Is.True, error);
+            Assert.Multiple(() =>
+            {
+                Assert.That(frame!.IsControlFrame, Is.True);
+                Assert.That(frame.ControlFunction, Is.EqualTo(0x07), "STARTDT_ACT");
+                Assert.That(frame.Asdu, Is.Empty);
+            });
+        }
+
+        [Test]
+        public void Codec_RepliesStartDtCon()
+        {
+            var codec = new XujiApduCodec();
+            byte[] reply = null;
+            codec.ControlFrameResponse += raw => reply = raw;
+
+            // 装置连上即发的 STARTDT_ACT
+            var frames = codec.Feed(new byte[] { 0x68, 0x04, 0x07, 0x00, 0x00, 0x00 });
+
+            Assert.That(frames, Is.Empty, "控制帧不应作为 ASDU 上报");
+            Assert.That(reply, Is.Not.Null, "应回 STARTDT_CON");
+            Assert.That(Convert.ToHexString(reply), Is.EqualTo("68040B000000"));
+        }
+
+        [Test]
+        public void Codec_SeparatesControlAndInformationFrames()
+        {
+            var codec = new XujiApduCodec();
+            var mixed = new byte[]
+            {
+                0x68, 0x04, 0x07, 0x00, 0x00, 0x00,             // STARTDT_ACT
+                0x68, 0x0E, 0x00, 0x00, 0x00, 0x00,             // I 帧
+                0x3D, 0x81, 0x14, 0x00, 0x01, 0x01, 0xB2, 0x64, 0x1F, 0x00,
+            };
+
+            var frames = codec.Feed(mixed);
+
+            Assert.That(frames, Has.Count.EqualTo(1), "只应上报 I 帧");
+            Assert.That(frames[0].Asdu.Length, Is.EqualTo(10));
         }
 
         // ══════════════════════════════════════════════════════════════
@@ -336,6 +373,29 @@ namespace IEC60870.Tests
             var view = new Iec103AsduView(asdu);
 
             Assert.That(view.Layout, Is.SameAs(Iec103AsduLayout.Standard), "默认构造必须是标准 6 字节布局");
+        }
+
+        [Test]
+        [TestCase(0x14, 20, false, TestName = "COT=20 命令确认")]
+        [TestCase(0x15, 21, false, TestName = "COT=21 命令否定")]
+        [TestCase(0x40, 64, false, TestName = "COT=64 调版本号（>63，104 位序会抹成 0）")]
+        [TestCase(0x42, 66, false, TestName = "COT=66 冻结否定（>63）")]
+        [TestCase(0x95, 21, true, TestName = "COT=0x95 否定确认（bit7=P/N）")]
+        public void AsduView_UsesIec103CotBitOrder(byte cotByte, int expectedCause, bool expectedNegative)
+        {
+            // 字段宽 2 字节（104 布局），但首字节位序是 103 的：bit7=P/N、bit6-0=原因。
+            // 若按 104 位序（bit6 作 P/N），COT=64/66 会被抹成 0，装置拒绝会被误判成功。
+            var asdu = new byte[] { 0x3D, 0x81, cotByte, 0x00, 0x01, 0x01, 0xB2, 0x64 };
+            var view = new Iec103AsduView(asdu, XujiApduLayout.Instance);
+
+            var cot = view.Cot;
+            var neg = view.Negative;
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(cot, Is.EqualTo(expectedCause));
+                Assert.That(neg, Is.EqualTo(expectedNegative));
+            });
         }
 
         [Test]

@@ -79,6 +79,20 @@ public static class XujiTypeIds
     /// </summary>
     public const byte SettingCommand = 61;
 
+    /// <summary>
+    /// 调版本号（表31）。命令无信息体，INF=6。
+    /// </summary>
+    /// <remarks>
+    /// 装置用 <see cref="VersionResponse"/>（TI=5）应答，COT=64。
+    /// </remarks>
+    public const byte VersionRequest = 60;
+
+    /// <summary>
+    /// 装置版本应答（表6 ASDU_5）。COT=64，INF=6。
+    /// 信息体 = 兼容级别(1) + 型号 ASCII(8) + 版本号 BCD(2) + CRC(2)。
+    /// </summary>
+    public const byte VersionResponse = 5;
+
     /// <summary>故障报告确认 / 故障报告结束（表33）。信息体 = 故障报告序号(1)。</summary>
     public const byte FaultReportAck = 62;
 

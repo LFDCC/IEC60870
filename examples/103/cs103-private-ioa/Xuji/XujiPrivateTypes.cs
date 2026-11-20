@@ -673,6 +673,83 @@ public sealed class XujiSettingHandler : XujiHandlerBase
 
 
 // ══════════════════════════════════════════════════════════════════
+//  TI=60 调版本号 / TI=5 版本应答（表31 / 表6）
+// ══════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// 装置版本信息（TI=5，表6 ASDU_5）。COT=64、INF=6。
+/// </summary>
+/// <remarks>
+/// 信息体 = 兼容级别(1) + 型号 ASCII(8) + 版本号(2) + CRC(2)。
+/// 版本号用 BCD：第一字节为小数部分、第二字节为整数部分。
+/// </remarks>
+public sealed record XujiVersionInfo(
+    byte Compatibility,
+    string Model,
+    byte VersionFraction,
+    byte VersionInteger,
+    ushort RomCrc) : Iec103DecodedAsdu
+{
+    /// <summary>型号 ASCII 的固定长度。</summary>
+    public const int ModelLength = 8;
+
+    /// <summary>信息体总长度。</summary>
+    public const int PayloadLength = 1 + ModelLength + 2 + 2;
+
+    /// <summary>版本号显示文本，如 "2.05"（整数.小数，BCD）。</summary>
+    public string VersionText
+        => $"{(VersionInteger >> 4) * 10 + (VersionInteger & 0x0F)}.{(VersionFraction >> 4) * 10 + (VersionFraction & 0x0F):D2}";
+}
+
+/// <summary>
+/// TI=5 版本应答处理器（表6）。
+/// </summary>
+public sealed class XujiVersionHandler : XujiHandlerBase
+{
+    /// <summary>构造处理器。</summary>
+    public XujiVersionHandler() : base(XujiTypeIds.VersionResponse) { }
+
+    /// <inheritdoc />
+    public static Iec103DecodedAsdu Parse(in Iec103AsduView view)
+    {
+        var data = view.Data;
+        if (data.Length < XujiVersionInfo.PayloadLength)
+        {
+            throw new FormatException(
+                $"TI=5 版本应答至少 {XujiVersionInfo.PayloadLength} 字节，实际 {data.Length}");
+        }
+
+        var model = Encoding.ASCII.GetString(data.Slice(1, XujiVersionInfo.ModelLength)).TrimEnd('\0', ' ');
+        var crc = BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(1 + XujiVersionInfo.ModelLength + 2, 2));
+
+        return new XujiVersionInfo(
+            Compatibility: data[0],
+            Model: model,
+            VersionFraction: data[1 + XujiVersionInfo.ModelLength],
+            VersionInteger: data[1 + XujiVersionInfo.ModelLength + 1],
+            RomCrc: crc);
+    }
+
+    /// <inheritdoc />
+    public override byte[] Encode(Iec103DecodedAsdu value)
+    {
+        var info = (XujiVersionInfo)value;
+        var data = new byte[XujiVersionInfo.PayloadLength];
+        data[0] = info.Compatibility;
+
+        var model = Encoding.ASCII.GetBytes(info.Model);
+        var copy = Math.Min(model.Length, XujiVersionInfo.ModelLength);
+        model.AsSpan(0, copy).CopyTo(data.AsSpan(1));
+
+        data[1 + XujiVersionInfo.ModelLength] = info.VersionFraction;
+        data[1 + XujiVersionInfo.ModelLength + 1] = info.VersionInteger;
+        BinaryPrimitives.WriteUInt16LittleEndian(data.AsSpan(1 + XujiVersionInfo.ModelLength + 2, 2), info.RomCrc);
+        return data;
+    }
+}
+
+
+// ══════════════════════════════════════════════════════════════════
 //  TI=64/65/67 控制命令（表15）
 // ══════════════════════════════════════════════════════════════════
 
@@ -997,6 +1074,7 @@ public static class XujiPrivateTypes
         XujiTypeIds.BreakerStatusChange => XujiBreakerChangeHandler.Parse(in view),    // 43
         XujiTypeIds.MeasuredValueWithInf => XujiMeasuredValueHandler.Parse(in view),   // 50
         XujiTypeIds.SettingCommand => XujiSettingHandler.Parse(in view),               // 61
+        XujiTypeIds.VersionResponse => XujiVersionHandler.Parse(in view),              // 5（调版本号应答）
         XujiTypeIds.FaultReportAck => XujiSequenceNumberHandler.Parse(in view),        // 62
         XujiTypeIds.BreakerControl
             or XujiTypeIds.TapChangerControl
@@ -1033,6 +1111,7 @@ public static class XujiPrivateTypes
 
         // ── 双向（命令与回送确认共用同一 TI）──
         registry.RegisterType(new XujiSettingHandler());                                   // 61
+        registry.RegisterType(new XujiVersionHandler());                                   // 5（调版本号应答）
         registry.RegisterType(new XujiSequenceNumberHandler(XujiTypeIds.FaultReportAck));  // 62
         registry.RegisterType(new XujiControlHandler(XujiTypeIds.BreakerControl));         // 64
         registry.RegisterType(new XujiControlHandler(XujiTypeIds.TapChangerControl));      // 65
@@ -1064,6 +1143,7 @@ public static class XujiPrivateTypes
         XujiTypeIds.BreakerControl or XujiTypeIds.TapChangerControl or XujiTypeIds.SynchroCheckControl
             => new XujiControlHandler(typeId),
         XujiTypeIds.FaultReport => new XujiFaultReportHandler(),
+        XujiTypeIds.VersionResponse => new XujiVersionHandler(),
         XujiTypeIds.SelfCheckRecordProtection or XujiTypeIds.SelfCheckRecordControl
             => new XujiSelfCheckRecordHandler(typeId),
         XujiTypeIds.EnergyFreeze => new XujiEnergyFreezeHandler(),

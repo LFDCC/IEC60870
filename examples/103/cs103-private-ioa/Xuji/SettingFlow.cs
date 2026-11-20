@@ -157,6 +157,46 @@ public sealed class SettingClient : IAsyncDisposable
         await WaitAckAsync(XujiSettingInf.CancelAck, timeoutMs, ct);
     }
 
+    /// <summary>
+    /// 修改单项定值：预发 → 返校校验 → 执行 → 执行确认（表29/30）。
+    /// </summary>
+    /// <param name="cpu">CPU 板地址。</param>
+    /// <param name="zone">定值区号。</param>
+    /// <param name="index">定值在区内的 1 基序号。</param>
+    /// <param name="value">新定值。</param>
+    /// <param name="timeoutMs">每一步的超时。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <exception cref="InvalidOperationException">返校值不一致或装置否定确认。</exception>
+    public async Task WriteSingleAsync(
+        byte cpu, byte zone, byte index, XujiSettingValue value,
+        int timeoutMs = 5000, CancellationToken ct = default)
+    {
+        var values = new[] { value };
+
+        // ── 1. 预发（INF=107）──
+        await SendAsync(XujiSettingInf.SinglePreSet, new XujiSettingCommand(cpu, zone, index, values), ct);
+
+        var echoed = await CollectAsync(XujiSettingInf.SingleVerify, timeoutMs, ct);
+        if (!echoed.SequenceEqual(values))
+        {
+            await TryCancelAsync(ct);
+            throw new InvalidOperationException($"返校值与预发不一致（序号 {index}）");
+        }
+
+        // ── 2. 执行（INF=109）──
+        await SendAsync(XujiSettingInf.SingleExecute, new XujiSettingCommand(cpu, zone, index, Array.Empty<XujiSettingValue>()), ct);
+
+        // ── 3. 收执行确认（INF=110）──
+        await WaitAckAsync(XujiSettingInf.SingleExecuteAck, timeoutMs, ct);
+    }
+
+    /// <summary>撤销单项定值修改（INF=111 → 112）。</summary>
+    public async Task CancelSingleAsync(int timeoutMs = 5000, CancellationToken ct = default)
+    {
+        await SendAsync(XujiSettingInf.SingleCancel, new XujiSettingCommand(0, 0, 0, Array.Empty<XujiSettingValue>()), ct);
+        await WaitAckAsync(XujiSettingInf.SingleCancelAck, timeoutMs, ct);
+    }
+
     // ── 内部 ───────────────────────────────────────────────────────
 
     private Task SendAsync(byte inf, XujiSettingCommand command, CancellationToken ct)
@@ -288,6 +328,12 @@ public sealed class SettingDevice
     private readonly byte _fun;
     private readonly Dictionary<(byte Cpu, byte Zone), XujiSettingValue[]> _table = new();
 
+    /// <summary>定值区号 15 = 查询当前运行区（表26 注）。</summary>
+    public const byte SettingZoneCurrent = 15;
+
+    /// <summary>当前运行区号；应答区号 15 的召唤时用它代替。</summary>
+    private byte _currentZone;
+
     /// <summary>已预发但未执行的值（预发-执行两阶段）。</summary>
     private (byte Cpu, byte Zone, XujiSettingValue[] Values)? _pending;
 
@@ -305,6 +351,9 @@ public sealed class SettingDevice
     /// <summary>登记某个定值区的当前值（模拟装置参数区）。</summary>
     public void SetTable(byte cpu, byte zone, XujiSettingValue[] values)
         => _table[(cpu, zone)] = values;
+
+    /// <summary>设置当前运行区号（切换定值区命令生效后调用）。</summary>
+    public void SetCurrentZone(byte zone) => _currentZone = zone;
 
     /// <summary>挂接到从站的 ASDU 回调上。</summary>
     public void Attach()
@@ -344,13 +393,61 @@ public sealed class SettingDevice
                     new XujiSettingCommand(cmd.CpuBoard, cmd.Zone, 0, Array.Empty<XujiSettingValue>()),
                     XujiCot.Positive));
                 break;
+
+            // ── 单项定值修改（表29/30）：预发→返校→执行→确认 ──
+            case XujiSettingInf.SinglePreSet:
+                _pending = (cmd.CpuBoard, cmd.Zone, cmd.Values);
+                RespondValues(session, XujiSettingInf.SingleVerify, cmd);
+                break;
+
+            case XujiSettingInf.SingleExecute:
+                RespondSingleExecute(session, cmd);
+                break;
+
+            case XujiSettingInf.SingleCancel:
+                _pending = null;
+                session.SendAsduAsync(XujiPrivateTypes.CreateAsdu(
+                    XujiTypeIds.SettingCommand, _ca, _fun, XujiSettingInf.SingleCancelAck,
+                    new XujiSettingCommand(cmd.CpuBoard, cmd.Zone, 0, Array.Empty<XujiSettingValue>()),
+                    XujiCot.Positive));
+                break;
         }
+    }
+
+    /// <summary>INF=109 单项执行：按序号改写一项，回执行确认 INF=110。</summary>
+    private void RespondSingleExecute(IIec103Session session, XujiSettingCommand cmd)
+    {
+        if (_pending is not { } pending || pending.Values.Length == 0)
+        {
+            session.SendAsduAsync(XujiPrivateTypes.CreateAsdu(
+                XujiTypeIds.SettingCommand, _ca, _fun, XujiSettingInf.SingleExecuteAck,
+                new XujiSettingCommand(cmd.CpuBoard, cmd.Zone, 0, Array.Empty<XujiSettingValue>()),
+                XujiCot.Negative));
+            return;
+        }
+
+        var key = (pending.Cpu, pending.Zone);
+        // 定值序号与整区读应答同一套 0 基偏移：0 = 区内第 1 项
+        if (_table.TryGetValue(key, out var table) && cmd.Index < table.Length)
+        {
+            table[cmd.Index] = pending.Values[0];
+        }
+
+        _pending = null;
+
+        session.SendAsduAsync(XujiPrivateTypes.CreateAsdu(
+            XujiTypeIds.SettingCommand, _ca, _fun, XujiSettingInf.SingleExecuteAck,
+            new XujiSettingCommand(cmd.CpuBoard, cmd.Zone, cmd.Index, Array.Empty<XujiSettingValue>()),
+            XujiCot.Positive));
     }
 
     /// <summary>INF=100：有定值按表28 分帧上送 + 结束帧；无定值回表27 否定。</summary>
     private void RespondRead(IIec103Session session, XujiSettingCommand request)
     {
-        if (!_table.TryGetValue((request.CpuBoard, request.Zone), out var values))
+        // 定值区号 15 = 当前运行区（表26 注），查表时换成实际区号
+        var zone = request.Zone == SettingZoneCurrent ? _currentZone : request.Zone;
+
+        if (!_table.TryGetValue((request.CpuBoard, zone), out var values))
         {
             // 表27：无定值时回答，定值序号=0，COT=21
             session.SendAsduAsync(XujiPrivateTypes.CreateAsdu(
@@ -360,7 +457,7 @@ public sealed class SettingDevice
             return;
         }
 
-        // 表28：按每帧 MaxValuesPerFrame 项分片，定值序号为该项在区内的 1 基序号
+        // 表28：按每帧 MaxValuesPerFrame 项分片
         for (var offset = 0; offset < values.Length; offset += SettingClient.MaxValuesPerFrame)
         {
             var count = Math.Min(SettingClient.MaxValuesPerFrame, values.Length - offset);
@@ -369,11 +466,13 @@ public sealed class SettingDevice
 
             session.SendAsduAsync(XujiPrivateTypes.CreateAsdu(
                 XujiTypeIds.SettingCommand, _ca, _fun, XujiSettingInf.Read,
-                new XujiSettingCommand(request.CpuBoard, request.Zone, (byte)(offset + 1), chunk),
-                XujiCot.Positive));
+                new XujiSettingCommand(request.CpuBoard, request.Zone, (byte)(request.Index + offset), chunk),
+                XujiCot.Positive,
+                count: 1 + count));
         }
 
-        SendEndFrame(session, request, XujiSettingInf.Read);
+        SendEndFrame(session, new XujiSettingCommand(request.CpuBoard, request.Zone, 0, Array.Empty<XujiSettingValue>()),
+            XujiSettingInf.Read);
     }
 
     /// <summary>回送一组定值（返校用），最后一帧 COT=10。</summary>
@@ -388,8 +487,9 @@ public sealed class SettingDevice
 
             session.SendAsduAsync(XujiPrivateTypes.CreateAsdu(
                 XujiTypeIds.SettingCommand, _ca, _fun, inf,
-                new XujiSettingCommand(cmd.CpuBoard, cmd.Zone, (byte)(offset + 1), chunk),
-                XujiCot.Positive));
+                new XujiSettingCommand(cmd.CpuBoard, cmd.Zone, (byte)(cmd.Index + offset), chunk),
+                XujiCot.Positive,
+                count: 1 + count));
         }
 
         SendEndFrame(session, cmd, inf);

@@ -116,6 +116,9 @@ internal sealed class SessionCore : IAsyncDisposable
         {
             _codec.FrameRejected += (hex, reason) =>
                 _server.RaiseFrameRejectedById(_sessionId, new Iec103FrameRejectedEventArgs(hex, reason));
+
+            // 链路控制交互（如 STARTDT_ACT → STARTDT_CON）由编解码器产生，这里写回传输层
+            _codec.ControlFrameResponse += raw => _ = SendControlFrameAsync(raw);
         }
 
         transport.TransportClosed += OnTransportClosed;
@@ -218,6 +221,30 @@ internal sealed class SessionCore : IAsyncDisposable
         }
     }
 
+    /// <summary>回送编解码器产生的控制帧（如 STARTDT_CON）。</summary>
+    private async Task SendControlFrameAsync(byte[] raw)
+    {
+        try
+        {
+            await _codecWriteGate.WaitAsync(_cts.Token).ConfigureAwait(false);
+            try
+            {
+                await _transport.WriteAsync(raw, _cts.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                _codecWriteGate.Release();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger?.Invoke($"[会话 {_sessionId}] 控制帧回送失败: {ex.Message}");
+        }
+    }
+
     /// <summary>
     /// 入队原始 ASDU 字节（按 ASDU 头部的公共地址分组）。
     /// </summary>
@@ -237,12 +264,21 @@ internal sealed class SessionCore : IAsyncDisposable
     /// <param name="address">链路地址（决定主站向哪个地址召唤时能取到）。</param>
     /// <param name="asduBytes">完整 ASDU 字节。</param>
     /// <param name="isClass1">true 进 1 级队列，false 进 2 级队列。</param>
+    /// <remarks>
+    /// 自定义承载没有 1/2 级队列，字节原样作为 I 帧发出。
+    /// </remarks>
     public void EnqueueRaw(int address, byte[] asduBytes, bool isClass1)
     {
         ArgumentNullException.ThrowIfNull(asduBytes);
 
         if (_disposed)
         {
+            return;
+        }
+
+        if (_codec is not null)
+        {
+            _ = SendViaCodecAsync(asduBytes);
             return;
         }
 
@@ -395,6 +431,9 @@ internal sealed class SessionCore : IAsyncDisposable
         Interlocked.Exchange(ref _lastActivityTicks, DateTime.UtcNow.Ticks);
 
         _linkEstablished = true;
+
+        // 与 FT1.2 分支对齐：原始帧同样上报，否则自定义承载下抓包无从观察
+        _server.RaiseRawFrameReceivedById(_sessionId, incoming.Raw);
 
         var layout = _codec!.Layout;
         if (incoming.Asdu.Length >= layout.HeaderLength)
