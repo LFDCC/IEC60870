@@ -93,6 +93,13 @@ public sealed class Iec103Server : IIec103Slave
     /// <inheritdoc />
     public event Action<IIec103Session, byte[]>? RawFrameReceived;
 
+    /// <summary>发出的原始帧字节（自定义承载下与 <see cref="RawFrameReceived"/> 对称）。</summary>
+    /// <remarks>
+    /// 标准 FT1.2 承载使用 <see cref="FrameTraced"/> 追踪收发；该事件面向无 FT1.2 帧结构的
+    /// 自定义承载，便于抓包对照。
+    /// </remarks>
+    public event Action<IIec103Session, byte[]>? RawFrameSent;
+
     /// <summary>收到未识别 ASDU（兜底，绝不丢帧）。</summary>
     public event Action<IIec103Session, Iec103UnknownAsdu>? UnknownAsduReceived;
 
@@ -409,6 +416,9 @@ public sealed class Iec103Server : IIec103Slave
     internal void RaiseRawFrameReceived(IIec103Session session, byte[] raw)
         => SafeInvoke("RawFrameReceived", () => RawFrameReceived?.Invoke(session, raw));
 
+    internal void RaiseRawFrameSent(IIec103Session session, byte[] raw)
+        => SafeInvoke("RawFrameSent", () => RawFrameSent?.Invoke(session, raw));
+
     internal void RaiseUnknownAsdu(IIec103Session session, Iec103UnknownAsdu unknown)
         => SafeInvoke("UnknownAsduReceived", () => UnknownAsduReceived?.Invoke(session, unknown));
 
@@ -481,6 +491,17 @@ public sealed class Iec103Server : IIec103Slave
                 stream.RaiseRawFrameReceived(raw);
             }
         });
+    }
+
+    internal void RaiseRawFrameSentById(long sessionId, byte[] raw)
+    {
+        var session = FindSession(sessionId);
+        if (session is null)
+        {
+            return;
+        }
+
+        SafeInvoke("RawFrameSent", () => RawFrameSent?.Invoke(session, raw));
     }
 
     /// <summary>转发未识别的通用分类条目到服务端事件。</summary>

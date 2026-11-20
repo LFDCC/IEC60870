@@ -27,5 +27,7 @@
       编译进测试程序集（examples 工程是 net8.0、测试是 net6.0，无法直接引用）。
     -->
     <Compile Include="..\examples\103\cs103-private-ioa\Xuji\XujiApduCodec.cs" Link="Vendor\XujiApduCodec.cs" />
+    <Compile Include="..\examples\103\cs103-private-ioa\Xuji\XujiTypeIds.cs" Link="Vendor\XujiTypeIds.cs" />
   </ItemGroup>
 </Project>
+

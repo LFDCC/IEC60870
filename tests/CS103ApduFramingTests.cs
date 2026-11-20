@@ -528,5 +528,65 @@ namespace IEC60870.Tests
                 Is.True,
                 "FT1.2 帧不应被误认为等价的许继 APDU 帧");
         }
+
+        // ══════════════════════════════════════════════════════════════
+        //  7. TI=61 命令的 VSQ 取值（表26 无值 / 表28 带值）
+        // ══════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// 表26（调定值/执行，不带定值项）VSQ 为 81H；表28（预发/返校，带定值项）
+        /// VSQ 为「1 个头元素 + N 个定值项」。现场实测：27 项定值为 0x1C，单项为 0x02。
+        /// </summary>
+        [Test]
+        [TestCase(false, 0, 0x81, TestName = "无定值项 → VSQ=0x81（表26）")]
+        [TestCase(true, 1, 0x02, TestName = "1 个定值项 → VSQ=0x02（表28）")]
+        [TestCase(true, 27, 0x1C, TestName = "27 个定值项 → VSQ=0x1C（表28）")]
+        public void SettingCommand_VsqMatchesSpecTable(bool hasValues, int valueCount, int expectedVsq)
+        {
+            // 按 SettingClient.SendAsync 的组帧规则构造
+            var payload = new byte[2 + valueCount * 3];
+            payload[0] = 0x1F;
+            var asdu = new Asdu(
+                XujiTypeIds.SettingCommand,
+                Sq: !hasValues,
+                Count: hasValues ? 1 + valueCount : 1,
+                Cot: XujiCot.Positive,
+                Negative: false,
+                Ca: 0x0101,
+                Fun: 178,
+                Inf: 100,
+                Data: payload,
+                Layout: XujiApduLayout.Instance);
+
+            var bytes = asdu.Encode();
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(bytes[1], Is.EqualTo(expectedVsq), "VSQ 字节");
+                Assert.That(bytes[0], Is.EqualTo(XujiTypeIds.SettingCommand), "TI");
+                Assert.That(bytes[2], Is.EqualTo(XujiCot.Positive), "COT 低字节（8 字节头偏移 2）");
+            });
+        }
+
+        /// <summary>现场 27 项定值应答的 VSQ 必须解出 28（1 头 + 27 项）。</summary>
+        [Test]
+        public void FieldReadResponse_VsqDecodesAsOnePlusN()
+        {
+            var bytes = Hex(ReadResponseHex);
+            Assert.That(XujiApduFrame.TryDecode(bytes, out var frame, out _), Is.True);
+
+            var view = new Iec103AsduView(frame!.Asdu, XujiApduLayout.Instance);
+
+            var sq = view.Sq;
+            var count = view.Count;
+            var bodyLen = view.Data.Length;
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(sq, Is.False, "SQ=0（非序列）");
+                Assert.That(count, Is.EqualTo(28), "VSQ = 1 + 27 = 28");
+                Assert.That((bodyLen - 2) / 3, Is.EqualTo(27), "27 项 × 3 字节");
+            });
+        }
     }
 }

@@ -42,10 +42,36 @@ for (var i = 0; i < args.Length; i++)
 const int Ca = 0x0101;       // 扇区=1、装置地址=1
 const byte Fun = 178;        // 线路保护
 
+// ── 报文记录 ──────────────────────────────────────────────────────
+
+// 有序记录收发帧，供生成联调参考文档；同时追加写入文件便于事后整理
+var traceFile = Path.Combine(AppContext.BaseDirectory, $"trace-{DateTime.Now:yyyyMMdd-HHmmss}.log");
+var traceLock = new object();
+
+void Trace(string dir, byte[] raw)
+{
+    var line = $"[{DateTime.Now:HH:mm:ss.fff}] {dir} {Convert.ToHexString(raw)}";
+    Console.WriteLine(line);
+
+    try
+    {
+        lock (traceLock)
+        {
+            File.AppendAllText(traceFile, line + Environment.NewLine);
+        }
+    }
+    catch
+    {
+        // 记录失败不影响协议交互
+    }
+}
+
+// U 帧/S 帧在切帧阶段被消费，不产生 ASDU，需单独记录
+void TraceUOrS(byte[] raw) => Trace(raw.Length > 2 && raw[2] == 0x01 ? "RX S" : "RX U", raw);
+
 // 原始帧抓包：自定义承载下唯一能确认"字节到没到"的观察点
 var codec = new XujiApduCodec();
-codec.ControlFrameReceived += raw =>
-    Console.WriteLine($"{(raw.Length > 2 && raw[2] == 0x01 ? "[S帧]" : "[U帧]")} {Convert.ToHexString(raw)}");
+codec.ControlFrameReceived += TraceUOrS;
 
 var options = new Iec103Options()
     .UseLinkParameters(l => l.FramingCodec = codec);
@@ -63,8 +89,9 @@ server.SessionOpened += s =>
 };
 server.SessionClosed += (s, r) => Console.WriteLine($"[链路] 断开: {r}");
 
-// 原始帧抓包：自定义承载下唯一能确认"字节到没到"的观察点
-server.RawFrameReceived += (s, raw) => Console.WriteLine($"[RAW] {Convert.ToHexString(raw)}");
+// 收发双向抓包：MD 参考文档的报文来源。TX 侧含 STARTDT_CON 等控制帧。
+server.RawFrameReceived += (s, raw) => Trace("RX", raw);
+server.RawFrameSent += (s, raw) => Trace("TX", raw);
 server.FrameRejected += (s, e) => Console.WriteLine($"[丢弃] {e.RawHex} 原因={e.Reason}");
 
 // 定值：CPU1 区0~区3 各 27 项
@@ -76,6 +103,26 @@ for (byte zone = 0; zone < 4; zone++)
         .ToArray());
 }
 device.Attach();
+
+// 通用分类（TI=21 读 / TI=10 写）：测距、压板等非定值参数走这里
+var generic = new GenericDevice(server, Ca);
+generic.AddGroup(0x0E, "遥测", new GenericEntry[]
+{
+    new(0, "遥测值", GddTypes.UnsignedInt, 1, new byte[] { 5 }),
+    new(1, "A相电流", GddTypes.UnsignedInt, 2, new byte[] { 0x64, 0x00 }),
+    new(2, "B相电流", GddTypes.UnsignedInt, 2, new byte[] { 0xC8, 0x00 }),
+    new(3, "C相电流", GddTypes.UnsignedInt, 2, new byte[] { 0x2C, 0x01 }),
+    new(4, "A相电压", GddTypes.UnsignedInt, 2, new byte[] { 0x90, 0x01 }),
+    new(5, "B相电压", GddTypes.UnsignedInt, 2, new byte[] { 0xF4, 0x01 }),
+    new(6, "C相电压", GddTypes.UnsignedInt, 2, new byte[] { 0x58, 0x02 }),
+});
+generic.AddGroup(0x12, "软压板", new GenericEntry[]
+{
+    new(1, "距离保护", GddTypes.DoublePoint, 1, new byte[] { 1 }),
+    new(2, "零序保护", GddTypes.DoublePoint, 1, new byte[] { 1 }),
+    new(3, "重合闸", GddTypes.DoublePoint, 1, new byte[] { 2 }),
+});
+generic.Attach();
 
 // 当前定值区（切换定值区命令会改它）
 byte currentZone = 0;

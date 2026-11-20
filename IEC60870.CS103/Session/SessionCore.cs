@@ -206,6 +206,7 @@ internal sealed class SessionCore : IAsyncDisposable
             try
             {
                 await _transport.WriteAsync(frame, _cts.Token).ConfigureAwait(false);
+                _server.RaiseRawFrameSentById(_sessionId, frame);
             }
             finally
             {
@@ -230,6 +231,7 @@ internal sealed class SessionCore : IAsyncDisposable
             try
             {
                 await _transport.WriteAsync(raw, _cts.Token).ConfigureAwait(false);
+                _server.RaiseRawFrameSentById(_sessionId, raw);
             }
             finally
             {
