@@ -1,6 +1,25 @@
 IEC60870.NETAsync — Changelog
 =============================
 
+Changes to version 7.0.1
+------------------------
+- fix(CS103): 许继 TI=61 定值应答的 VSQ 少算了头元素。规约表28 写 VSQ=N，现场装置实测为
+  「1 个 `CPU板|定值区+定值序号` 头元素 + N 个定值项」，27 项时 VSQ=0x1C(28)。此前恒发 0x01，
+  主站按 VSQ=1 只解出头元素、其余字节丢弃，表现为"收到定值但列表为空"。
+- fix(CS103): 定值区号 15（当前运行区）的应答改为原样回显 15。表26 注称"回答时用实际区号
+  代替"，但现场装置回的是 15；查表仍按实际区号。
+- fix(CS103): 单项定值修改的序号差一位。整区读应答第 1 项序号为 0（0 基偏移），写入侧却按
+  1 基减 1 定位，导致写第 14 行落到第 13 行。两侧统一为 0 基。
+- fix(CS103): 自定义 `FramingCodec` 承载下补发 `RawFrameReceived`（此前只有 FT1.2 分支上报，
+  自定义承载是抓包盲区）。
+- feat(CS103): `IIec103FramingCodec` 新增 `ControlFrameResponse` 事件，用于编解码器在切帧
+  过程中产生、需要立刻回送的原始帧（如对 STARTDT_ACT 回 STARTDT_CON）；服务端会话已接上
+  并串行化写回。
+- examples(103): 新增 `cs103-slave-xuji` 从站模拟器，覆盖 STARTDT、总召唤、调版本号、
+  一般命令、定值读写全部子命令、遥控、电度冻结与自发上送，用于配合许继测试客户端联调。
+- examples(103): `XujiApduFrame` 修正 S 帧识别（控制域首字节 0x01 是 S 帧而非 U 帧）；
+  `XujiApduCodec` 新增 `ControlFrameReceived` 事件暴露控制帧原始字节。
+
 Changes to version 7.0.0
 ------------------------
 - **BREAKING(CS103)**: ASDU 公共地址从 `byte` 拓宽到 `int`，公开 API 的 `ca` 参数同步改为 `int`。
