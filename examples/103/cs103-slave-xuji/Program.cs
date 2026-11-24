@@ -302,9 +302,11 @@ static byte HandleGeneralCommand(IIec103Session session, int ca, byte fun, byte 
     var dco = data[0];
     var rii = data[1];
 
-    // INF=101 且 FUN=178 视为切换定值区：DCO 低 4 位是目标区号
+    // 切换定值区：FUN=178 且 INF=100，DCO 低 4 位是目标区号。
+    // 实测主站发 INF=100（见 XUJI-103-OVER-104-INTEROP.md 3.6）；兼容早先按 101 实现的接法。
+    var isZoneSwitch = fun == 178 && inf is 100 or 101;
     var newZone = currentZone;
-    if (inf == 101 && fun == 178)
+    if (isZoneSwitch)
     {
         newZone = (byte)(dco & 0x0F);
     }
@@ -316,7 +318,7 @@ static byte HandleGeneralCommand(IIec103Session session, int ca, byte fun, byte 
 
     _ = session.SendRawAsduAsync(XujiCreate(TypeIds.TimeTaggedMessage, ca, fun, inf, payload, CotCodes.CommandAck));
 
-    Console.WriteLine(inf == 101 && fun == 178
+    Console.WriteLine(isZoneSwitch
         ? $"  → 切换定值区 {currentZone} → {newZone}"
         : $"  → 一般命令确认 INF={inf} DCO={dco:X2}");
 
