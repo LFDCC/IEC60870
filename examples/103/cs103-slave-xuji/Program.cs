@@ -94,19 +94,31 @@ server.RawFrameReceived += (s, raw) => Trace("RX", raw);
 server.RawFrameSent += (s, raw) => Trace("TX", raw);
 server.FrameRejected += (s, e) => Console.WriteLine($"[丢弃] {e.RawHex} 原因={e.Reason}");
 
-// 定值：CPU1 区0~区3 各 27 项
-var device = new SettingDevice(server, Ca, Fun);
+// 定值：一个从站下挂两台装置（两个 CA），各自独立的定值区
+var device = new SettingDevice(server, Fun);
+
+// 装置 A：CA=0x0101（装置地址 1、扇区 1），CPU1 区0~区3 各 27 项
 for (byte zone = 0; zone < 4; zone++)
 {
-    device.SetTable(1, zone, Enumerable.Range(0, 27)
+    device.SetTable(Ca, 1, zone, Enumerable.Range(0, 27)
         .Select(i => XujiSettingValue.Create(zone * 1000 + i * 10))
         .ToArray());
 }
+
+// 装置 B：CA=0x0201（装置地址 2、扇区 1），数据刻意与 A 不同，便于区分
+var caB = new XujiCa(sector: 1, device: 2).ToCommonAddress();
+for (byte zone = 0; zone < 2; zone++)
+{
+    device.SetTable(caB, 1, zone, Enumerable.Range(0, 10)
+        .Select(i => XujiSettingValue.Create(zone * 500 + i * 7))
+        .ToArray());
+}
+
 device.Attach();
 
 // 通用分类（TI=21 读 / TI=10 写）：测距、压板等非定值参数走这里
-var generic = new GenericDevice(server, Ca);
-generic.AddGroup(0x0E, "遥测", new GenericEntry[]
+var generic = new GenericDevice(server);
+generic.AddGroup(Ca, 0x0E, "遥测", new GenericEntry[]
 {
     new(0, "遥测值", GddTypes.UnsignedInt, 1, new byte[] { 5 }),
     new(1, "A相电流", GddTypes.UnsignedInt, 2, new byte[] { 0x64, 0x00 }),
@@ -116,13 +128,36 @@ generic.AddGroup(0x0E, "遥测", new GenericEntry[]
     new(5, "B相电压", GddTypes.UnsignedInt, 2, new byte[] { 0xF4, 0x01 }),
     new(6, "C相电压", GddTypes.UnsignedInt, 2, new byte[] { 0x58, 0x02 }),
 });
-generic.AddGroup(0x12, "软压板", new GenericEntry[]
+generic.AddGroup(Ca, 0x12, "软压板", new GenericEntry[]
 {
     new(1, "距离保护", GddTypes.DoublePoint, 1, new byte[] { 1 }),
     new(2, "零序保护", GddTypes.DoublePoint, 1, new byte[] { 1 }),
     new(3, "重合闸", GddTypes.DoublePoint, 1, new byte[] { 2 }),
 });
+
+// 装置 B 的通用分类：只有一个组，内容与 A 不同，用于验证按 CA 隔离
+generic.AddGroup(caB, 0x0E, "B装置遥测", new GenericEntry[]
+{
+    new(1, "B-A相电流", GddTypes.UnsignedInt, 2, new byte[] { 0x11, 0x11 }),
+});
 generic.Attach();
+
+// 故障录波（TI=24 命令 / TI=26 准备好 / TI=30 波形 / TI=31 结束）
+// 装置 A 提供两路模拟量，每路 50 点，采样间隔 1000μs
+var disturbance = new DisturbanceDevice(server);
+disturbance.SetRecord(Ca, new FaultRecord(
+    FaultNumber: 1,
+    PointsPerChannel: 50,
+    SampleIntervalUs: 1000,
+    StartTime: DateTime.Now.AddSeconds(-1),
+    Channels: new[]
+    {
+        new AnalogChannel(1, Enumerable.Range(0, 50)
+            .Select(i => (short)(Math.Sin(i * 0.3) * 1000)).ToArray()),      // A 相电流
+        new AnalogChannel(5, Enumerable.Range(0, 50)
+            .Select(i => (short)(Math.Cos(i * 0.3) * 5000)).ToArray()),      // A 相电压
+    }));
+disturbance.Attach();
 
 // 当前定值区（切换定值区命令会改它）
 byte currentZone = 0;
@@ -131,6 +166,20 @@ server.AsduReceived += (IIec103Session session, in Iec103AsduView asdu) =>
 {
     Console.WriteLine($"[RX] {asdu.Describe()}");
 
+    // 库会把回调异常隔离（交给 Logger），示例没配 Logger 就完全静默。
+    // 这里自己兜一层，让"处理失败"在控制台可见。
+    try
+    {
+        HandleAsdu(session, in asdu);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"  ✗ 处理异常: {ex.GetType().Name}: {ex.Message}");
+    }
+};
+
+void HandleAsdu(IIec103Session session, in Iec103AsduView asdu)
+{
     var ca = asdu.Ca;
     var fun = asdu.Fun;
     var inf = asdu.Inf;
@@ -143,13 +192,20 @@ server.AsduReceived += (IIec103Session session, in Iec103AsduView asdu) =>
             _ = Task.Run(() => GeneralInterrogationAsync(session, ca));
             break;
 
+        case TypeIds.ClockSync:
+            // 时间同步：更新本地时钟并回镜像帧（CP56 原样回显）
+            ApplyClockSync(data);
+            _ = session.SendRawAsduAsync(XujiCreate(TypeIds.ClockSync, ca, fun, inf,
+                data, CotCodes.ClockSync));
+            break;
+
         case XujiTypeIds.VersionRequest:
             ReplyVersion(session, ca, fun);
             break;
 
         case TypeIds.GeneralCommand:
             currentZone = HandleGeneralCommand(session, ca, fun, inf, data, currentZone);
-            device.SetCurrentZone(currentZone);
+            device.SetCurrentZone(ca, currentZone);
             break;
 
         case XujiTypeIds.FaultReportAck:
@@ -174,8 +230,12 @@ server.AsduReceived += (IIec103Session session, in Iec103AsduView asdu) =>
         case XujiTypeIds.FaultReport:
             // 这些是装置主动上送的，收到即忽略
             break;
+
+        case TypeIds.DisturbanceCommand:
+            // 扰动数据命令（录波召唤）由 DisturbanceDevice 统一处理，这里不重复
+            break;
     }
-};
+}
 
 await server.StartAsync(port);
 Console.WriteLine($"许继从站已监听 {port}（CA=0x{Ca:X4}, FUN={Fun}）");
@@ -189,6 +249,18 @@ await Task.Delay(Timeout.Infinite);
 
 static byte[] XujiCreate(byte typeId, int ca, byte fun, byte inf, byte[] data, byte cot, bool negative = false)
     => new Asdu(typeId, true, 1, cot, negative, ca, fun, inf, data, XujiApduLayout.Instance).Encode();
+
+/// <summary>应用时间同步：从 CP56Time2a 解出时刻并记录（真实装置会写 RTC）。</summary>
+static void ApplyClockSync(byte[] data)
+{
+    if (data.Length < 7)
+    {
+        return;
+    }
+
+    var time = Cp56Time2a.Decode(data.AsSpan(0, 7));
+    Console.WriteLine($"  → 时间同步 {time:yyyy-MM-dd HH:mm:ss.fff}（已回镜像帧）");
+}
 
 /// <summary>总召唤：遥信 + 遥测各 5 条（COT=9），末帧 TI=8（COT=10）。</summary>
 static async Task GeneralInterrogationAsync(IIec103Session session, int ca)
@@ -276,7 +348,6 @@ static void ReplyEnergyFreeze(IIec103Session session, int ca, byte fun, byte inf
 }
 
 // ── 自发上送 ──────────────────────────────────────────────────────
-
 async Task SpontaneousLoopAsync(IIec103Session session)
 {
     var seq = 0;

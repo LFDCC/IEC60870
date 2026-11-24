@@ -238,6 +238,341 @@ async Task RunAsync()
         var (count, _) = NgdCodes.Decode(r.Data[1]);
         return (true, $"NGD={count} COT={r.Cot}" + (count == 0 ? "（组未定义，空应答）" : ""));
     });
+
+    // ── 私有 INF（工具实测用到，规约正文未定义）──────────────────
+    // 信息体结构与 INF=0 完全相同，只是 INF 字节不同；应答必须回显该 INF。
+
+    await Step("通用分类 - 读所有组标题 (TI=21 INF=240)", async () =>
+    {
+        // 工具实测帧：15 81 2A 00 01 01 FE F0 | 00 00
+        await client.SendAsduAsync(new Asdu(
+            TypeIds.GenericCommand, true, 1, CotCodes.GenericRead, false,
+            ca, Asdu.GenericFun, 240,
+            new byte[] { 0x00, 0x00 },
+            XujiApduLayout.Instance));
+
+        var r = await ExpectAsync(TypeIds.GenericData, 3000);
+        if (r is null) return (false, "未收到应答");
+        if (r.Inf != 240) return (false, $"INF 未回显：期望 240，实际 {r.Inf}");
+
+        var (count, _) = NgdCodes.Decode(r.Data[1]);
+        return (count > 0, $"NGD={count} COT={r.Cot} INF={r.Inf}");
+    });
+
+    await Step("通用分类 - 读所有组标题 (TI=21 INF=245)", async () =>
+    {
+        // 工具实测帧：15 81 2A 00 01 01 FE F5 | 01 00
+        await client.SendAsduAsync(new Asdu(
+            TypeIds.GenericCommand, true, 1, CotCodes.GenericRead, false,
+            ca, Asdu.GenericFun, 245,
+            new byte[] { 0x01, 0x00 },
+            XujiApduLayout.Instance));
+
+        var r = await ExpectAsync(TypeIds.GenericData, 3000);
+        if (r is null) return (false, "未收到应答");
+        if (r.Inf != 245) return (false, $"INF 未回显：期望 245，实际 {r.Inf}");
+
+        var (count, _) = NgdCodes.Decode(r.Data[1]);
+        return (count > 0, $"NGD={count} COT={r.Cot} INF={r.Inf}");
+    });
+
+    await Step("通用分类 - 读组条目 (TI=21 INF=241)", async () =>
+    {
+        // 工具实测帧：15 81 2A 00 01 01 FE F1 | 01 01 0E 00 0A
+        await client.SendAsduAsync(new Asdu(
+            TypeIds.GenericCommand, true, 1, CotCodes.GenericRead, false,
+            ca, Asdu.GenericFun, 241,
+            new byte[] { 0x01, 0x01, 0x0E, 0x00, KodCodes.Description },
+            XujiApduLayout.Instance));
+
+        var r = await ExpectAsync(TypeIds.GenericData, 3000);
+        if (r is null) return (false, "未收到应答");
+        if (r.Inf != 241) return (false, $"INF 未回显：期望 241，实际 {r.Inf}");
+
+        var (count, _) = NgdCodes.Decode(r.Data[1]);
+        var ok = r.Cot == CotCodes.GenericRead && count > 0;
+        return (ok, $"NGD={count} COT={r.Cot} INF={r.Inf}");
+    });
+
+    await Step("通用分类 - 读条目属性 (TI=21 INF=244)", async () =>
+    {
+        // 工具实测帧：15 81 2A 00 01 01 FE F4 | 01 01 03 01 01
+        // 组 3 未定义 → 应回 COT=43（读响应无效），且 INF 回显 244
+        await client.SendAsduAsync(new Asdu(
+            TypeIds.GenericCommand, true, 1, CotCodes.GenericRead, false,
+            ca, Asdu.GenericFun, 244,
+            new byte[] { 0x01, 0x01, 0x03, 0x01, KodCodes.ActualValue },
+            XujiApduLayout.Instance));
+
+        var r = await ExpectAsync(TypeIds.GenericData, 3000);
+        if (r is null) return (false, "未收到应答");
+        if (r.Inf != 244) return (false, $"INF 未回显：期望 244，实际 {r.Inf}");
+
+        return (r.Cot == CotCodes.GenericReadInvalid,
+            $"COT={r.Cot}（43=读无效，组未定义时正确）INF={r.Inf}");
+    });
+
+    // ── TI=10 写条目三步（INF=249 预发 / 250 执行 / 251 中止）────────
+
+    await Step("通用分类写 - 预发+执行 (INF=249→250)", async () =>
+    {
+        const byte grp = 0x12, entry = 2;
+
+        // 249 预发：把 0x12.02 改为 2（合）
+        await client.SendAsduAsync(new Asdu(
+            TypeIds.GenericData, true, 1, CotCodes.GenericWrite, false,
+            ca, Asdu.GenericFun, 249,
+            WriteBody(rii: 0x00, grp, entry, value: new byte[] { 0x02 }),
+            XujiApduLayout.Instance));
+
+        var ack1 = await ExpectAsync(TypeIds.GenericData, 3000);
+        if (ack1 is null) return (false, "预发未收到确认");
+        if (ack1.Inf != 249) return (false, $"预发确认 INF 未回显：{ack1.Inf}");
+
+        // 250 执行
+        await client.SendAsduAsync(new Asdu(
+            TypeIds.GenericData, true, 1, CotCodes.GenericWrite, false,
+            ca, Asdu.GenericFun, 250,
+            new byte[] { 0x00, 0x01, grp, entry, 0x01, GddTypes.DoublePoint, 0x01, 0x01, 0x02 },
+            XujiApduLayout.Instance));
+
+        var ack2 = await ExpectAsync(TypeIds.GenericData, 3000);
+        if (ack2 is null) return (false, "执行未收到确认");
+        if (ack2.Inf != 250) return (false, $"执行确认 INF 未回显：{ack2.Inf}");
+
+        // 回读验证
+        await client.SendAsduAsync(new Asdu(
+            TypeIds.GenericCommand, true, 1, CotCodes.GenericRead, false,
+            ca, Asdu.GenericFun, 0,
+            new byte[] { 0x03, 0x01, grp, entry, KodCodes.ActualValue },
+            XujiApduLayout.Instance));
+
+        var rd = await ExpectAsync(TypeIds.GenericData, 3000);
+        if (rd is null) return (false, "回读未收到应答");
+
+        // Data = RII(1) + NGD(1) + GIN(2) + KOD(1) + GDD(3) + GID(n)
+        // GID 从下标 8 开始
+        var gid = rd.Data.Length >= 9 ? rd.Data[8] : (byte)0xFF;
+        return (gid == 2, $"回读 0x12.{entry} = {gid}（期望 2）");
+    });
+
+    await Step("通用分类写 - 中止 (INF=251)", async () =>
+    {
+        // 251 中止：不带数据集，NGD=0
+        await client.SendAsduAsync(new Asdu(
+            TypeIds.GenericData, true, 1, CotCodes.GenericWrite, false,
+            ca, Asdu.GenericFun, 251,
+            new byte[] { 0x00, 0x00 },
+            XujiApduLayout.Instance));
+
+        var r = await ExpectAsync(TypeIds.GenericData, 3000);
+        if (r is null) return (false, "中止未收到确认");
+        if (r.Inf != 251) return (false, $"INF 未回显：期望 251，实际 {r.Inf}");
+
+        return (r.Cot == CotCodes.GenericWrite, $"COT={r.Cot} INF={r.Inf}");
+    });
+
+    // ── 多装置/多扇区：同一从站下挂两个 CA ──────────────────────────
+
+    await Step("多装置 - 装置A(CA=0x0101) 调定值", async () =>
+    {
+        var settings = new SettingClient(client, ca, Fun);
+        var values = await settings.ReadAsync(cpu: 1, zone: 0, timeoutMs: 5000);
+        if (values.Length == 0) return (false, "未读到定值");
+
+        // 装置 A 的区 0 是 i*10；装置 B 是 i*7，用第 2 项区分
+        var v1 = values.Length > 1 ? values[1].Raw : -1;
+        return (v1 == 10, $"读到 {values.Length} 项，第2项={v1}（期望 10 = 装置A）");
+    });
+
+    await Step("多装置 - 装置B(CA=0x0201) 调定值", async () =>
+    {
+        var caB = new XujiCa(sector: 1, device: 2).ToCommonAddress();
+        var settingsB = new SettingClient(client, caB, Fun);
+        var values = await settingsB.ReadAsync(cpu: 1, zone: 0, timeoutMs: 5000);
+        if (values.Length == 0) return (false, "未读到定值");
+
+        var v1 = values.Length > 1 ? values[1].Raw : -1;
+        var ok = values.Length == 10 && v1 == 7;
+        return (ok, $"读到 {values.Length} 项，第2项={v1}（期望 10 项、第2项=7 = 装置B）");
+    });
+
+    await Step("多装置 - 两装置数据互不干扰", async () =>
+    {
+        // 写装置 B 第 1 项，装置 A 不应变化
+        var caB = new XujiCa(sector: 1, device: 2).ToCommonAddress();
+        var settingsA = new SettingClient(client, ca, Fun);
+        var settingsB = new SettingClient(client, caB, Fun);
+
+        var beforeA = await settingsA.ReadAsync(cpu: 1, zone: 0, timeoutMs: 5000);
+        await settingsB.WriteSingleAsync(cpu: 1, zone: 0, index: 0,
+            XujiSettingValue.Create(7777));
+        var afterA = await settingsA.ReadAsync(cpu: 1, zone: 0, timeoutMs: 5000);
+        var afterB = await settingsB.ReadAsync(cpu: 1, zone: 0, timeoutMs: 5000);
+
+        var aUnchanged = beforeA[0].Raw == afterA[0].Raw;
+        var bChanged = afterB[0].Raw == 7777;
+        return (aUnchanged && bChanged,
+            $"装置A首项 {beforeA[0].Raw}→{afterA[0].Raw}（应不变），装置B首项→{afterB[0].Raw}（应为 7777）");
+    });
+
+    await Step("多装置 - 装置B 定值区不存在回否定", async () =>
+    {
+        var caB = new XujiCa(sector: 1, device: 2).ToCommonAddress();
+        var settingsB = new SettingClient(client, caB, Fun);
+
+        try
+        {
+            await settingsB.ReadAsync(cpu: 1, zone: 3, timeoutMs: 2000);
+            return (false, "装置B 不存在的区 3 竟然读成功了");
+        }
+        catch (InvalidOperationException)
+        {
+            return (true, "正确回否定（COT=21），装置B 只有区 0~1");
+        }
+    });
+
+    await Step("多装置 - 通用分类按 CA 隔离", async () =>
+    {
+        var caB = new XujiCa(sector: 1, device: 2).ToCommonAddress();
+
+        // 读装置 A 的组 0x0E 条目数（7 条 + 标题）
+        await client.SendAsduAsync(new Asdu(
+            TypeIds.GenericCommand, true, 1, CotCodes.GenericRead, false,
+            ca, Asdu.GenericFun, 0,
+            new byte[] { 0x01, 0x01, 0x0E, 0x00, KodCodes.ActualValue },
+            XujiApduLayout.Instance));
+        var a = await ExpectAsync(TypeIds.GenericData, 3000, ca);
+        if (a is null) return (false, "装置A 未应答");
+
+        // 读装置 B 的组 0x0E 条目数（只有 1 条）
+        await client.SendAsduAsync(new Asdu(
+            TypeIds.GenericCommand, true, 1, CotCodes.GenericRead, false,
+            caB, Asdu.GenericFun, 0,
+            new byte[] { 0x02, 0x01, 0x0E, 0x00, KodCodes.ActualValue },
+            XujiApduLayout.Instance));
+        var b = await ExpectAsync(TypeIds.GenericData, 3000, caB);
+        if (b is null) return (false, "装置B 未应答");
+
+        var (na, _) = NgdCodes.Decode(a.Data[1]);
+        var (nb, _) = NgdCodes.Decode(b.Data[1]);
+        return (na != nb && nb == 1,
+            $"装置A 组0x0E NGD={na}，装置B NGD={nb}（应不同，B 只有 1 条）");
+    });
+
+    // ── 故障录波完整流程（TI=24/26/30/31）──────────────────────────
+
+    await Step("录波 - 选择故障 (TI=24 TOO=1 → TI=26)", async () =>
+    {
+        await client.SendAsduAsync(new Asdu(
+            TypeIds.DisturbanceCommand, true, 1, CotCodes.DisturbanceTransfer, false,
+            ca, 255, 0, new byte[] { 1, 1, 0x00, 0x00, 0x00 },
+            XujiApduLayout.Instance));
+
+        var r = await ExpectAsync(TypeIds.DisturbanceReady, 3000, ca);
+        if (r is null) return (false, "未收到 TI=26 数据准备好");
+
+        // 未用(1) TOV(1) FAN(2) NOF(2) NOC(1) NOE(2) INT(2) 时标(4)
+        var noc = r.Data[6];
+        var noe = r.Data[7] | (r.Data[8] << 8);
+        var intv = r.Data[9] | (r.Data[10] << 8);
+        var ok = noc == 2 && noe == 50 && intv == 1000;
+        return (ok, $"NOC={noc} 路 NOE={noe} 点 INT={intv}μs（期望 2/50/1000）");
+    });
+
+    await Step("录波 - 请求 A 相电流通道 (TOO=8 → TI=30/31)", async () =>
+    {
+        // 先选择故障，再请求通道 1
+        await client.SendAsduAsync(new Asdu(
+            TypeIds.DisturbanceCommand, true, 1, CotCodes.DisturbanceTransfer, false,
+            ca, 255, 0, new byte[] { 1, 1, 0x00, 0x00, 0x00 },
+            XujiApduLayout.Instance));
+        _ = await ExpectAsync(TypeIds.DisturbanceReady, 3000, ca);
+
+        await client.SendAsduAsync(new Asdu(
+            TypeIds.DisturbanceCommand, true, 1, CotCodes.DisturbanceTransfer, false,
+            ca, 255, 0, new byte[] { 8, 1, 0x00, 0x00, 0x01 },
+            XujiApduLayout.Instance));
+
+        var frames = await CollectUntilAsync(TypeIds.ChannelEnd, 4000);
+        var dataFrames = frames.Count(a => a.TypeId == TypeIds.ChannelData);
+        var hasEnd = frames.Any(a => a.TypeId == TypeIds.ChannelEnd);
+
+        // 累计采样点数
+        var totalPoints = 0;
+        var firstValue = (short)0;
+        var seen = false;
+        foreach (var f in frames.Where(a => a.TypeId == TypeIds.ChannelData))
+        {
+            var ndv = f.Data[6];
+            totalPoints += ndv;
+            if (!seen && ndv > 0)
+            {
+                firstValue = (short)(f.Data[9] | (f.Data[10] << 8));
+                seen = true;
+            }
+        }
+
+        // 50 点 / 每帧 25 点 = 2 帧
+        var ok = dataFrames == 2 && totalPoints == 50 && hasEnd;
+        return (ok, $"{dataFrames} 数据帧、共 {totalPoints} 点、结束帧 {(hasEnd ? "有" : "无")}" +
+                    (seen ? $"、首点={firstValue}" : ""));
+    });
+
+    await Step("录波 - 请求 A 相电压通道 (TOO=8 ACC=5)", async () =>
+    {
+        await client.SendAsduAsync(new Asdu(
+            TypeIds.DisturbanceCommand, true, 1, CotCodes.DisturbanceTransfer, false,
+            ca, 255, 0, new byte[] { 1, 1, 0x00, 0x00, 0x00 },
+            XujiApduLayout.Instance));
+        _ = await ExpectAsync(TypeIds.DisturbanceReady, 3000, ca);
+
+        await client.SendAsduAsync(new Asdu(
+            TypeIds.DisturbanceCommand, true, 1, CotCodes.DisturbanceTransfer, false,
+            ca, 255, 0, new byte[] { 8, 1, 0x00, 0x00, 0x05 },
+            XujiApduLayout.Instance));
+
+        var frames = await CollectUntilAsync(TypeIds.ChannelEnd, 4000);
+        var totalPoints = frames.Where(a => a.TypeId == TypeIds.ChannelData)
+                                .Sum(f => (int)f.Data[6]);
+
+        return (totalPoints == 50, $"ACC=5 通道共 {totalPoints} 点（期望 50）");
+    });
+
+    await Step("录波 - 不存在的通道回结束帧", async () =>
+    {
+        await client.SendAsduAsync(new Asdu(
+            TypeIds.DisturbanceCommand, true, 1, CotCodes.DisturbanceTransfer, false,
+            ca, 255, 0, new byte[] { 1, 1, 0x00, 0x00, 0x00 },
+            XujiApduLayout.Instance));
+        _ = await ExpectAsync(TypeIds.DisturbanceReady, 3000, ca);
+
+        // ACC=9 不存在
+        await client.SendAsduAsync(new Asdu(
+            TypeIds.DisturbanceCommand, true, 1, CotCodes.DisturbanceTransfer, false,
+            ca, 255, 0, new byte[] { 8, 1, 0x00, 0x00, 0x09 },
+            XujiApduLayout.Instance));
+
+        var r = await ExpectAsync(TypeIds.ChannelEnd, 3000, ca);
+        if (r is null) return (false, "未收到结束帧");
+        return (r.Data[0] == 35, $"正确回本路结束 TOO={r.Data[0]}（35=本路模拟量发送结束）");
+    });
+}
+
+/// <summary>构造 TI=10 写条目信息体：RII + NGD=1 + GIN(2) KOD(1) GDD(3) GID(n)。</summary>
+static byte[] WriteBody(byte rii, byte grp, byte entry, byte[] value)
+{
+    var body = new byte[2 + 6 + value.Length];
+    body[0] = rii;
+    body[1] = NgdCodes.Encode(1, false);
+    body[2] = grp;
+    body[3] = entry;
+    body[4] = KodCodes.ActualValue;
+    body[5] = GddTypes.DoublePoint;
+    body[6] = 1;
+    body[7] = 1;
+    value.CopyTo(body, 8);
+    return body;
 }
 
 // ── 辅助 ──────────────────────────────────────────────────────────
@@ -260,7 +595,7 @@ async Task Step(string name, Func<Task<(bool Ok, string Detail)>> action)
     }
 }
 
-async Task<Asdu?> ExpectAsync(byte typeId, int timeoutMs)
+async Task<Asdu?> ExpectAsync(byte typeId, int timeoutMs, int? expectCa = null)
 {
     var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
     while (DateTime.UtcNow < deadline)
@@ -269,7 +604,9 @@ async Task<Asdu?> ExpectAsync(byte typeId, int timeoutMs)
         try
         {
             var v = await inbox.Reader.ReadAsync(cts.Token);
-            if (v.TypeId == typeId) return v;
+            if (v.TypeId != typeId) continue;
+            if (expectCa is int want && v.Ca != want) continue;
+            return v;
         }
         catch (OperationCanceledException) { break; }
     }

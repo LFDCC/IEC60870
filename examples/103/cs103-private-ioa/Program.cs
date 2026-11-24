@@ -193,8 +193,8 @@ async Task RunLoopbackAsync(int tcpPort, bool apduFraming)
 
     // 装置侧：模拟「CPU 板 1 / 定值区 0」的参数区。
     // 每项定值 3 字节 = 原始值 2B + 比例系数/性质位 1B，这里全部用「系数 ×1、性质=数据」。
-    var device = new SettingDevice(server, ca, Fun);
-    device.SetTable(cpu: 1, zone: 0, new[]
+    var device = new SettingDevice(server, Fun);
+    device.SetTable(ca, cpu: 1, zone: 0, new[]
     {
         XujiSettingValue.Create(100),
         XujiSettingValue.Create(200),

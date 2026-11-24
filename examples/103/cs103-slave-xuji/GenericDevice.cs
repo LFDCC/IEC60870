@@ -4,6 +4,10 @@
 //   请求 TI=21：RII(1) + NOG(1) + [GIN(2) KOD(1)] × NOG
 //   应答 TI=10：RII(1) + NGD(1) + [GIN(2) KOD(1) GDD(3) GID(n)] × NGD
 //
+// INF 说明：规约正文明文只定义了 INF=0（FUN=254 通用分类），但许继工具实际还会发
+// 私有 INF=240/241/244/245 读、INF=249/250/251 写。实测这些帧的信息体结构与
+// INF=0 完全相同，只是 INF 字节不同，因此按 INF 原样回显即可（不按 INF 分支解析）。
+//
 // 从站只在内存里维护一张 (组号 → 组标题 + 条目表)，真实装置换成自己的参数区。
 
 using IEC60870.CS103;
@@ -13,24 +17,60 @@ namespace cs103_private_ioa.Xuji;
 /// <summary>通用分类从站：应答读目录、读组描述、读条目值、写条目。</summary>
 public sealed class GenericDevice
 {
-    private readonly Iec103Server _server;
-    private readonly int _ca;
+    /// <summary>INF=240：读所有被定义的组的标题（私有）。</summary>
+    public const byte ReadAllTitles = 240;
 
-    /// <summary>组号 → (组标题, 条目表)。</summary>
-    private readonly Dictionary<byte, GenericGroup> _groups = new();
+    /// <summary>INF=241：读一个组的全部条目（私有）。</summary>
+    public const byte ReadGroupEntries = 241;
+
+    /// <summary>INF=244：读条目的属性（私有）。</summary>
+    public const byte ReadEntryAttribute = 244;
+
+    /// <summary>INF=245：读所有组的标题（私有，与 240 同义）。</summary>
+    public const byte ReadAllTitlesAlt = 245;
+
+    /// <summary>INF=249：带确认的写条目（预发/返校）。</summary>
+    public const byte WriteWithAck = 249;
+
+    /// <summary>INF=250：带执行的写条目。</summary>
+    public const byte WriteExecute = 250;
+
+    /// <summary>INF=251：带中止的写条目。</summary>
+    public const byte WriteAbort = 251;
+
+    private readonly Iec103Server _server;
+
+    /// <summary>CA → 该装置的组表（组号 → 组标题 + 条目）。</summary>
+    private readonly Dictionary<int, Dictionary<byte, GenericGroup>> _devices = new();
+
+    /// <summary>CA → 预发但未执行的写（INF=249 暂存，等待 INF=250 执行 / 251 中止）。</summary>
+    private readonly Dictionary<int, (Gin Gin, byte Kod, byte[] Gid)> _pending = new();
 
     /// <summary>构造通用分类从站。</summary>
     /// <param name="server">已构建的 103 从站。</param>
-    /// <param name="ca">公共地址（2 字节承载下含扇区与装置地址）。</param>
-    public GenericDevice(Iec103Server server, int ca)
+    public GenericDevice(Iec103Server server)
     {
         _server = server;
-        _ca = ca;
     }
 
-    /// <summary>登记一个组及其条目。</summary>
-    public void AddGroup(byte group, string title, IReadOnlyList<GenericEntry> entries)
-        => _groups[group] = new GenericGroup(title, entries);
+    /// <summary>登记某装置的一个通用分类组及其条目。</summary>
+    /// <param name="ca">公共地址（装置地址 &lt;&lt; 8 | 扇区）。</param>
+    public void AddGroup(int ca, byte group, string title, IReadOnlyList<GenericEntry> entries)
+    {
+        if (!_devices.TryGetValue(ca, out var groups))
+        {
+            groups = new Dictionary<byte, GenericGroup>();
+            _devices[ca] = groups;
+        }
+
+        groups[group] = new GenericGroup(title, entries);
+    }
+
+    /// <summary>取某 CA 的组表；未登记时返回空表。</summary>
+    private Dictionary<byte, GenericGroup> GroupsOf(int ca)
+        => _devices.TryGetValue(ca, out var g) ? g : Empty;
+
+    private static readonly Dictionary<byte, GenericGroup> Empty = new();
 
     /// <summary>挂接到从站的 ASDU 回调上。</summary>
     public void Attach() => _server.AsduReceived += OnAsdu;
@@ -63,17 +103,22 @@ public sealed class GenericDevice
             return;
         }
 
+        // 应答原样回显请求的 CA 与 INF（INF 有标准 0 和私有 240/241/244/245）
+        var ca = asdu.Ca;
+        var inf = asdu.Inf;
+
         var rii = data[0];
         var nog = data[1];
-        if (data.Length < 2 + nog * 3)
+
+        // NOG=0 或 GIN=0000 → 读全目录，只回各组标题（3.7.1）
+        if (nog == 0)
         {
+            ReplyAllTitles(session, ca, inf, rii);
             return;
         }
 
-        // GIN 0000 视为读全目录（3.7.1），否则按请求的组逐条应答
-        if (nog == 0)
+        if (data.Length < 2 + nog * 3)
         {
-            ReplyAllTitles(session, rii);
             return;
         }
 
@@ -86,42 +131,40 @@ public sealed class GenericDevice
 
             if (gin.Group == 0 && gin.Entry == 0)
             {
-                // 读全目录：只回各组标题（3.7.1）
-                ReplyAllTitles(session, rii);
+                ReplyAllTitles(session, ca, inf, rii);
                 return;
             }
 
-            AppendGroupEntries(sets, gin, kod);
+            AppendGroupEntries(sets, ca, gin, kod);
         }
 
         if (sets.Count == 0)
         {
-            // 没有任何可用条目 → COT=43 读响应（无效）
-            session.SendAsduAsync(Asdu.GenericDataAsdu(
-                _ca, rii, continuation: false, CotCodes.GenericReadInvalid,
+            // 组未定义 → COT=43 读响应（无效）
+            session.SendAsduAsync(BuildData(ca, inf, rii, continuation: false, CotCodes.GenericReadInvalid,
                 Array.Empty<GenericDataSet>()));
             return;
         }
 
-        SendSets(session, rii, sets);
+        SendSets(session, ca, inf, rii, sets);
     }
 
     /// <summary>3.7.1 读全目录：每个已定义的组回一条 GIN(组,0) KOD=描述。</summary>
-    private void ReplyAllTitles(IIec103Session session, byte rii)
+    private void ReplyAllTitles(IIec103Session session, int ca, byte inf, byte rii)
     {
         var sets = new List<GenericDataSet>();
-        foreach (var (group, info) in _groups.OrderBy(g => g.Key))
+        foreach (var (group, info) in GroupsOf(ca).OrderBy(g => g.Key))
         {
             sets.Add(GenericDataSet.Ascii(new Gin(group, 0), KodCodes.Description, info.Title));
         }
 
-        SendSets(session, rii, sets);
+        SendSets(session, ca, inf, rii, sets);
     }
 
     /// <summary>把某个组（或单条）的条目追加到待发集合。</summary>
-    private void AppendGroupEntries(List<GenericDataSet> sets, Gin gin, byte kod)
+    private void AppendGroupEntries(List<GenericDataSet> sets, int ca, Gin gin, byte kod)
     {
-        if (!_groups.TryGetValue(gin.Group, out var info))
+        if (!GroupsOf(ca).TryGetValue(gin.Group, out var info))
         {
             return;
         }
@@ -165,6 +208,11 @@ public sealed class GenericDevice
 
     // ── TI=10 数据（主站写）──────────────────────────────────────────
 
+    /// <summary>
+    /// 写条目三步（规约 3.7.6~3.7.8）：
+    /// INF=249 预发（暂存 + 回显），INF=250 执行（落盘 + 确认），INF=251 中止（丢弃）。
+    /// 无 INF（=0）时按单步写处理，直接落盘并确认。
+    /// </summary>
     private void HandleWrite(IIec103Session session, in Iec103AsduView asdu)
     {
         var data = asdu.Data;
@@ -173,16 +221,24 @@ public sealed class GenericDevice
             return;
         }
 
+        var ca = asdu.Ca;
+        var inf = asdu.Inf;
         var rii = data[0];
-        var (count, _) = NgdCodes.Decode(data[1]);
-        if (count == 0)
+
+        // 中止：不带数据集，直接清暂存并回确认
+        if (inf == WriteAbort)
         {
+            _pending.Remove(ca);
+            session.SendAsduAsync(GenericAck(ca, inf, rii, Gin.Zero, KodCodes.ActualValue,
+                GrcCodes.Acknowledge, negative: false));
             return;
         }
 
+        var (count, _) = NgdCodes.Decode(data[1]);
         var offset = 2;
-        var gin = Gin.Zero;
-        var kod = KodCodes.ActualValue;
+        var lastGin = Gin.Zero;
+        var lastKod = KodCodes.ActualValue;
+        byte[]? lastGid = null;
 
         for (var i = 0; i < count; i++)
         {
@@ -191,40 +247,115 @@ public sealed class GenericDevice
                 return;
             }
 
-            gin = set.Gin;
-            kod = set.Kod;
-            ApplyWrite(set);
+            lastGin = set.Gin;
+            lastKod = set.Kod;
+            lastGid = set.Gid;
             offset += consumed;
         }
 
-        // 写确认回同一条目、COT=40（3.7.6/3.7.7 响应）
-        session.SendAsduAsync(Asdu.GenericWriteAck(_ca, rii, gin, kod, GrcCodes.Acknowledge, negative: false));
-    }
-
-    /// <summary>写入落地：把值存进条目表。</summary>
-    private void ApplyWrite(GenericDataSet set)
-    {
-        if (!_groups.TryGetValue(set.Gin.Group, out var info))
+        // INF=249 预发：暂存，等 250 执行；不落盘
+        if (inf == WriteWithAck)
         {
+            _pending[ca] = (lastGin, lastKod, lastGid ?? Array.Empty<byte>());
+            session.SendAsduAsync(GenericAck(ca, inf, rii, lastGin, lastKod,
+                GrcCodes.Acknowledge, negative: false));
             return;
         }
 
-        var index = info.Entries.FindIndex(e => e.Entry == set.Gin.Entry);
-        if (index >= 0)
+        // INF=250 执行：把暂存值落盘；无暂存时按单步写落盘当前帧
+        var hasPending = _pending.TryGetValue(ca, out var pending);
+        var targetGin = hasPending ? pending.Gin : lastGin;
+        var targetKod = hasPending ? pending.Kod : lastKod;
+        var targetGid = hasPending ? pending.Gid : (lastGid ?? Array.Empty<byte>());
+
+        var ok = ApplyWrite(ca, targetGin, targetKod, targetGid);
+        _pending.Remove(ca);
+
+        session.SendAsduAsync(GenericAck(ca, inf, rii, targetGin, targetKod,
+            GrcCodes.Acknowledge, negative: !ok));
+    }
+
+    /// <summary>写入落地。</summary>
+    private bool ApplyWrite(int ca, Gin gin, byte kod, byte[] gid)
+    {
+        if (kod != KodCodes.ActualValue || !GroupsOf(ca).TryGetValue(gin.Group, out var info))
         {
-            info.Entries[index] = info.Entries[index] with { Gid = set.Gid };
+            return false;
         }
+
+        var index = info.Entries.FindIndex(e => e.Entry == gin.Entry);
+        if (index < 0)
+        {
+            return false;
+        }
+
+        info.Entries[index] = info.Entries[index] with { Gid = gid };
+        return true;
+    }
+
+    /// <summary>构造写确认（TI=10，COT=40/41，带 GRC 回复码，INF 原样回显）。</summary>
+    private static Asdu GenericAck(
+        int ca, byte inf, byte rii, Gin gin, byte kod, byte grc, bool negative)
+    {
+        var set = GenericDataSet.ReplyCode(gin, kod, grc);
+        var data = new byte[2 + set.EncodedSize];
+        data[0] = rii;
+        data[1] = NgdCodes.Encode(1, false);
+        set.Encode().CopyTo(data, 2);
+
+        return new Asdu(
+            TypeIds.GenericData,
+            Sq: true,
+            Count: 1,
+            Cot: negative ? CotCodes.GenericWriteNegative : CotCodes.GenericWrite,
+            Negative: false,
+            Ca: ca,
+            Fun: Asdu.GenericFun,
+            Inf: inf,
+            Data: data);
+    }
+
+    /// <summary>构造 TI=10 数据帧（信息体 = RII + NGD + 数据集序列），INF 原样写入。</summary>
+    private static Asdu BuildData(
+        int ca, byte inf, byte rii, bool continuation, byte cot, IReadOnlyList<GenericDataSet> sets)
+    {
+        var total = 2;
+        foreach (var set in sets)
+        {
+            total += set.EncodedSize;
+        }
+
+        var data = new byte[total];
+        data[0] = rii;
+        data[1] = NgdCodes.Encode(sets.Count, continuation);
+        var offset = 2;
+        foreach (var set in sets)
+        {
+            set.Encode().CopyTo(data, offset);
+            offset += set.EncodedSize;
+        }
+
+        return new Asdu(
+            TypeIds.GenericData,
+            Sq: true,
+            Count: 1,
+            Cot: cot,
+            Negative: false,
+            Ca: ca,
+            Fun: Asdu.GenericFun,
+            Inf: inf,
+            Data: data);
     }
 
     // ── 分帧发送 ────────────────────────────────────────────────────
 
     /// <summary>按 ASDU 上限分帧发送；非末帧置 NGD 后续标志。</summary>
-    private void SendSets(IIec103Session session, byte rii, List<GenericDataSet> sets)
+    private void SendSets(IIec103Session session, int ca, byte inf, byte rii, List<GenericDataSet> sets)
     {
         if (sets.Count == 0)
         {
-            session.SendAsduAsync(Asdu.GenericDataAsdu(
-                _ca, rii, continuation: false, CotCodes.GenericRead, Array.Empty<GenericDataSet>()));
+            session.SendAsduAsync(BuildData(ca, inf, rii, continuation: false, CotCodes.GenericRead,
+                Array.Empty<GenericDataSet>()));
             return;
         }
 
@@ -250,7 +381,7 @@ public sealed class GenericDevice
             }
 
             var more = offset < sets.Count;
-            session.SendAsduAsync(Asdu.GenericDataAsdu(_ca, rii, more, CotCodes.GenericRead, chunk));
+            session.SendAsduAsync(BuildData(ca, inf, rii, more, CotCodes.GenericRead, chunk));
         }
     }
 }
