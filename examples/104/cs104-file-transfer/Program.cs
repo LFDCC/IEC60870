@@ -30,10 +30,24 @@ var port = args.Length > 0 && int.TryParse(args[0], out var p) ? p : 2410;
 // 单帧段数据上限：ASDU 249 - 头(6) - IO 固定头(IOA3+NOF2+段号1+段长1) = 236，留余量取 200
 const int SegmentDataSize = 200;
 
-// ── 构造一条模拟录波文件 ──────────────────────────────────────────
-// 文件按段切分：每段 1 帧（受 ASDU 长度限制，单帧数据约 200 字节以内）
-var recordFile = BuildDisturbanceFile();
-Console.WriteLine($"录波文件: {recordFile.Length} 字节，分 {Ceil(recordFile.Length, SegmentDataSize)} 段");
+// ── 构造一条模拟录波文件（COMTRADE 格式）──────────────────────────
+// COMTRADE 由 .cfg（通道定义，文本）+ .dat（采样数据，CSV）两个文件组成。
+// 104 文件传输一次只传一个流，因此把两个文件打包成一个传输包：
+//   [4B "CTP1"][4B cfg 长度 LE][cfg 字节][dat 字节]
+// 主站收到后按此结构拆回 .cfg / .dat 两个文件。
+var recordFile = BuildComtradePackage(out var cfgText, out var datText);
+var cfgBytes = Encoding.ASCII.GetBytes(cfgText);
+var datBytes = Encoding.ASCII.GetBytes(datText);
+
+Console.WriteLine($"COMTRADE 录波: cfg {cfgBytes.Length} B + dat {datBytes.Length} B " +
+                  $"= 打包 {recordFile.Length} B，分 {Ceil(recordFile.Length, SegmentDataSize)} 段");
+
+// 从站侧源文件落盘，便于与主站收到的文件直接对比
+var sourceDir = Path.Combine(Directory.GetCurrentDirectory(), "output");
+Directory.CreateDirectory(sourceDir);
+await File.WriteAllTextAsync(Path.Combine(sourceDir, "source.cfg"), cfgText, Encoding.ASCII);
+await File.WriteAllTextAsync(Path.Combine(sourceDir, "source.dat"), datText, Encoding.ASCII);
+Console.WriteLine($"源文件已保存: {sourceDir}\\source.cfg + source.dat");
 
 using var server = new Iec104Server();
 
@@ -236,10 +250,30 @@ async Task RunMasterAsync(int tcpPort, byte[] expected)
     }
 
     Console.WriteLine($"文件接收完成: {data.Length} 字节");
+
+    // 拆包并落盘
+    if (!TryUnpackComtrade(data, out var rxCfg, out var rxDat))
+    {
+        Console.WriteLine("✘ 收到的数据不是有效的 COMTRADE 传输包（包头/长度不匹配）");
+        return;
+    }
+
+    var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+    var cfgFile = Path.Combine(sourceDir, $"received-{stamp}.cfg");
+    var datFile = Path.Combine(sourceDir, $"received-{stamp}.dat");
+    await File.WriteAllTextAsync(cfgFile, rxCfg, Encoding.ASCII);
+    await File.WriteAllTextAsync(datFile, rxDat, Encoding.ASCII);
+
+    Console.WriteLine($"已保存: {cfgFile}（{Encoding.ASCII.GetByteCount(rxCfg)} B）");
+    Console.WriteLine($"        {datFile}（{Encoding.ASCII.GetByteCount(rxDat)} B）");
+
     var match = data.SequenceEqual(expected);
     Console.WriteLine(match
         ? "✔ 内容与从站源文件逐字节一致"
         : $"✘ 内容不一致（期望 {expected.Length} 字节）");
+
+    Console.WriteLine($"✔ cfg 与源一致: {rxCfg == cfgText}");
+    Console.WriteLine($"✔ dat 与源一致: {rxDat == datText}");
 }
 
 static ASDU MakeFileCommand(ApplicationLayerParameters al, SelectAndCallQualifier scq, byte section)
@@ -275,23 +309,110 @@ static byte[] Concat(List<byte[]> parts)
 
 static int Ceil(int a, int b) => (a + b - 1) / b;
 
-// 生成一段模拟录波数据（正弦波，3 通道 × 200 点）
-static byte[] BuildDisturbanceFile()
-{
-    const int pointsPerChannel = 200;
-    const int channels = 3;
-    var buffer = new byte[pointsPerChannel * channels * 2];
-    var index = 0;
+// ══════════════════════════════════════════════════════════════════
+//  COMTRADE 生成与拆包
+// ══════════════════════════════════════════════════════════════════
 
-    for (var ch = 0; ch < channels; ch++)
+const int PointsPerChannel = 200;
+const int SampleRate = 1000;          // 1000 Hz → 采样间隔 1 ms
+const int Channels = 4;
+
+/// <summary>
+/// 生成 COMTRADE 录波并打包成单条传输流。
+/// </summary>
+/// <remarks>
+/// 包结构：<c>[4B "CTP1"][4B cfg 长度 LE][cfg 文本][dat 文本]</c>。
+/// 104 文件传输一次只传一个文件流，而 COMTRADE 需要 .cfg + .dat 两个文件，
+/// 故在应用层自行打包。真实装置若支持传多个文件，可对每个文件单独走一轮
+/// 文件传输流程（NOF 相同、文件名不同）。
+/// </remarks>
+static byte[] BuildComtradePackage(out string cfg, out string dat)
+{
+    var start = new DateTime(2026, 11, 27, 10, 30, 0, DateTimeKind.Local);
+
+    // ── .cfg ──────────────────────────────────────────────
+    var sb = new StringBuilder();
+
+    // 1) 站名, 设备ID, 版本年
+    sb.Append("XUJI,PROT-01,1999\r\n");
+
+    // 2) 通道总数, 模拟量通道数(4I/8U 中的 A 后缀表示模拟量)
+    sb.Append($"{Channels},{Channels}A,0D\r\n");
+
+    // 3) 通道定义：通道号, 名称, 相别, 单位, 一次系数a, 二次系数b, 偏移, 有效值, 名称编码
+    //    物理值 = a × 原始值 + b
+    sb.Append("1,IA,A,A,0.01,0,0,0,0\r\n");
+    sb.Append("2,IB,B,A,0.01,0,0,0,0\r\n");
+    sb.Append("3,IC,C,A,0.01,0,0,0,0\r\n");
+    sb.Append("4,3I0,N,A,0.01,0,0,0,0\r\n");
+
+    // 4) 采样率, 每周期采样数（填 0 或实际采样率）
+    sb.Append($"{SampleRate},0\r\n");
+
+    // 5) 采样点数
+    sb.Append($"{PointsPerChannel}\r\n");
+
+    // 6) 第一个数据点的时间戳
+    sb.Append($"{start:dd/MM/yyyy},{start:HH:mm:ss.ffffff}\r\n");
+
+    // 7) 触发时间戳
+    sb.Append($"{start.AddMilliseconds(50):dd/MM/yyyy},{start.AddMilliseconds(50):HH:mm:ss.ffffff}\r\n");
+
+    // 8) 文件类型（ASCII = 文本 .dat）
+    sb.Append("ASCII\r\n");
+
+    // 9) 时间倍率（1 表示微秒）
+    sb.Append("1\r\n");
+
+    cfg = sb.ToString();
+
+    // ── .dat ──────────────────────────────────────────────
+    var db = new StringBuilder(PointsPerChannel * Channels * 12);
+    for (var i = 0; i < PointsPerChannel; i++)
     {
-        for (var i = 0; i < pointsPerChannel; i++)
-        {
-            var value = (short)(Math.Sin((i + ch * 20) * 0.05) * 10000);
-            buffer[index++] = (byte)(value & 0xFF);
-            buffer[index++] = (byte)((value >> 8) & 0xFF);
-        }
+        var timeUs = i * 1_000_000L / SampleRate;      // 微秒
+        db.Append(i + 1).Append(',').Append(timeUs).Append(',')
+          .Append(Sample(1, i)).Append(',')
+          .Append(Sample(2, i)).Append(',')
+          .Append(Sample(3, i)).Append(',')
+          .Append(Sample(4, i)).Append("\r\n");
     }
 
-    return buffer;
+    dat = db.ToString();
+
+    // ── 打包 ──────────────────────────────────────────────
+    var cfgBytes = Encoding.ASCII.GetBytes(cfg);
+    var datBytes = Encoding.ASCII.GetBytes(dat);
+    var package = new byte[8 + cfgBytes.Length + datBytes.Length];
+
+    Encoding.ASCII.GetBytes("CTP1").CopyTo(package, 0);
+    BitConverter.TryWriteBytes(package.AsSpan(4, 4), cfgBytes.Length);
+    cfgBytes.CopyTo(package, 8);
+    datBytes.CopyTo(package, 8 + cfgBytes.Length);
+
+    return package;
+
+    // 4 通道采样值：正弦波，原始码值（× 0.01 A 得实际安培数）
+    static int Sample(int channel, int i)
+        => (int)(Math.Sin((i + (channel - 1) * 15) * 0.05) * 10000);
+}
+
+/// <summary>从传输包拆回 .cfg / .dat 文本。</summary>
+static bool TryUnpackComtrade(byte[] data, out string cfg, out string dat)
+{
+    cfg = dat = string.Empty;
+    if (data.Length < 8 || Encoding.ASCII.GetString(data, 0, 4) != "CTP1")
+    {
+        return false;
+    }
+
+    var cfgLen = BitConverter.ToInt32(data, 4);
+    if (cfgLen < 0 || 8 + cfgLen > data.Length)
+    {
+        return false;
+    }
+
+    cfg = Encoding.ASCII.GetString(data, 8, cfgLen);
+    dat = Encoding.ASCII.GetString(data, 8 + cfgLen, data.Length - 8 - cfgLen);
+    return true;
 }
