@@ -93,6 +93,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "cs103-slave-xuji", "example
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "cs103-xuji-interop", "examples\103\cs103-xuji-interop\cs103-xuji-interop.csproj", "{D93FF55F-192D-4F6E-9D76-AFB095573DF7}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "cs104-file-transfer", "examples\104\cs104-file-transfer\cs104-file-transfer.csproj", "{D7B2A225-6DC8-4FB0-A67F-1F0CC6C7F692}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -595,6 +597,18 @@ Global
 		{D93FF55F-192D-4F6E-9D76-AFB095573DF7}.Release|x64.Build.0 = Release|Any CPU
 		{D93FF55F-192D-4F6E-9D76-AFB095573DF7}.Release|x86.ActiveCfg = Release|Any CPU
 		{D93FF55F-192D-4F6E-9D76-AFB095573DF7}.Release|x86.Build.0 = Release|Any CPU
+		{D7B2A225-6DC8-4FB0-A67F-1F0CC6C7F692}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D7B2A225-6DC8-4FB0-A67F-1F0CC6C7F692}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D7B2A225-6DC8-4FB0-A67F-1F0CC6C7F692}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D7B2A225-6DC8-4FB0-A67F-1F0CC6C7F692}.Debug|x64.Build.0 = Debug|Any CPU
+		{D7B2A225-6DC8-4FB0-A67F-1F0CC6C7F692}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{D7B2A225-6DC8-4FB0-A67F-1F0CC6C7F692}.Debug|x86.Build.0 = Debug|Any CPU
+		{D7B2A225-6DC8-4FB0-A67F-1F0CC6C7F692}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D7B2A225-6DC8-4FB0-A67F-1F0CC6C7F692}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D7B2A225-6DC8-4FB0-A67F-1F0CC6C7F692}.Release|x64.ActiveCfg = Release|Any CPU
+		{D7B2A225-6DC8-4FB0-A67F-1F0CC6C7F692}.Release|x64.Build.0 = Release|Any CPU
+		{D7B2A225-6DC8-4FB0-A67F-1F0CC6C7F692}.Release|x86.ActiveCfg = Release|Any CPU
+		{D7B2A225-6DC8-4FB0-A67F-1F0CC6C7F692}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -639,5 +653,6 @@ Global
 		{971DC2CB-9C5B-4B42-B3D6-FF49B63DBE44} = {A1010101-0000-4000-8000-000000000101}
 		{43959395-B583-452A-9634-C936A9A84DA6} = {FC8D855D-574E-AB61-1D0C-2C4C1046626E}
 		{D93FF55F-192D-4F6E-9D76-AFB095573DF7} = {FC8D855D-574E-AB61-1D0C-2C4C1046626E}
+		{D7B2A225-6DC8-4FB0-A67F-1F0CC6C7F692} = {A1040404-0000-4000-8000-000000000104}
 	EndGlobalSection
 EndGlobal
